@@ -33,6 +33,64 @@ decision path READS (see below). That file steers only *which title encodes or
 stages next*, never the verdict, the sync, or a deletion. A broken or deleted
 overrides file degrades to stock bitrate order everywhere.
 
+### Pausing the driver — the exact procedure
+
+Before touching `core.py` / `verdict.py` / `next_title.py` / `record.py`, or
+any `.sh` on the staging drive, pause the driver. Learned the hard way on
+2026-08-21 — three traps in this, all confirmed live:
+
+1. **`pkill -f autopilot.sh` misses the detached process.** Find the pid with
+   `pgrep -f autopilot.sh` and signal it directly.
+2. **Plain `kill` (SIGTERM) does not stop it.** Bash defers the signal while
+   waiting on a child, and its `trap 'rmdir $LOCK' EXIT INT TERM` removes the
+   lock and then **continues the loop** — now unlocked. Use `kill -9 <pid>`,
+   then remove the lock yourself:
+
+   ```bash
+   kill -9 "$(pgrep -f autopilot.sh)"
+   rm -rf "/Volumes/Crucial X9/4K Movies/.autopilot.lock"
+   ```
+
+3. **Killing the driver does not kill its children.** A running HandBrake
+   encode, an in-flight `.sync-to-library.sh` push, and a `.replenish-queue.sh`
+   pull all survive as orphans, keep logging into `.autopilot.log`, and finish
+   their own verify/cleanup safely. That is fine — but it means:
+   - **Never edit a staging-drive script while an instance of it is running**
+     (bash reads scripts by byte offset; an in-place edit can garble the
+     remaining commands of the running copy — including its deletion steps).
+   - **Never restart the driver while a finished staging folder still exists
+     or a sync is mid-flight.** `core.record()` blindly appends — no duplicate
+     guard — so the restarted driver re-finds the finished folder by disk
+     scan, re-judges it, and writes a second ledger row (double-counted
+     reclaim). Wait for `SYNCED:` in the log / the staging folder to vanish.
+
+Restart it afterwards, exactly as its header documents:
+
+```bash
+cd "/Volumes/Crucial X9/4K Movies" && nohup ./.autopilot.sh >> .autopilot.log 2>&1 &
+```
+
+## Library roots — kept in sync BY HAND in four places
+
+The library spans three roots: `Vhagar/Media/4K Movies`,
+`Vermithor/Media/4K Movies`, `Vermithor/Media/4K Family Movies` (added
+2026-08-21; identical `letter/title/file` layout). The list is duplicated in
+**four** places and nothing enforces agreement — a root added to three of four
+fails in whichever path was missed:
+
+1. `core.py` `LIBRARY_ROOTS` — queue, offline detection, transfer observation
+2. `.scan-bitrates.sh` (X9) — the `find` roots that feed the bitrate index
+3. `.autopilot.sh` `library_path_of()` (X9) — resolves the library original for
+   `record --source-path`; uses the same exactly-one `find` match as sync.
+   Never reintroduce the first-letter bucket guess: "A Bug's Life (1998)"
+   files under B, "1917 (2019)" under `#`, and a wrong guess halts the driver
+   after a multi-hour encode
+4. `.sync-to-library.sh` `LIBS` (X9) — requires exactly one library match or
+   aborts
+
+`.replenish-queue.sh` and `.ssh-xfer.sh` are root-agnostic (index paths and
+prefix mapping) and need no edit when a root is added.
+
 ## Queue overrides (skip + drag-to-reorder)
 
 `queue_overrides.json` lives beside the ledger:
@@ -84,42 +142,42 @@ CORS preflight the server never grants), and every denied request closes its
 connection so a rejected POST's body can never be replayed as a smuggled
 second request.
 
-Before touching `core.py` / `verdict.py` / `next_title.py` / `record.py`, pause
-the driver:
+## Live telemetry — how the dashboard observes without steering
 
-```bash
-pkill -f autopilot.sh && rm -rf "/Volumes/Crucial X9/4K Movies/.autopilot.lock"
-```
-
-(`pkill` can miss the detached process — verify with `ps aux | grep autopilot.sh`
-and `kill <pid>` directly if needed. A running HandBrake encode is independent
-and survives the pause.) Restart it afterwards, exactly as its header documents:
-
-```bash
-cd "/Volumes/Crucial X9/4K Movies" && nohup ./.autopilot.sh >> .autopilot.log 2>&1 &
-```
+- `core.live_encodes()` keys HandBrake logs and staging lookups by
+  **basename** — the autopilot passes full `-i`/`-o` paths, and raw paths once
+  nulled the live sizes and `folder`, hiding the encoding badge and defeating
+  the skip guard's title match. Keep it basename-keyed.
+- `server._transfers()` reports a push back to the NAS by statting the
+  destination's growing `<name>.partial` (`.ssh-xfer.sh` renames only on a
+  byte-count match, so the `.partial` IS the transfer). Destination resolved
+  by the same exactly-one bucket match as sync — never a first-letter guess.
+  A `.partial` that stops growing for >120 s reports `stalled`, never
+  progress; `done > total` means a stale leftover from an older attempt.
+- `server._arrivals()` marks staged folders holding only a replenish
+  `.partial` as *arriving* — present on disk but not yet encodable.
+- Both tabs render transfer bars, and `paint()`'s repaint key must cover them
+  (queue AND ledger variants). Transfers were once omitted from the key and
+  the row painted a single still frame at ~0 bytes for a whole 45-minute push.
 
 ## Editing the look and feel
 
-Everything visual is one string, `_PAGE`, in `server.py` lines ~332–1228.
-(The POST override endpoints sit above it, lines ~200–330.)
+Everything visual is one string, `_PAGE`, in `server.py` (starts ~line 481;
+the GET/POST handlers sit above it, ~160–480). Map as of v0.1.2:
 
 | Lines | What |
 |---|---|
-| 340–362 | `:root` dark design tokens — colours, radius, motion accents. **Start here.** |
-| 363–382 | `:root[data-theme="light"]` — the light overrides, same token names |
-| 383–414 | base typography, `body` (max-width 1680px), header, theme toggle, pulsing status dot |
-| 415–435 | stat card grid + change-flash + first-paint entrance stagger |
-| 436–446 | panels + live encode card |
-| 447–475 | the molten progress bar (`.barrow`/`.bar`) + 2-decimal `pctLive` readout |
-| 476–482 | tabs |
-| 483–559 | tables, scroll-reveal scrollbar (thumb only while scrolling), pin/skip/NAS marks, grips + drop indicators, skip buttons, pane fade |
-| 560–603 | responsive media queries — ≤700px pinned title column + `.cut`; coarse pointer hides drag grips (no DnD on touch), keeps scrollbar visible |
-| 604–615 | pre-paint theme script (runs in `<head>`) |
-| 616–645 | markup (incl. Reset-order button and the `#uiNotice` strip) |
-| 676–706 | `notice()` + `api()` POST helper — the page's only writes |
-| 708–1116 | `renderAlert` `renderStats` `renderLive` `renderQueue`+`wireDrag` `renderLedger` `paint` |
-| 1118–1190 | seam-blanking + scrolling-class script |
+| 489–516 | `:root` dark design tokens — colours, radius, motion accents. **Start here.** |
+| 517–541 | `:root[data-theme="light"]` — the light overrides, same token names |
+| 542–653 | base typography, header, stat cards, panels, live card, molten bar, tabs |
+| 654–719 | tables, scroll-reveal scrollbar, pin/skip/NAS/transfer marks, `.minibar`, `th.unit`, grips |
+| 720–771 | `prefers-reduced-motion` + responsive ≤700px (pinned title column, `.cut`) |
+| 772–784 | pre-paint theme script (runs in `<head>`) |
+| 785–808 | markup (incl. Reset-order button and the `#uiNotice` strip) |
+| 867–890 | `notice()` + `api()` POST helper — the page's only writes |
+| 891–1356 | `renderAlert` `renderStats` `renderLive` `renderQueue`+`wireDrag` `renderLedger` |
+| 1357–1400 | `paint()` — repaint keys; MUST cover transfers on both tabs |
+| 1466–1507 | theme toggle, seam-blanking + scrolling-class scripts |
 
 Animation ground rules: the live card updates **in place** (`liveRefs`) —
 rebuilding it every SSE frame restarts every CSS animation and kills the bar's
@@ -136,12 +194,17 @@ animations are gated on `body:not(.booted)` so SSE rebuilds don't replay them.
    Google Fonts.
 2. **Never `innerHTML` with server data.** Everything goes through `textContent`
    via the `el()` helper. Movie titles are filesystem strings.
-3. **`./smeltr restart`** after editing, then hard-reload.
+3. **`./smeltr restart`** after editing, then hard-reload. The server process
+   holds `core` in memory — a `core.py` edit is invisible until restart.
 
 **Colours are tokens, never hex literals.** Both themes are token sets with the
 same names; a hex written anywhere below `:root` is a colour the light theme
 cannot reach, which is exactly how the page stayed half-dark before. If you add
 a colour, add it to both `:root` blocks.
+
+**Units survive CSS.** `th{text-transform:uppercase}` turns Mb/s into MB/S — an
+8× lie on the column whose unit confusion already corrupted the old state file.
+Any header carrying a unit gets `class="unit"` (`th.unit{text-transform:none}`).
 
 Theme resolution, in order: an explicit choice in `localStorage["smeltr.theme"]`
 wins; otherwise `prefers-color-scheme` wins and keeps winning as the OS flips.
@@ -158,7 +221,8 @@ Two adversarial agents live in `agents/` and are symlinked into `~/.claude`:
 `smeltr-code-critic` (code) and `smeltr-data-critic` (the numbers a human reads
 before authorising a deletion). Use the data critic after changing anything the
 dashboard displays — it has caught mislabelled units, totals computed over
-mismatched row sets, and a verdict that reassured on an implausible result.
+mismatched row sets, a verdict that reassured on an implausible result, and a
+transfer bar frozen at 0% for the length of the entire push.
 
 ## Releasing and pull requests
 
@@ -183,6 +247,8 @@ structure mechanically; if one changes, change the other.
 - **An unmounted NAS must not look like a finished job.** The queue empties when
   a library root is unreachable; `library_complete` / `roots_offline` exist so
   neither view presents that as "nothing left".
+- **A transfer that is not moving is "stalled", never a progress bar.** Log
+  tails and leftover `.partial`s are not proof of life.
 
 `~/.claude/skills/*` and `~/.claude/agents/smeltr-*.md` are **symlinks into this
 repo** — editing them edits tracked files.

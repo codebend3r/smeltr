@@ -2,50 +2,150 @@
 
 Remuxes in · ingots out.
 
-A local dashboard and terminal report for a long-running 4K HEVC re-encode job:
-UHD remuxes (60–100 Mb/s) are re-encoded with HandBrakeCLI at CRF 16, verified,
-and moved back to the NAS, replacing an ~80 GB original with an ~30 GB file that
-keeps every audio and subtitle track.
+A local dashboard, terminal report, and append-only ledger for a long-running
+4K HEVC re-encode job: UHD remuxes (60–100 Mb/s) are re-encoded with
+HandBrakeCLI at CRF 16, verified, and moved back to the NAS — replacing an
+~80 GB original with an ~30 GB file that keeps **every** audio and subtitle
+track. 12 encodes in, the job has reclaimed just over 500 GiB with ~5.7 TiB
+projected to go.
 
-Smeltr does not run the encodes. It **observes** them and keeps the ledger.
-Reporting and acting are deliberately separate: nothing here starts, stops, or
-alters an encode, and nothing writes to the media library.
+Python 3 stdlib and vanilla JS. **No dependencies, no build step, no CDN.**
+
+```bash
+./smeltr report      # terminal snapshot
+./smeltr open        # live dashboard at http://127.0.0.1:8787/
+```
+
+## What Smeltr is — and is not
+
+Smeltr **observes** the pipeline and keeps its history. It parses HandBrake
+logs, checks process liveness with `ps`, ranks the remaining library by
+bitrate, and judges each finished encode. It does not start, stop, or alter an
+encode, and it never writes to the media library.
+
+The one thing it *decides* is what the unattended driver does next. A detached
+`autopilot.sh` on the staging drive runs the full cycle — encode → judge →
+record → sync → purge → replenish — and calls this repo at every decision
+point:
+
+```
+                        ┌──────────────────────── this repo ────────────────────────┐
+   NAS library          │                                                           │
+  (Vhagar/Vermithor) ──▶ next_title.py ──▶ encode ──▶ verdict.py ──▶ record.py ──▶ ledger.jsonl
+        ▲                     queue            │        exit code      refusal          │
+        │                    ranking           │      sync-or-halt      gates           │
+        └── verified sync ◀────────────────────┘                                        │
+             + delete            server.py / report.py  ◀───── observe only ────────────┘
+             original                (dashboard)
+```
+
+The only path that deletes a library original is a `good` verdict followed by a
+byte-verified, track-parity-checked sync. Everything ambiguous halts loudly and
+leaves the drive as-is.
 
 ## Use
 
 ```bash
-./smeltr report                 # terminal snapshot: totals, live encode, queue, history
-./smeltr report --all           # every row
-./smeltr open                   # open the dashboard in a browser
-./smeltr start|stop|status|url
-./smeltr record "<Folder>" --source-path <path-to-original> [--dest Vhagar/F]
+./smeltr report                # totals, live encode, queue, recent history
+./smeltr report --all          # every row, no truncation
+./smeltr report --queue        # queue only        (--history for the ledger)
+./smeltr start|stop|restart|status|url|open
+./smeltr verdict "<Folder>"    # judge a finished encode; exit code drives the driver
+./smeltr next <min-mbps>       # highest-bitrate staged title not yet encoded
+./smeltr record "<Folder>" --source-path <path-to-original> \
+    [--dest Vhagar/S] [--note "..."] [--verified "ssim 0.9931/0.9945"]
 ```
 
-The dashboard is at <http://127.0.0.1:8787/> and updates over Server-Sent Events.
+`report` starts the dashboard automatically if it isn't up. The dashboard
+updates over Server-Sent Events; the queue there is hand-editable — rows drag
+to reorder (the order you drop is the order the pipeline picks from) and any
+non-encoding row can be skipped. Skipped rows keep their place, greyed with a
+restore button: a skip that vanished would read as "finished".
+
+While a finished file travels back to the NAS the queue and History tabs show a
+live **transferring** bar (observed from the destination's growing `.partial`,
+with rate and time left — a `.partial` that stops growing flips to **stalled**,
+never fake progress). A staging pull still in flight shows as **arriving**, not
+"staged".
 
 ## Layout
 
 | File | Role |
 |---|---|
-| `core.py` | Read-only data layer: log parsing, `ps` liveness, queue, ledger, verdicts |
-| `server.py` | Stdlib HTTP + SSE server; the dashboard HTML/CSS/JS is embedded |
+| `core.py` | Data layer: log parsing, `ps` liveness, queue ranking, ledger, verdict maths |
+| `verdict.py` | Judges one finished encode; its **exit code** is the driver's sync-or-halt |
+| `next_title.py` | Picks what encodes next; distinct exit codes for stop / offline / all-skipped |
+| `record.py` | Appends to the ledger, behind liveness, size, and readability refusal gates |
+| `server.py` | Stdlib HTTP + SSE server; the whole dashboard is one embedded page |
 | `report.py` | Terminal table renderer |
-| `record.py` | Appends a finished encode to the ledger, behind liveness + parity gates |
-| `smeltr` | Launcher |
+| `smeltr` | Launcher / subcommand dispatcher |
 | `ledger.jsonl` | **The durable history.** Append-only, one JSON object per encode |
-| `seed_ledger.py` | One-shot migration from the pre-Smeltr text state file |
+| `queue_overrides.json` | Dashboard skip + priority state, written atomically, read by the driver |
 
-No dependencies beyond Python 3 and a browser. No build step. `ffprobe` is
-needed only by `record.py`.
+Paths resolve from the script's own location, so the checkout can live
+anywhere. `SMELTR_DIR` overrides where the ledger and runtime files live;
+`SMELTR_X9` overrides the staging drive. `ffprobe` is needed only by
+`record.py`.
 
-Paths resolve from the script's own location, so the checkout can live anywhere.
-`SMELTR_DIR` overrides where the ledger and runtime files are kept, `SMELTR_X9`
-overrides the staging drive.
+The library spans three roots across two NAS volumes — `Vhagar/Media/4K
+Movies`, `Vermithor/Media/4K Movies`, `Vermithor/Media/4K Family Movies` —
+listed in `core.py` `LIBRARY_ROOTS` and mirrored by the driver scripts on the
+staging drive.
+
+## The safety model
+
+This pipeline deletes irreplaceable originals, so every number a human reads
+before authorising that is treated as load-bearing:
+
+- **The ledger is written before the sync, never after.** Once the original is
+  deleted its size is unrecoverable and the row can never be completed. One
+  title (`Wanted (2008)`) is in exactly that state and is excluded from every
+  total rather than back-solved into something that looks tidy.
+- **Provenance is recorded per row** — `measured at finish`, `hand-migrated`,
+  `found after the fact` — because those are not the same evidence, and the
+  totals do not pretend otherwise.
+- **An unmounted NAS must not look like a finished job.** The queue drops rows
+  whose files it cannot see, so the summary carries `library_complete` /
+  `roots_offline` and both views banner a partial queue rather than presenting
+  it as authoritative.
+- **The verdict has two independent checks on different scales.** A raw floor
+  catches output too small to be physically plausible for 4K; a median
+  baseline catches anything far below what this job actually achieves,
+  measured per retained pixel so letterboxed films are not punished for their
+  auto-crop. The baseline is the median, not the best-ever: with a minimum,
+  one legitimate outlier permanently widens "normal" and the detector disarms
+  itself.
+- **`record.py` refuses rather than guesses**: while HandBrake is still
+  writing, while the output was touched in the last two minutes, when the
+  output is not smaller than the source, or when ffprobe cannot read either
+  file. A ledger row is the evidence that authorises a deletion; it is never
+  written on a guess.
+- **Skipping work can never render as finishing it** — the job-progress goal
+  deliberately keeps skipped bytes.
+
+Two adversarial review agents live in `agents/` — one pointed at the code, one
+at the numbers a person actually reads. Between them they have caught an
+unmounted NAS rendering identically to a finished job, a vacuous ffprobe
+parity check that passed on zero evidence, a ledger write with no liveness
+gate, an uppercase transform quietly turning Mb/s into MB/S, and a progress
+row that painted once and froze for an entire 45-minute transfer.
+
+## Dashboard security
+
+The server binds `127.0.0.1` only, allowlists the `Host` header (defeating DNS
+rebinding), sends no CORS headers, and serves a nonce-based CSP with no
+external origins; every value reaches the DOM via `textContent`. The only two
+mutating routes write `queue_overrides.json` — they accept only titles the
+queue itself just reported (never a path), require the `X-Smeltr: 1` header (a
+cross-origin page cannot attach it without a CORS preflight the server never
+grants), and every denied request closes its connection so a rejected body can
+never be replayed as a smuggled second request. Set `SMELTR_REQUIRE_TOKEN=1`
+to additionally require the per-launch token on every request.
 
 ## Skills and agents
 
-The Claude Code skills and review agents for this job live in the repo too, and
-are symlinked into `~/.claude` so Claude Code still finds them:
+The Claude Code skills and review agents for this job live in the repo and are
+symlinked into `~/.claude`:
 
 ```
 skills/queue-report/           this dashboard's own skill
@@ -66,60 +166,18 @@ ln -s "$PWD/skills/<name>" ~/.claude/skills/<name>
 ln -s "$PWD/agents/<name>.md" ~/.claude/agents/<name>.md
 ```
 
-The two critics exist because this pipeline **deletes irreplaceable originals**.
-They are deliberately adversarial and are pointed at different targets — one at
-the code, one at the numbers a person actually reads before authorising a
-deletion. Between them they caught, among others: an unmounted NAS rendering
-identically to a finished job, track counts read from the source scan block
-(so track loss could never be detected), a vacuous ffprobe parity check that
-passed on zero evidence, and a ledger write with no liveness gate.
-
 ## Releasing
 
 ```bash
-npm version patch     # 0.1.0 -> 0.1.1
+npm version patch     # 0.1.1 -> 0.1.2
 ```
 
-That one command bumps `package.json`, commits as `SMLTR: Release v0.1.1`, creates
-the annotated tag `v0.1.1`, and pushes the commit and the tag to `origin`. There is
-no build, no publish, and no deploy — **the tag is the release**.
-
-`package.json` exists only to drive that command; smeltr itself has no npm
-dependencies and is `"private": true` so it can never be published. The version
-lives in `package.json` and the tag and nowhere else — no Python module carries a
-`__version__`. A `preversion` hook byte-compiles every module first, so a release
-cannot be tagged over a syntax error in the decision path.
+That one command bumps `package.json`, commits as `SMLTR: Release v0.1.2`,
+creates the annotated tag, and pushes the commit and the tag to `origin`.
+There is no build, no publish, no deploy — **the tag is the release**. A
+`preversion` hook byte-compiles every module first, so a release cannot be
+tagged over a syntax error in the decision path. `package.json` exists only to
+drive this and is `"private": true`; the version lives in `package.json` and
+the tag and nowhere else.
 
 See `skills/smeltr-release/SKILL.md`, including how to undo a bump.
-
-## Design notes
-
-**The ledger is written before the sync, never after.** Once the original is
-deleted its size is unrecoverable, and a row without it can never be completed.
-One title (`Wanted (2008)`) is in exactly that state and is excluded from every
-total rather than being back-solved into something that looks tidy.
-
-**Provenance is recorded per row** — `measured at finish`, `hand-migrated`, or
-`found after the fact` — because those are not the same evidence and the totals
-should not pretend otherwise.
-
-**An unmounted NAS must not look like a finished job.** The queue drops rows
-whose files it cannot see, so an unreachable library silently empties it. The
-summary carries `library_complete` / `roots_offline`, and both views refuse to
-present a partial queue as authoritative.
-
-**The verdict has two independent checks on different scales.** A raw floor
-catches output too small to be physically plausible; a median baseline catches
-output far below what this job actually achieves, measured per retained pixel so
-letterboxed films are not punished for their auto-crop. The baseline is the
-median rather than the best-ever: with a minimum, one legitimate outlier
-permanently widens "normal" and the detector disarms itself.
-
-## Security
-
-The server binds `127.0.0.1` only, allowlists the `Host` header (defeating DNS
-rebinding), sends no CORS headers, and serves a nonce-based CSP with no external
-origins. Every value reaches the DOM via `textContent`. No endpoint mutates
-anything. Set `SMELTR_REQUIRE_TOKEN=1` to additionally require a per-launch
-token on every request — worth it on a shared machine, needless on a personal
-one, where it mainly breaks the bookmarkable URL.
