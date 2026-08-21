@@ -216,11 +216,41 @@ _PAGE = r"""<!doctype html>
 <title>Smeltr</title>
 <style nonce="__NONCE__">
 :root{
+  --r:10px;
+  color-scheme:dark;
   --bg:#08090b; --panel:#0f1116; --panel-2:#13161c; --line:#1e232c;
   --ink:#e8ecf2; --ink-2:#98a2b3; --ink-3:#5f6a7d;
   --hot:#ff7a2f; --hot-soft:#ff9a5c; --cool:#4cc9f0; --good:#3ddc97;
   --warn:#ffc857; --bad:#ff5c5c;
-  --r:10px;
+  /* Derived surfaces. Every colour that used to be a hex literal further down
+     is named here instead -- a theme cannot override what it cannot name, and
+     the dozen inline hexes were exactly the things that stayed dark. */
+  --live-bd:#3a2415; --live-bg:#16110d;
+  --alert-bd:#5a1d1d; --alert-bg:#1c0f0f;
+  --good-bd:#1d4435; --warn-bd:#4a3b18; --bad-bd:#4a1f1f;
+  --cool-bd:#1c3a47; --hot-bd:#4a3018;
+  --bar-bg:#1a1f27; --bar-inset:rgba(0,0,0,.5);
+  --tab-bd:#2c3543; --td-line:#14181f;
+  --row-hover:#12151b; --row-enc:#171208;
+  --thumb:#2a313d; --thumb-hover:#3b4553;
+}
+:root[data-theme="light"]{
+  color-scheme:light;
+  --bg:#f5f7fa; --panel:#ffffff; --panel-2:#eef1f6; --line:#dde2ea;
+  --ink:#141922; --ink-2:#4d5768; --ink-3:#646d7e;
+  /* Accents darken rather than invert: the same hues, pulled down until they
+     carry on white. The 22px stat values only need 3:1, the 11px labels need
+     4.5:1, and --ink-3 is the one doing most of the small-text work. */
+  --hot:#c2540f; --hot-soft:#b04e0c; --cool:#0b6f9e; --good:#0f7a55;
+  --warn:#8a5a00; --bad:#c22f2d;
+  --live-bd:#f0cbab; --live-bg:#fff6ee;
+  --alert-bd:#f0bab8; --alert-bg:#fff4f3;
+  --good-bd:#a9dcc6; --warn-bd:#e4cd97; --bad-bd:#f0bab8;
+  --cool-bd:#a6d3e6; --hot-bd:#f0cbab;
+  --bar-bg:#e3e7ee; --bar-inset:rgba(20,25,34,.12);
+  --tab-bd:#c6cedb; --td-line:#eff2f6;
+  --row-hover:#f4f7fa; --row-enc:#fff6ea;
+  --thumb:#c8cfda; --thumb-hover:#a8b2c1;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{-webkit-text-size-adjust:100%}
@@ -240,6 +270,16 @@ header{display:flex;align-items:baseline;gap:14px;margin-bottom:22px;flex-wrap:w
 .dot.on{background:var(--good);box-shadow:0 0 0 3px rgba(61,220,151,.15)}
 .dot.off{background:var(--bad);box-shadow:0 0 0 3px rgba(255,92,92,.15)}
 .conn{margin-left:auto;font-size:12px;color:var(--ink-3)}
+.themebtn{align-self:center;background:var(--panel);border:1px solid var(--line);
+  color:var(--ink-2);width:30px;height:30px;border-radius:8px;padding:0;cursor:pointer;
+  display:grid;place-items:center}
+.themebtn:hover{color:var(--ink);border-color:var(--tab-bd)}
+.themebtn:focus-visible{outline:2px solid var(--cool);outline-offset:2px}
+/* Half-filled circle. Drawn from currentColor rather than an emoji or a font
+   glyph, so it inverts with the theme and cannot render as a colour emoji. */
+.themebtn i{display:block;width:13px;height:13px;border-radius:50%;
+  border:1.5px solid currentColor;
+  background:linear-gradient(90deg,currentColor 0 50%,transparent 50% 100%)}
 
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:10px;margin-bottom:18px}
 .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:13px 15px}
@@ -250,17 +290,17 @@ header{display:flex;align-items:baseline;gap:14px;margin-bottom:22px;flex-wrap:w
 
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
       padding:18px 20px;margin-bottom:18px}
-.card.live{border-color:#3a2415;background:linear-gradient(180deg,#16110d,var(--panel))}
-.card.alert{border-color:#5a1d1d;background:linear-gradient(180deg,#1c0f0f,var(--panel))}
+.card.live{border-color:var(--live-bd);background:linear-gradient(180deg,var(--live-bg),var(--panel))}
+.card.alert{border-color:var(--alert-bd);background:linear-gradient(180deg,var(--alert-bg),var(--panel))}
 .card.alert .live-title{color:var(--bad)}
 .live-top{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:4px}
 .live-title{font-size:17px;font-weight:640;letter-spacing:-.015em}
 .chip{font-size:11px;padding:2.5px 8px;border-radius:999px;border:1px solid var(--line);
       color:var(--ink-2);background:var(--panel-2);white-space:nowrap}
-.chip.good{color:var(--good);border-color:#1d4435} .chip.thin{color:var(--warn);border-color:#4a3b18}
-.chip.bad{color:var(--bad);border-color:#4a1f1f}
-.bar{height:7px;border-radius:99px;background:#1a1f27;overflow:hidden;margin:14px 0 10px;
-     box-shadow:inset 0 1px 2px rgba(0,0,0,.5)}
+.chip.good{color:var(--good);border-color:var(--good-bd)} .chip.thin{color:var(--warn);border-color:var(--warn-bd)}
+.chip.bad{color:var(--bad);border-color:var(--bad-bd)}
+.bar{height:7px;border-radius:99px;background:var(--bar-bg);overflow:hidden;margin:14px 0 10px;
+     box-shadow:inset 0 1px 2px var(--bar-inset)}
 .bar>i{display:block;height:100%;border-radius:99px;
        background:linear-gradient(90deg,var(--hot),var(--hot-soft));
        transition:width .5s cubic-bezier(.4,0,.2,1)}
@@ -274,36 +314,62 @@ header{display:flex;align-items:baseline;gap:14px;margin-bottom:22px;flex-wrap:w
 .tabs{display:flex;gap:6px;margin:0 0 12px}
 .tab{background:var(--panel);border:1px solid var(--line);color:var(--ink-2);
      padding:6px 13px;border-radius:8px;font:inherit;font-size:12.5px;cursor:pointer}
-.tab[aria-selected="true"]{background:var(--panel-2);color:var(--ink);border-color:#2c3543}
+.tab[aria-selected="true"]{background:var(--panel-2);color:var(--ink);border-color:var(--tab-bd)}
 .tab:focus-visible{outline:2px solid var(--cool);outline-offset:2px}
 
 .wrap{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:var(--panel)}
-.scroll{max-height:60vh;overflow:auto;overflow-x:auto}
+/* macOS "always show scroll bars" paints a full-contrast bar down the panel
+   permanently. Reserve the gutter but keep the bar invisible until the pointer
+   is over the table, so the scrollbar behaves like an overlay one either way.
+   Track stays transparent so the gutter reads as part of the panel. */
+.scroll{max-height:60vh;overflow:auto;overflow-x:auto;
+        scrollbar-width:thin;scrollbar-color:transparent transparent}
+.scroll:hover,.scroll:focus-within{scrollbar-color:var(--thumb) transparent}
+.scroll::-webkit-scrollbar{width:11px;height:11px}
+.scroll::-webkit-scrollbar-track,.scroll::-webkit-scrollbar-corner{background:transparent}
+.scroll::-webkit-scrollbar-thumb{background:transparent;border-radius:99px;
+  border:3px solid transparent;background-clip:content-box}
+.scroll:hover::-webkit-scrollbar-thumb,.scroll:focus-within::-webkit-scrollbar-thumb{
+  background:var(--thumb);background-clip:content-box}
+.scroll::-webkit-scrollbar-thumb:hover{background:var(--thumb-hover);background-clip:content-box}
 table{border-collapse:separate;border-spacing:0;width:100%;font-size:13px}
 th,td{padding:8px 12px;text-align:left;white-space:nowrap}
 th{position:sticky;top:0;z-index:1;background:var(--panel-2);color:var(--ink-3);
    font-weight:560;font-size:11px;text-transform:uppercase;letter-spacing:.06em;
    border-bottom:1px solid var(--line)}
-td{border-bottom:1px solid #14181f}
+td{border-bottom:1px solid var(--td-line)}
 tbody tr:last-child td{border-bottom:0}
-tbody tr:hover td{background:#12151b}
+tbody tr:hover td{background:var(--row-hover)}
 td.n,th.n{text-align:right}
 .title-cell{white-space:normal;min-width:230px}
 .muted{color:var(--ink-3)}
 .mark{font-size:10.5px;padding:1.5px 6px;border-radius:5px;border:1px solid var(--line);color:var(--ink-3)}
-.mark.staged{color:var(--cool);border-color:#1c3a47}
-.mark.enc{color:var(--hot-soft);border-color:#4a3018}
-.rowenc td{background:#171208}
+.mark.staged{color:var(--cool);border-color:var(--cool-bd)}
+.mark.enc{color:var(--hot-soft);border-color:var(--hot-bd)}
+.rowenc td{background:var(--row-enc)}
 .empty{padding:28px;text-align:center;color:var(--ink-3);font-size:13px}
 footer{margin-top:22px;font-size:11.5px;color:var(--ink-3);display:flex;gap:14px;flex-wrap:wrap}
 @media (prefers-reduced-motion:reduce){.bar>i{transition:none}}
 </style>
+<script nonce="__NONCE__">
+/* Runs before first paint. Anything later flashes the wrong theme on load. */
+(function(){
+  var v=null;
+  try{ v=localStorage.getItem("smeltr.theme"); }catch(e){}
+  if(v!=="light"&&v!=="dark"){
+    v=(window.matchMedia&&window.matchMedia("(prefers-color-scheme: light)").matches)
+      ? "light" : "dark";
+  }
+  document.documentElement.setAttribute("data-theme",v);
+})();
+</script>
 </head>
 <body>
 <header>
   <div class="wordmark">SMELTR<b>.</b></div>
   <div class="tag">remuxes in &middot; ingots out</div>
   <div class="conn"><span class="dot" id="dot"></span><span id="connText">connecting</span></div>
+  <button class="themebtn" id="themeBtn" type="button" aria-label="Switch theme"><i></i></button>
 </header>
 
 <section id="alert"></section>
@@ -511,6 +577,34 @@ function setTab(name){
 }
 document.getElementById("tabQueue").addEventListener("click",function(){setTab("queue");});
 document.getElementById("tabLedger").addEventListener("click",function(){setTab("ledger");});
+
+/* Theme. A stored value is an explicit choice and always wins. With no stored
+   choice the OS preference wins and KEEPS winning -- flipping the system theme
+   mid-session moves the page with it, until the button is pressed once. */
+var THEME_KEY="smeltr.theme";
+var mql=window.matchMedia?window.matchMedia("(prefers-color-scheme: light)"):null;
+function storedTheme(){
+  try{ var v=localStorage.getItem(THEME_KEY);
+       return (v==="light"||v==="dark")?v:null; }catch(e){ return null; }
+}
+function applyTheme(name){
+  document.documentElement.setAttribute("data-theme",name);
+  var b=document.getElementById("themeBtn");
+  var label=name==="dark" ? "Switch to light theme" : "Switch to dark theme";
+  b.setAttribute("aria-label",label);
+  b.title=label;
+}
+applyTheme(document.documentElement.getAttribute("data-theme")||"dark");
+if(mql&&mql.addEventListener){
+  mql.addEventListener("change",function(e){
+    if(!storedTheme()) applyTheme(e.matches?"light":"dark");
+  });
+}
+document.getElementById("themeBtn").addEventListener("click",function(){
+  var next=document.documentElement.getAttribute("data-theme")==="dark"?"light":"dark";
+  try{ localStorage.setItem(THEME_KEY,next); }catch(e){}
+  applyTheme(next);
+});
 
 function conn(state,text){
   document.getElementById("dot").className="dot "+state;

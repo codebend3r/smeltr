@@ -36,31 +36,46 @@ pkill -f autopilot.sh && rm -rf "/Volumes/Crucial X9/4K Movies/.autopilot.lock"
 
 ## Editing the look and feel
 
-Everything visual is one string, `_PAGE`, in `server.py` lines ~210–532.
+Everything visual is one string, `_PAGE`, in `server.py` lines ~210–624.
 
 | Lines | What |
 |---|---|
-| 218–226 | `:root` design tokens — colours, radius. **Start here.** |
-| 227–243 | base typography, `body` |
-| 244–250 | stat card grid |
-| 251–261 | panels + live encode card |
-| 262–273 | progress bar |
-| 274–281 | tabs |
-| 282–300 | tables |
-| 303–322 | markup |
-| 347–531 | `renderAlert` `renderStats` `renderLive` `renderQueue` `renderLedger` |
+| 218–236 | `:root` dark design tokens — colours, radius. **Start here.** |
+| 237–254 | `:root[data-theme="light"]` — the light overrides, same token names |
+| 255–283 | base typography, `body`, header, theme toggle button |
+| 284–290 | stat card grid |
+| 291–301 | panels + live encode card |
+| 302–313 | progress bar |
+| 314–319 | tabs |
+| 320–352 | tables + the hover-only scrollbar |
+| 354–363 | pre-paint theme script (runs in `<head>`) |
+| 367–387 | markup |
+| 413–560 | `renderAlert` `renderStats` `renderLive` `renderQueue` `renderLedger` |
 
 **Three rules. Breaking any of them breaks the page silently:**
 
-1. **Keep the CSP nonces.** `<style nonce="__NONCE__">` and
-   `<script nonce="__NONCE__">` are substituted at serve time. CSP is
+1. **Keep the CSP nonces.** One `<style>` and **two** `<script>` blocks carry
+   `nonce="__NONCE__"`, substituted at serve time — the second script is the
+   pre-paint theme block in `<head>`. A block without the nonce never runs. CSP is
    `default-src 'none'` — no inline `onclick`, no external CSS/JS, no CDN, no
    Google Fonts.
 2. **Never `innerHTML` with server data.** Everything goes through `textContent`
    via the `el()` helper. Movie titles are filesystem strings.
 3. **`./smeltr restart`** after editing, then hard-reload.
 
-Currently dark-only; there is no light theme or `prefers-color-scheme` handling.
+**Colours are tokens, never hex literals.** Both themes are token sets with the
+same names; a hex written anywhere below `:root` is a colour the light theme
+cannot reach, which is exactly how the page stayed half-dark before. If you add
+a colour, add it to both `:root` blocks.
+
+Theme resolution, in order: an explicit choice in `localStorage["smeltr.theme"]`
+wins; otherwise `prefers-color-scheme` wins and keeps winning as the OS flips.
+The `<head>` script applies it before first paint — moving that logic into the
+main script at the bottom reintroduces a flash of the wrong theme on load.
+
+`--ink-3` carries the small uppercase labels, muted cells, and footer. In light
+it is set to clear 4.5:1 on all three surfaces. **In dark it sits at ~3.3–3.6:1
+and always has** — pre-existing, not yet addressed.
 
 ## Reviewing changes
 
