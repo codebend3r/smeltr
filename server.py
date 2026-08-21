@@ -339,6 +339,10 @@ _PAGE = r"""<!doctype html>
 <style nonce="__NONCE__">
 :root{
   --r:10px;
+  /* Utility voice for machine-facing text: status chips, tagline, footer.
+     Data cells stay proportional + tabular-nums — tnum aligns digits without
+     monospace's width penalty, and reads better at 13px. */
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
   color-scheme:dark;
   --bg:#08090b; --panel:#0f1116; --panel-2:#13161c; --line:#1e232c;
   --ink:#e8ecf2; --ink-2:#98a2b3; --ink-3:#5f6a7d;
@@ -392,7 +396,7 @@ body{
 header{display:flex;align-items:baseline;gap:14px;margin-bottom:22px;flex-wrap:wrap}
 .wordmark{font-size:19px;font-weight:680;letter-spacing:-.02em}
 .wordmark b{color:var(--hot)}
-.tag{color:var(--ink-3);font-size:12.5px;letter-spacing:.01em}
+.tag{color:var(--ink-3);font-family:var(--mono);font-size:12px;letter-spacing:.01em}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--ink-3);display:inline-block;
      margin-right:6px;vertical-align:middle}
 .dot.on{background:var(--good);box-shadow:0 0 0 3px var(--halo-good);
@@ -415,7 +419,7 @@ header{display:flex;align-items:baseline;gap:14px;margin-bottom:22px;flex-wrap:w
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:10px;margin-bottom:18px}
 .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:13px 15px}
 .stat .k{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--ink-3)}
-.stat .v{font-size:22px;font-weight:640;letter-spacing:-.02em;margin-top:5px}
+.stat .v{font-size:22px;font-weight:640;letter-spacing:-.02em;margin-top:5px;line-height:1.15}
 .stat .s{font-size:11.5px;color:var(--ink-3);margin-top:2px}
 .v.hot{color:var(--hot-soft)} .v.cool{color:var(--cool)}
 /* A stat that just changed flashes its frame once. The entrance runs only on
@@ -464,12 +468,12 @@ body:not(.booted) #liveWrap .card{animation-delay:.12s}
 @keyframes sheen{from{transform:translateX(-110%)}to{transform:translateX(340%)}}
 @keyframes tipglow{from{box-shadow:0 0 4px 1px var(--glow);opacity:.7}
                    to{box-shadow:0 0 14px 4px var(--glow);opacity:1}}
-.pctbig{font-size:21px;font-weight:680;letter-spacing:-.02em;color:var(--hot-soft);
-        white-space:nowrap}
+.pctbig{font-size:26px;font-weight:680;letter-spacing:-.02em;line-height:1;
+        color:var(--hot-soft);white-space:nowrap}
 .kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px 18px;margin-top:12px}
 .kv div span{display:block;font-size:11px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.06em}
 .kv div b{font-weight:580;font-size:14px}
-.verdict{margin-top:12px;font-size:12.5px;color:var(--ink-2)}
+.verdict{margin-top:12px;font-size:12.5px;color:var(--ink-2);max-width:70ch}
 .verdict.loud{color:var(--warn);font-weight:560}
 .note{padding:10px 14px;font-size:11.5px;color:var(--ink-3);border-top:1px solid var(--line)}
 
@@ -497,7 +501,7 @@ body:not(.booted) #liveWrap .card{animation-delay:.12s}
   border:3px solid transparent;background-clip:content-box}
 .scroll.scrolling::-webkit-scrollbar-thumb{background:var(--thumb);background-clip:content-box}
 .scroll.scrolling::-webkit-scrollbar-thumb:hover{background:var(--thumb-hover);background-clip:content-box}
-table{border-collapse:separate;border-spacing:0;width:100%;font-size:13px}
+table{border-collapse:separate;border-spacing:0;width:100%;font-size:13px;line-height:1.4}
 th,td{padding:8px 12px;text-align:left;white-space:nowrap}
 th{position:sticky;top:0;z-index:1;background:var(--panel-2);color:var(--ink-3);
    font-weight:560;font-size:11px;text-transform:uppercase;letter-spacing:.06em;
@@ -508,7 +512,8 @@ tbody tr:hover td{background:var(--row-hover)}
 td.n,th.n{text-align:right}
 .title-cell{white-space:normal;min-width:230px}
 .muted{color:var(--ink-3)}
-.mark{font-size:10.5px;padding:1.5px 6px;border-radius:5px;border:1px solid var(--line);color:var(--ink-3)}
+.mark{font-family:var(--mono);font-size:10.5px;padding:1.5px 6px;border-radius:5px;
+      border:1px solid var(--line);color:var(--ink-3)}
 .mark.staged{color:var(--cool);border-color:var(--cool-bd)}
 .mark.enc{color:var(--hot-soft);border-color:var(--hot-bd)}
 .mark.pin{color:var(--cool);border-color:var(--cool-bd)}
@@ -534,7 +539,7 @@ tr.dropline td{box-shadow:inset 0 2px 0 0 var(--cool)}
 tr.dropline-after td{box-shadow:inset 0 -2px 0 0 var(--cool)}
 tr.pin-end td{border-bottom:2px solid var(--cool-bd)}
 .act{background:none;border:1px solid var(--line);color:var(--ink-3);border-radius:6px;
-     font:inherit;font-size:11px;padding:2.5px 9px;cursor:pointer;
+     font:inherit;font-size:11px;padding:2.5px 9px;margin:-4px 0;cursor:pointer;
      transition:color .15s,border-color .15s}
 .act:hover{color:var(--bad);border-color:var(--bad-bd)}
 .act.restore:hover{color:var(--good);border-color:var(--good-bd)}
@@ -547,7 +552,8 @@ tr.pin-end td{border-bottom:2px solid var(--cool-bd)}
         border-top:1px solid var(--line);display:grid;gap:6px}
 #pane>table,#pane>.empty{animation:fadein .22s ease-out}
 @keyframes fadein{from{opacity:0}}
-footer{margin-top:22px;font-size:11.5px;color:var(--ink-3);display:flex;gap:14px;flex-wrap:wrap}
+footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3);
+       display:flex;gap:14px;flex-wrap:wrap}
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation:none!important;transition:none!important}
 }
@@ -592,7 +598,7 @@ footer{margin-top:22px;font-size:11.5px;color:var(--ink-3);display:flex;gap:14px
   /* HTML5 drag-and-drop does not exist on touch; hide the handles rather
      than advertise a gesture that cannot work. Skip buttons stay. */
   th.gripcol,td.gripcol{display:none}
-  .act{padding:9px 14px}
+  .act{padding:9px 14px;margin:-10px 0}
   /* The scroll-reveal scrollbar shows nothing before the first scroll. On
      touch the History table would hide 3/4 of its columns with zero
      affordance, so the bar stays visible. */
