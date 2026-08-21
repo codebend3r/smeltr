@@ -58,6 +58,148 @@ _ov_lock = threading.Lock()
 _state_cache = {"at": 0.0, "payload": None}
 
 
+# Per-folder transfer telemetry across snapshots: last seen size, when it was
+# seen, and when it last GREW. Lets the payload report a rate and call a
+# non-growing .partial stalled instead of rendering it as live progress.
+_xfer_track: dict = {}
+
+
+def _transfers() -> list:
+    """In-flight pushes back to the library, observed through the SMB mount.
+
+    .ssh-xfer.sh stages every push as "<name>.partial" in the destination
+    folder and renames it only on a byte-count match, so a growing .partial IS
+    the transfer. The destination folder is resolved like .sync-to-library.sh
+    resolves it -- exactly one <root>/<bucket>/<folder> match across all
+    library roots -- never guessed from the title's first letter (the "#"
+    bucket and article-sorted titles break that guess). An abandoned .partial
+    from a crashed sync must render as stalled, never as a live transfer.
+    Pure observation -- nothing here steers the sync.
+    """
+    rows = []
+    now = time.monotonic()
+    seen = set()
+    for folder in core.staged_folders():
+        stage = os.path.join(core.X9, folder)
+        try:
+            names = [n for n in os.listdir(stage)
+                     if n.endswith(".mkv") and "2160p hevc" in n.lower()
+                     and not n.startswith("._")]
+        except OSError:
+            continue
+        # Two finished outputs in one folder is a state record.py refuses to
+        # record; refuse to guess which of them is travelling.
+        if len(names) != 1:
+            continue
+        name = names[0]
+        try:
+            total = os.path.getsize(os.path.join(stage, name))
+        except OSError:
+            continue
+        dests = []
+        for root in core.LIBRARY_ROOTS:
+            try:
+                buckets = [e.path for e in os.scandir(root) if e.is_dir()]
+            except OSError:
+                continue
+            for b in buckets:
+                d = os.path.join(b, folder)
+                if os.path.isdir(d):
+                    dests.append((root, d))
+        if len(dests) != 1:
+            continue
+        root, dest = dests[0]
+        part = os.path.join(dest, name + ".partial")
+        try:
+            done = os.path.getsize(part)
+        except OSError:
+            continue
+        seen.add(folder)
+        rec = _xfer_track.get(folder)
+        rate = None
+        if rec is None:
+            rec = {"done": done, "t": now, "grew": now}
+            _xfer_track[folder] = rec
+        elif done > rec["done"]:
+            dt = now - rec["t"]
+            if dt > 0:
+                rate = (done - rec["done"]) / dt
+            rec.update(done=done, t=now, grew=now)
+        elif done < rec["done"]:
+            # A smaller partial is a NEW attempt; restart tracking.
+            rec.update(done=done, t=now, grew=now)
+        try:
+            fresh_mtime = (time.time() - os.path.getmtime(part)) < 120
+        except OSError:
+            fresh_mtime = False
+        stalled = (now - rec["grew"] > 120) and not fresh_mtime
+        if total <= 0 or done > total:
+            # done > total means the partial is from a DIFFERENT (older)
+            # output than the one staged now -- a stale leftover, not progress.
+            stalled = True
+        pct = (round(done / total * 100, 1)
+               if not stalled and total > 0 else None)
+        rows.append({
+            "title": folder,
+            "nas": core.volume_name(root),
+            "src_dir": dest,
+            "done_bytes": done,
+            "total_bytes": total,
+            "pct": pct,
+            "rate_bps": round(rate) if rate else None,
+            "stalled": stalled,
+        })
+    for k in list(_xfer_track):
+        if k not in seen:
+            del _xfer_track[k]
+    return rows
+
+
+def _arrivals() -> dict:
+    """Staged folders whose source is still a growing .partial from the
+    replenisher -- on disk but not yet encodable. Keyed by folder, lowercased.
+    Without this a half-arrived pull renders as "staged", which overstates
+    what the encoder could actually start right now.
+    """
+    out = {}
+    for folder in core.staged_folders():
+        stage = os.path.join(core.X9, folder)
+        try:
+            names = [n for n in os.listdir(stage) if not n.startswith("._")]
+        except OSError:
+            continue
+        partials = [n for n in names if n.endswith(".partial")]
+        full = [n for n in names if n.endswith((".mkv", ".mp4", ".m2ts"))]
+        if partials and not full:
+            try:
+                done = os.path.getsize(os.path.join(stage, partials[0]))
+            except OSError:
+                continue
+            out[folder.lower()] = done
+    return out
+
+
+def _src_dirs() -> dict:
+    """Folder basename (lowercased) -> library directory of the original.
+
+    Read from the bitrate index, the same source queue() ranks from. A basename
+    that maps to two distinct directories maps to None: the cell must show an
+    honest dash, never one of two possible paths.
+    """
+    dirs: dict = {}
+    for rec in core.load_index():
+        path = rec.get("path", "")
+        if not path or "2160p hevc" in os.path.basename(path).lower():
+            continue
+        d = os.path.dirname(path)
+        key = os.path.basename(d).lower()
+        if key in dirs and dirs[key] != d:
+            dirs[key] = None
+        else:
+            dirs[key] = d
+    return dirs
+
+
 def build_state() -> dict:
     """Snapshot of everything the UI renders, cached briefly.
 
@@ -83,11 +225,18 @@ def build_state() -> dict:
         hist = core.ledger()
         live = core.live_encodes()
         q = core.queue_cached(live=live, hist=hist)
+        # Copy rows before annotating: queue_cached hands back shared cached
+        # dicts, and these decorations are a dashboard concern only.
+        sd = _src_dirs()
+        arr = _arrivals()
+        q = [dict(r, src_dir=sd.get(r["title"].lower()),
+                  arriving_bytes=arr.get(r["title"].lower())) for r in q]
         payload = {
             "summary": core.summary(hist=hist, q=q),
             "live": live,
             "ledger": hist,
             "queue": q,
+            "transfers": _transfers(),
         }
         with _state_lock:
             # Stamp AFTER the build. Stamping before meant a slow cold build was
@@ -341,7 +490,8 @@ _PAGE = r"""<!doctype html>
   --r:10px;
   /* Utility voice for machine-facing text: status chips, tagline, footer.
      Data cells stay proportional + tabular-nums — tnum aligns digits without
-     monospace's width penalty, and reads better at 13px. */
+     monospace's width penalty, and reads better at 13px. Exception: the
+     queue's Src Mb/s / Src size / Src folder columns are mono by request. */
   --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
   color-scheme:dark;
   --bg:#08090b; --panel:#0f1116; --panel-2:#13161c; --line:#1e232c;
@@ -512,6 +662,19 @@ tbody tr:hover td{background:var(--row-hover)}
 td.n,th.n{text-align:right}
 .title-cell{white-space:normal;min-width:230px}
 .muted{color:var(--ink-3)}
+td.mono{font-family:var(--mono);font-size:12.5px}
+td.src-dir{font-family:var(--mono);font-size:11.5px;color:var(--ink-2)}
+/* th uppercases everything, which would turn Mb/s into MB/S -- an 8x unit
+   lie on the one column whose unit confusion already corrupted the old state
+   file. Headers carrying a unit keep their own case. */
+th.unit{text-transform:none}
+.mark.xfer{color:var(--warn);border-color:var(--warn-bd)}
+.mark.stall{color:var(--bad);border-color:var(--bad-bd)}
+.rowxfer td{background:var(--row-hover)}
+.minibar{display:inline-block;vertical-align:middle;margin-left:8px;width:84px;height:4px;
+         border-radius:99px;background:var(--bar-bg);overflow:hidden}
+.minibar i{display:block;height:100%;background:var(--warn)}
+.xfer-pct{margin-left:6px;font-family:var(--mono);font-size:10.5px;color:var(--ink-2)}
 .mark{font-family:var(--mono);font-size:10.5px;padding:1.5px 6px;border-radius:5px;
       border:1px solid var(--line);color:var(--ink-3)}
 .mark.staged{color:var(--cool);border-color:var(--cool-bd)}
@@ -686,6 +849,20 @@ function nasMark(name){
   return el("span","mark "+cls,name);
 }
 
+/* Parent folder of the original, relative to the NAS volume; the title
+   folder itself is dropped (it repeats the Title cell). Ambiguous or
+   unknown paths come through as null and stay an honest em dash. */
+function srcDirTd(srcDir,title){
+  var td=el("td","src-dir","—");
+  if(srcDir){
+    var rel=srcDir.replace(/^\/Volumes\/[^/]+\//,"");
+    var tail="/"+title;
+    if(rel.slice(-tail.length)===tail) rel=rel.slice(0,-tail.length);
+    td.textContent=rel; td.title=srcDir;
+  }
+  return td;
+}
+
 var noticeTimer=null;
 function notice(msg){
   var n=document.getElementById("uiNotice");
@@ -778,7 +955,13 @@ function renderStats(s){
 
 function liveChips(e){
   var top=el("div","live-top");
-  top.appendChild(el("div","live-title",e.title));
+  /* e.title can arrive as a full staging path; show only the movie's name.
+     The folder name is the identity everywhere else, so prefer it, falling
+     back to the last path segment. Full value stays in the tooltip. */
+  var name=String(e.folder||e.title).split("/").pop();
+  var t=el("div","live-title",name);
+  if(name!==e.title) t.title=e.title;
+  top.appendChild(t);
   if(e.crf!=null) top.appendChild(el("span","chip","CRF "+e.crf));
   if(e.geometry) top.appendChild(el("span","chip",
     (e.source_geometry && e.source_geometry!==e.geometry)
@@ -889,26 +1072,30 @@ function table(cols, rows, build){
    the order the pipeline picks from) and any non-encoding row can be
    skipped. Skipped rows keep their place at the BOTTOM, greyed, with a
    restore button -- a skip that vanished would read as "finished". */
-function renderQueue(q, s, live){
+function renderQueue(q, s, live, xfers, hist){
   var liveCrf={};
   (live||[]).forEach(function(e){
     if(e.crf!=null) liveCrf[(e.folder||e.title).toLowerCase()]=e.crf;
   });
   var pane=document.getElementById("pane"); pane.replaceChildren();
-  if(!q.length){
-    pane.appendChild(el("div","empty", (s && s.library_complete===false)
-      ? "Library not fully mounted — "+(s.roots_offline||[]).join(", ")+
-        " offline. This list is PARTIAL, not empty."
-      : "Nothing left above the stop threshold."));
+  /* The offline warning renders even when transfers keep the table
+     non-empty: an unmounted NAS must never look like a finished job. */
+  if(s && s.library_complete===false)
+    pane.appendChild(el("div","empty",
+      "Library not fully mounted — "+(s.roots_offline||[]).join(", ")+
+      " offline. This list is PARTIAL, not empty."));
+  if(!q.length && !(xfers&&xfers.length)){
+    if(!(s && s.library_complete===false))
+      pane.appendChild(el("div","empty","Nothing left above the stop threshold."));
     return; }
   var pinned=q.filter(function(r){ return r.pinned&&!r.skipped; }).length;
   var active=q.filter(function(r){ return !r.skipped; }).length;
   var ranks=[], rn=0;
   q.forEach(function(r,idx){ ranks[idx]=r.skipped?null:++rn; });
   pane.appendChild(table(
-    [{label:"",cls:"gripcol"},{label:"Rank",n:true},{label:"Src Mb/s",n:true},
+    [{label:"",cls:"gripcol"},{label:"Rank",n:true},{label:"SRC Mb/s",n:true,cls:"unit"},
      {label:"Src size",n:true},{label:"CRF",n:true},
-     {label:"Title",cls:"title-cell"},{label:"NAS"},
+     {label:"Title",cls:"title-cell"},{label:"NAS"},{label:"Src folder"},
      {label:"Status"},{label:""}],
     q, function(r,i){
       var tr=el("tr", r.encoding?"rowenc":(r.skipped?"rowskip":null));
@@ -921,8 +1108,8 @@ function renderQueue(q, s, live){
       }
       tr.appendChild(grip);
       tr.appendChild(el("td","n muted", ranks[i]==null?"—":String(ranks[i])));
-      tr.appendChild(el("td","n",r.mbps.toFixed(1)));
-      tr.appendChild(el("td","n",gib(r.bytes)));
+      tr.appendChild(el("td","n mono",r.mbps.toFixed(1)));
+      tr.appendChild(el("td","n mono",gib(r.bytes)));
       /* CRF: the encoding row shows the encoder's ACTUAL value (the ladder
          may have stepped it down); everything else shows the planned start,
          muted, because every encode begins at 16. Skipped rows will not
@@ -939,11 +1126,26 @@ function renderQueue(q, s, live){
       tr.appendChild(el("td","title-cell",r.title));
       var nasTd=el("td"); nasTd.appendChild(nasMark(r.location));
       tr.appendChild(nasTd);
+      tr.appendChild(srcDirTd(r.src_dir,r.title));
       var td=el("td");
       if(r.skipped) td.appendChild(el("span","mark skip","skipped"));
       else{
         if(r.pinned) td.appendChild(el("span","mark pin","pinned"));
         if(r.encoding) td.appendChild(el("span","mark enc","encoding"));
+        else if(r.arriving_bytes!=null){
+          /* The replenisher is still pulling this one onto the staging
+             drive -- present as a folder, not yet encodable. Denominator is
+             the row's own library original: the same file being copied. */
+          td.appendChild(el("span","mark xfer","arriving"));
+          if(r.bytes){
+            var apc=Math.max(0,Math.min(100,r.arriving_bytes/r.bytes*100));
+            var abar=el("span","minibar"), afill=el("i");
+            afill.style.width=apc+"%"; abar.appendChild(afill);
+            td.appendChild(abar);
+            td.appendChild(el("span","xfer-pct",
+              gib(r.arriving_bytes)+" of "+gib(r.bytes)+" pulled"));
+          }
+        }
         else if(r.staged) td.appendChild(el("span","mark staged","staged"));
         else td.appendChild(el("span","mark","library"));
       }
@@ -968,7 +1170,54 @@ function renderQueue(q, s, live){
         tr.classList.add("pin-end");
       return tr;
     }));
-  wireDrag(pane.querySelector("table"), q);
+  /* A recorded title leaves the queue before its file has finished travelling
+     back to the NAS. While the .partial grows in the library folder the title
+     gets a synthetic, non-draggable row up top: "transferring" plus a small
+     bar. Src size and CRF come from the row just written to the ledger; the
+     bitrate column is not on a ledger row, so it stays an honest em dash. */
+  var tbl=pane.querySelector("table");
+  (xfers||[]).forEach(function(t,ix){
+    var led=null;
+    (hist||[]).forEach(function(r){ if(r.title===t.title) led=r; });
+    var tr=el("tr","rowxfer");
+    tr.appendChild(el("td","gripcol"));
+    tr.appendChild(el("td","n muted","—"));
+    tr.appendChild(el("td","n muted","—"));
+    /* Ledger sizes migrated by hand carry exact:false; show them with the
+       same "~" the History tab uses rather than as a measurement. */
+    tr.appendChild(el("td","n mono",
+      led&&led.source_bytes!=null
+        ?(led.exact===false?"~":"")+gib(led.source_bytes):"—"));
+    var crfTd=el("td","n muted", led&&led.crf!=null?String(led.crf):"—");
+    crfTd.title="CRF this encode was recorded at";
+    tr.appendChild(crfTd);
+    tr.appendChild(el("td","title-cell",t.title));
+    var nasTd=el("td"); nasTd.appendChild(nasMark(t.nas)); tr.appendChild(nasTd);
+    tr.appendChild(srcDirTd(t.src_dir,t.title));
+    var st=el("td");
+    var stall=!!t.stalled;
+    st.appendChild(el("span","mark "+(stall?"stall":"xfer"),
+                      stall?"stalled":"transferring"));
+    if(!stall && t.pct!=null){
+      var bar=el("span","minibar"), fill=el("i");
+      fill.style.width=Math.max(0,Math.min(100,t.pct))+"%";
+      bar.appendChild(fill); st.appendChild(bar);
+    }
+    /* Both operands carry their unit and the sentence names the file being
+       moved -- three sizes share this row and only labels keep them apart. */
+    var moved=gib(t.done_bytes)+" of "+gib(t.total_bytes)+" copied to "+t.nas;
+    var txt = stall ? "no progress — "+moved
+            : t.pct!=null ? pct(t.pct)+" · "+moved : moved;
+    if(!stall && t.rate_bps>0){
+      txt+=" · "+(t.rate_bps/1e6).toFixed(0)+" MB/s · "+
+           dur((t.total_bytes-t.done_bytes)/t.rate_bps)+" left";
+    }
+    st.appendChild(el("span","xfer-pct",txt));
+    tr.appendChild(st);
+    tr.appendChild(el("td"));
+    tbl.tBodies[0].insertBefore(tr, tbl.tBodies[0].rows[ix]||null);
+  });
+  wireDrag(tbl, q);
 }
 
 /* Drag semantics: dropping a row at position K pins the first K+1 visible
@@ -1041,9 +1290,14 @@ function wireDrag(tbl,q){
   });
 }
 
-function renderLedger(rows){
+function renderLedger(rows, xfers){
   var pane=document.getElementById("pane"); pane.replaceChildren();
   if(!rows.length){ pane.appendChild(el("div","empty","No encodes recorded yet.")); return; }
+  /* "Moved to" is written at record time -- a promise, not an observation.
+     While the file is still travelling, show the observed transfer instead
+     of presenting the promise as done. */
+  var moving={};
+  (xfers||[]).forEach(function(t){ moving[t.title]=t; });
   var ordered=rows.slice().reverse();
   pane.appendChild(table(
     [{label:"#",n:true},{label:"Title",cls:"title-cell"},{label:"Original",n:true},{label:"Output",n:true},
@@ -1069,6 +1323,20 @@ function renderLedger(rows){
         var rest=r.dest.slice(vol.length);
         if(rest) destTd.appendChild(el("span","muted",rest));
       }else destTd.appendChild(el("span","muted","—"));
+      var mv=moving[r.title];
+      if(mv){
+        var stall=!!mv.stalled;
+        destTd.appendChild(el("span","mark "+(stall?"stall":"xfer"),
+                              stall?"stalled":"transferring"));
+        if(!stall && mv.pct!=null){
+          var bar=el("span","minibar"), fill=el("i");
+          fill.style.width=Math.max(0,Math.min(100,mv.pct))+"%";
+          bar.appendChild(fill); destTd.appendChild(bar);
+        }
+        destTd.appendChild(el("span","xfer-pct",
+          (stall?"no progress — ":mv.pct!=null?pct(mv.pct)+" · ":"")+
+          gib(mv.done_bytes)+" of "+gib(mv.total_bytes)+" copied"));
+      }
       tr.appendChild(destTd);
       tr.appendChild(el("td","muted",RECORD[r.provenance]||r.provenance||"—"));
       tr.appendChild(el("td","muted",(r.finished_at||"—").slice(0,10)));
@@ -1090,13 +1358,20 @@ function paint(s){
   renderAlert(s.summary);
   renderStats(s.summary);
   renderLive(s.live, s.summary);
+  /* The key must cover EVERYTHING the pane draws — both tabs render live
+     transfer progress, so transfers belong in BOTH keys. They were once
+     omitted, and the transferring row painted a single still frame (at
+     ~0 bytes) that never advanced for the whole 45-minute push. */
+  var xk=(s.transfers||[]).map(function(t){ return [t.title,t.done_bytes,t.stalled]; });
   var key=tab+"|"+JSON.stringify(tab==="queue"
-    ? [s.queue, s.live.map(function(e){ return [e.folder, e.crf]; })]
-    : s.ledger);
+    ? [s.queue, s.live.map(function(e){ return [e.folder, e.crf]; }),
+       xk, s.summary.library_complete, s.summary.roots_offline]
+    : [s.ledger, xk]);
   if(last.key!==key){
     if(tab==="queue"&&drag){ last.pending=true; }
     else{ last.key=key;
-      (tab==="queue"?renderQueue(s.queue, s.summary, s.live):renderLedger(s.ledger)); }
+      (tab==="queue"?renderQueue(s.queue, s.summary, s.live, s.transfers, s.ledger)
+                    :renderLedger(s.ledger, s.transfers)); }
   }
   var nq=s.summary.queue_count!=null?s.summary.queue_count:s.queue.length;
   document.getElementById("tabQueue").textContent="Queue ("+nq+
