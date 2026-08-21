@@ -70,6 +70,19 @@ before authorising a deletion). Use the data critic after changing anything the
 dashboard displays — it has caught mislabelled units, totals computed over
 mismatched row sets, and a verdict that reassured on an implausible result.
 
+## Releasing and pull requests
+
+`npm version patch|minor|major` is the entire release: it bumps `package.json`,
+commits as `SMLTR: Release vX.Y.Z`, creates the annotated tag, and pushes the
+commit and tag to `origin`. No build, no publish, no deploy — the tag is the
+release. `package.json`, `.npmrc`, and `.github/` are outside the decision path
+and are safe to edit while the driver runs.
+
+Commit messages follow the `smeltr-commit-format` skill. PR titles and bodies
+follow `smeltr-pr-format` — five required sections, and `## What changed` copies
+the commit bullets verbatim. `.github/pull_request_template.md` is that same
+structure mechanically; if one changes, change the other.
+
 ## Non-negotiables in the domain
 
 - **Every audio and subtitle track is preserved.** `--all-audio --aencoder copy

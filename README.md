@@ -52,6 +52,9 @@ skills/queue-report/           this dashboard's own skill
 skills/4k-hevc-reencoding/     the CRF ladder and the mandatory track passthrough
 skills/4k-hevc-library-sync/   verified sync back to the NAS
 skills/4k-hevc-preview-encode/ 5-minute sample before committing to a long run
+skills/smeltr-commit-format/   `SMLTR:` commit subjects and bullet bodies
+skills/smeltr-pr-format/       the five required pull request sections
+skills/smeltr-release/         `npm version` -> tag -> push
 agents/smeltr-code-critic.md   ruthless code reviewer
 agents/smeltr-data-critic.md   ruthless reviewer of the numbers a human reads
 ```
@@ -70,6 +73,24 @@ deletion. Between them they caught, among others: an unmounted NAS rendering
 identically to a finished job, track counts read from the source scan block
 (so track loss could never be detected), a vacuous ffprobe parity check that
 passed on zero evidence, and a ledger write with no liveness gate.
+
+## Releasing
+
+```bash
+npm version patch     # 0.1.0 -> 0.1.1
+```
+
+That one command bumps `package.json`, commits as `SMLTR: Release v0.1.1`, creates
+the annotated tag `v0.1.1`, and pushes the commit and the tag to `origin`. There is
+no build, no publish, and no deploy — **the tag is the release**.
+
+`package.json` exists only to drive that command; smeltr itself has no npm
+dependencies and is `"private": true` so it can never be published. The version
+lives in `package.json` and the tag and nowhere else — no Python module carries a
+`__version__`. A `preversion` hook byte-compiles every module first, so a release
+cannot be tagged over a syntax error in the decision path.
+
+See `skills/smeltr-release/SKILL.md`, including how to undo a bump.
 
 ## Design notes
 

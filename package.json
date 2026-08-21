@@ -1,0 +1,15 @@
+{
+  "name": "smeltr",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local dashboard and ledger for a long-running 4K HEVC re-encode job",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/codebend3r/smeltr.git"
+  },
+  "scripts": {
+    "preversion": "python3 -m compileall -q core.py verdict.py next_title.py record.py server.py report.py",
+    "postversion": "git push --follow-tags origin HEAD"
+  }
+}
