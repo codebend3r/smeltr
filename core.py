@@ -39,6 +39,7 @@ X9 = os.environ.get("SMELTR_X9", "/Volumes/Crucial X9/4K Movies")
 LIBRARY_ROOTS = [
     "/Volumes/Vhagar/Media/4K Movies",
     "/Volumes/Vermithor/Media/4K Movies",
+    "/Volumes/Vermithor/Media/4K Family Movies",
 ]
 INDEX_NAME = ".bitrates-4k-combined.json"
 
@@ -420,16 +421,28 @@ def live_encodes() -> list[dict]:
                 logs.append(parse_log(os.path.join(X9, name)))
     except OSError:
         pass
-    by_output = {lg["output_name"]: lg for lg in logs if lg.get("output_name")}
+    # Key logs and processes by BASENAME. The autopilot passes -i/-o as full
+    # paths, and a raw path here made _find_in_staging refuse (it rejects
+    # anything containing a separator), which nulled the live sizes and
+    # projections and left "folder" as a whole path -- so the queue's
+    # encoding badge and the skip guard's title match both missed.
+    by_output = {os.path.basename(lg["output_name"]): lg
+                 for lg in logs if lg.get("output_name")}
 
     hist = history_ratios(normalised=True)
     result = []
     for proc in _ps_handbrake():
         if not _alive(proc["pid"]):
             continue
-        lg = by_output.get(proc["output_name"], {})
-        src = _find_in_staging(proc["source_name"])
-        out = _find_in_staging(proc["output_name"])
+        src_name = os.path.basename(proc["source_name"])
+        out_name = os.path.basename(proc["output_name"])
+        lg = by_output.get(out_name, {})
+        src = (proc["source_name"] if os.sep in proc["source_name"]
+               and os.path.isfile(proc["source_name"])
+               else _find_in_staging(src_name))
+        out = (proc["output_name"] if os.sep in proc["output_name"]
+               and os.path.isfile(proc["output_name"])
+               else _find_in_staging(out_name))
         src_b, out_b = _size(src), _size(out)
 
         pct = lg.get("pct")
@@ -445,7 +458,7 @@ def live_encodes() -> list[dict]:
         norm = ratio * cf if ratio is not None else None
         code, note = _verdict(ratio, hist, norm, is_downscale(src_geom, out_geom))
 
-        title = re.sub(r"\s+(Remux-)?2160p.*$", "", proc["source_name"]).strip()
+        title = re.sub(r"\s+(Remux-)?2160p.*$", "", src_name).strip()
         result.append({
             "title": title,
             "folder": os.path.basename(os.path.dirname(src)) if src else title,
@@ -818,7 +831,10 @@ def summary(hist: Optional[list] = None, q: Optional[list] = None) -> dict:
         "staged_unencoded": len(staged_unencoded),
         "staged_unencoded_bytes": sum(r["source_bytes"] or 0 for r in staged_unencoded),
         "staged_in_queue": len([r for r in q_active if r["staged"]]),
-        "roots_offline": [volume_name(r) for r in offline],
+        # Label identifies the ROOT, not just the volume: two roots share
+        # Vermithor, and "Vermithor, Vermithor offline" names neither.
+        "roots_offline": [f"{volume_name(r)}/{os.path.basename(r)}"
+                          for r in offline],
         "library_complete": complete,
         "overrides_corrupt": bool(load_overrides().get("corrupt")),
         "stop_mbps": STOP_MBPS,
