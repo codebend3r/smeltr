@@ -42,6 +42,35 @@ Paths resolve from the script's own location, so the checkout can live anywhere.
 `SMELTR_DIR` overrides where the ledger and runtime files are kept, `SMELTR_X9`
 overrides the staging drive.
 
+## Skills and agents
+
+The Claude Code skills and review agents for this job live in the repo too, and
+are symlinked into `~/.claude` so Claude Code still finds them:
+
+```
+skills/queue-report/           this dashboard's own skill
+skills/4k-hevc-reencoding/     the CRF ladder and the mandatory track passthrough
+skills/4k-hevc-library-sync/   verified sync back to the NAS
+skills/4k-hevc-preview-encode/ 5-minute sample before committing to a long run
+agents/smeltr-code-critic.md   ruthless code reviewer
+agents/smeltr-data-critic.md   ruthless reviewer of the numbers a human reads
+```
+
+To wire them up on a fresh machine:
+
+```bash
+ln -s "$PWD/skills/<name>" ~/.claude/skills/<name>
+ln -s "$PWD/agents/<name>.md" ~/.claude/agents/<name>.md
+```
+
+The two critics exist because this pipeline **deletes irreplaceable originals**.
+They are deliberately adversarial and are pointed at different targets — one at
+the code, one at the numbers a person actually reads before authorising a
+deletion. Between them they caught, among others: an unmounted NAS rendering
+identically to a finished job, track counts read from the source scan block
+(so track loss could never be detected), a vacuous ffprobe parity check that
+passed on zero evidence, and a ledger write with no liveness gate.
+
 ## Design notes
 
 **The ledger is written before the sync, never after.** Once the original is
