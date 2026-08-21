@@ -73,6 +73,8 @@ case "${1:-report}" in
   url)    cat "$DIR/url" 2>/dev/null || { echo "not running" >&2; exit 1; } ;;
   report) shift 2>/dev/null; running || start >/dev/null 2>&1; exec "$PY" "$DIR/report.py" "$@" ;;
   record) shift; exec "$PY" "$DIR/record.py" "$@" ;;
+  verdict) shift; exec "$PY" "$DIR/verdict.py" "$@" ;;
+  next) shift; exec "$PY" "$DIR/next_title.py" "$@" ;;
   open)   running || start >/dev/null 2>&1; exec open "$(cat "$DIR/url")" ;;
   *)      echo "usage: smeltr {start|stop|restart|status|url|open|report [...]|record <folder> [...]}" >&2; exit 2 ;;
 esac
