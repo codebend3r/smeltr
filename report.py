@@ -221,13 +221,17 @@ def section_live(live) -> str:
 def section_queue(q, limit) -> str:
     shown = q if limit in (None, 0) else q[:limit]
     rows = []
-    for i, r in enumerate(shown, 1):
+    rank_n = 0
+    for r in shown:
         status = "ENCODING" if r["encoding"] else ("staged" if r["staged"] else "library")
         if r.get("skipped"):
             status = "SKIPPED"
-        elif r.get("pinned"):
-            status = "pinned · " + status
-        rank = "—" if r.get("skipped") else i
+            rank = "—"
+        else:
+            if r.get("pinned"):
+                status = "pinned · " + status
+            rank_n += 1
+            rank = rank_n
         rows.append([rank, f"{r['mbps']:.1f}", gib(r["bytes"]), r["title"],
                      r["location"], status])
     # "MB/S" reads as megabytes and is 8x wrong; and neither the bitrate nor the
@@ -261,6 +265,7 @@ def section_ledger(hist, limit) -> str:
             "—" if not r.get("output_bytes") else approx + gib(r["output_bytes"]),
             "—" if not r.get("saved_bytes") else approx + gib(r["saved_bytes"]),
             "—" if r.get("saved_pct") is None else f"{r['saved_pct']:.1f}%",
+            "—" if r.get("crf") is None else f"{r['crf']:g}",
             "—" if r.get("audio") is None else f"{r['audio']}a/{r['subs']}s",
             r.get("dest") or "—",
             RECORD_LABEL.get(r.get("provenance"), r.get("provenance") or "—"),
@@ -271,9 +276,9 @@ def section_ledger(hist, limit) -> str:
 
     # A column that is "—" in every row costs ~12 terminal columns to say
     # nothing, and width is what makes these tables wrap when pasted.
-    heads = ["#", "TITLE", "ORIGINAL", "OUTPUT", "SAVED", "SHRINK", "TRACKS",
-             "MOVED TO", "SOURCE OF RECORD", "FINISHED"]
-    aligns = ["r", "l", "r", "r", "r", "r", "l", "l", "l", "l"]
+    heads = ["#", "TITLE", "ORIGINAL", "OUTPUT", "SAVED", "SHRINK", "CRF",
+             "TRACKS", "MOVED TO", "SOURCE OF RECORD", "FINISHED"]
+    aligns = ["r", "l", "r", "r", "r", "r", "r", "l", "l", "l", "l"]
     if all(r[-1] == "—" for r in rows):
         heads, aligns = heads[:-1], aligns[:-1]
         rows = [r[:-1] for r in rows]

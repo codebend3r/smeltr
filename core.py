@@ -619,12 +619,12 @@ def queue(min_mbps: float = STOP_MBPS, live: Optional[list] = None,
         low_t = r["title"].lower()
         r["skipped"] = low_t in skips
         r["pinned"] = (not r["skipped"]) and low_t in pri
-    # Skipped rows sink to the bottom but are NOT dropped: an invisible skip
-    # cannot be un-skipped, and a row that silently vanishes reads as
-    # "finished". Pinned rows come first in the hand-chosen order; everything
-    # else keeps the bitrate ranking.
-    rows.sort(key=lambda r: (r["skipped"],
-                             pri.get(r["title"].lower(), len(pri)),
+    # Skipped rows stay IN PLACE in the bitrate ranking -- the views grey
+    # them out as disabled rows rather than sinking or dropping them, so a
+    # skip can never read as a vanished (or finished) title. Pinned rows come
+    # first in the hand-chosen order; everything else keeps the bitrate
+    # ranking. (A skip clears any pin, so pinned rows are never skipped.)
+    rows.sort(key=lambda r: (pri.get(r["title"].lower(), len(pri)),
                              -r["mbps"]))
     return rows
 

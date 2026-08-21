@@ -386,7 +386,7 @@ body{
   background:var(--bg); color:var(--ink);
   font:14px/1.5 ui-sans-serif,-apple-system,"SF Pro Text",Inter,system-ui,sans-serif;
   -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
-  font-variant-numeric:tabular-nums; padding:28px 24px 64px; max-width:1240px; margin:0 auto;
+  font-variant-numeric:tabular-nums; padding:28px 24px 64px; max-width:1680px; margin:0 auto;
 }
 .num,td.n,th.n{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
 header{display:flex;align-items:baseline;gap:14px;margin-bottom:22px;flex-wrap:wrap}
@@ -481,20 +481,22 @@ body:not(.booted) #liveWrap .card{animation-delay:.12s}
 .tab:focus-visible{outline:2px solid var(--cool);outline-offset:2px}
 
 .wrap{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:var(--panel)}
-/* macOS "always show scroll bars" paints a full-contrast bar down the panel
-   permanently. Reserve the gutter but keep the bar invisible until the pointer
-   is over the table, so the scrollbar behaves like an overlay one either way.
-   Track stays transparent so the gutter reads as part of the panel. */
+/* Overlay-style scrollbar: visible only WHILE scrolling, like macOS. Styling
+   ::-webkit-scrollbar turns off native overlay behaviour, so the gutter is
+   reserved permanently (layout stays stable) and the thumb is painted only
+   while the pane carries .scrolling -- a class the scroll listener at the
+   bottom of the page holds for a moment after the last scroll event.
+   Hover-reveal was tried first and read as a permanently visible scrollbar,
+   because the pointer is over the table whenever anyone is looking at it. */
 .scroll{max-height:60vh;overflow:auto;overflow-x:auto;
         scrollbar-width:thin;scrollbar-color:transparent transparent}
-.scroll:hover,.scroll:focus-within{scrollbar-color:var(--thumb) transparent}
+.scroll.scrolling{scrollbar-color:var(--thumb) transparent}
 .scroll::-webkit-scrollbar{width:11px;height:11px}
 .scroll::-webkit-scrollbar-track,.scroll::-webkit-scrollbar-corner{background:transparent}
 .scroll::-webkit-scrollbar-thumb{background:transparent;border-radius:99px;
   border:3px solid transparent;background-clip:content-box}
-.scroll:hover::-webkit-scrollbar-thumb,.scroll:focus-within::-webkit-scrollbar-thumb{
-  background:var(--thumb);background-clip:content-box}
-.scroll::-webkit-scrollbar-thumb:hover{background:var(--thumb-hover);background-clip:content-box}
+.scroll.scrolling::-webkit-scrollbar-thumb{background:var(--thumb);background-clip:content-box}
+.scroll.scrolling::-webkit-scrollbar-thumb:hover{background:var(--thumb-hover);background-clip:content-box}
 table{border-collapse:separate;border-spacing:0;width:100%;font-size:13px}
 th,td{padding:8px 12px;text-align:left;white-space:nowrap}
 th{position:sticky;top:0;z-index:1;background:var(--panel-2);color:var(--ink-3);
@@ -511,9 +513,17 @@ td.n,th.n{text-align:right}
 .mark.enc{color:var(--hot-soft);border-color:var(--hot-bd)}
 .mark.pin{color:var(--cool);border-color:var(--cool-bd)}
 .mark.skip{color:var(--ink-2);border-style:dashed}
+/* Categorical tint per NAS, stable per name. Known roots get fixed hues;
+   an unknown volume falls back to a name hash so it still colours stably. */
+.mark.nas-cool{color:var(--cool);border-color:var(--cool-bd)}
+.mark.nas-good{color:var(--good);border-color:var(--good-bd)}
+.mark.nas-warn{color:var(--warn);border-color:var(--warn-bd)}
+.mark.nas-hot{color:var(--hot-soft);border-color:var(--hot-bd)}
 .mark+.mark{margin-left:6px}
 .rowenc td{background:var(--row-enc)}
-.rowskip td,.rowskip td.title-cell{color:var(--ink-3)}
+.rowskip td{opacity:.45}
+.rowskip td:last-child{opacity:1}
+.rowskip .title-cell{opacity:1;color:var(--ink-3);text-decoration:line-through}
 /* Queue control. The grip drags, the button skips; both write only the
    overrides file on the server, nothing else. */
 .grip{cursor:grab;color:var(--ink-3);user-select:none;-webkit-user-select:none;
@@ -583,8 +593,9 @@ footer{margin-top:22px;font-size:11.5px;color:var(--ink-3);display:flex;gap:14px
      than advertise a gesture that cannot work. Skip buttons stay. */
   th.gripcol,td.gripcol{display:none}
   .act{padding:9px 14px}
-  /* The hover-only scrollbar has no hover to wait for on touch. Without this
-     the History table hides 3/4 of its columns with zero affordance. */
+  /* The scroll-reveal scrollbar shows nothing before the first scroll. On
+     touch the History table would hide 3/4 of its columns with zero
+     affordance, so the bar stays visible. */
   .scroll{scrollbar-color:var(--thumb) transparent}
   .scroll::-webkit-scrollbar-thumb{background:var(--thumb);background-clip:content-box}
 }
@@ -638,9 +649,9 @@ var RECORD={live:"measured at finish","state-file":"hand-migrated",
 function gib(b){ if(b==null) return "—";
   return b>=TIB ? (b/TIB).toFixed(2)+" TiB" : (b/GIB).toFixed(2)+" GiB"; }
 function pct(v){ return v==null ? "—" : v.toFixed(1)+"%"; }
-/* Live encode progress keeps HandBrake's full precision; everything else on
-   the page stays at one decimal. */
-function pct3(v){ return v==null ? "—" : v.toFixed(3)+"%"; }
+/* Live encode progress at HandBrake's own precision -- two decimals. The log
+   never carries a third digit, so printing one was always a trailing zero. */
+function pctLive(v){ return v==null ? "—" : v.toFixed(2)+"%"; }
 function dur(s){ if(s==null) return "—";
   var h=Math.floor(s/3600), m=Math.floor(s%3600/60);
   return h ? h+"h "+String(m).padStart(2,"0")+"m" : m+"m"; }
@@ -656,6 +667,19 @@ function statCard(k,v,s,cls){
 /* The only two writes the page can make. Both name titles by exact match
    against the queue the server just sent; the response is a fresh state
    snapshot, painted immediately so the click lands without waiting for SSE. */
+var NAS_FIXED={vhagar:"nas-cool",vermithor:"nas-good"};
+var NAS_CLASSES=["nas-cool","nas-good","nas-warn","nas-hot"];
+function nasMark(name){
+  if(!name||name==="?") return el("span","muted",name||"—");
+  var cls=NAS_FIXED[name.toLowerCase()];
+  if(!cls){
+    var h=0;
+    for(var i=0;i<name.length;i++) h=(h*31+name.charCodeAt(i))>>>0;
+    cls=NAS_CLASSES[h%NAS_CLASSES.length];
+  }
+  return el("span","mark "+cls,name);
+}
+
 var noticeTimer=null;
 function notice(msg){
   var n=document.getElementById("uiNotice");
@@ -833,7 +857,7 @@ function renderLive(live, s){
     var top=liveChips(e); refs.top.replaceWith(top); refs.top=top;
     refs.fill.style.width=(e.pct||0)+"%";
     refs.bar.setAttribute("aria-valuenow", String(e.pct||0));
-    refs.pct.textContent=pct3(e.pct);
+    refs.pct.textContent=pctLive(e.pct);
     liveFields(e).forEach(function(p){
       var b=refs.kv[p[0]]; if(b) b.textContent=p[1];
     });
@@ -859,7 +883,11 @@ function table(cols, rows, build){
    the order the pipeline picks from) and any non-encoding row can be
    skipped. Skipped rows keep their place at the BOTTOM, greyed, with a
    restore button -- a skip that vanished would read as "finished". */
-function renderQueue(q, s){
+function renderQueue(q, s, live){
+  var liveCrf={};
+  (live||[]).forEach(function(e){
+    if(e.crf!=null) liveCrf[(e.folder||e.title).toLowerCase()]=e.crf;
+  });
   var pane=document.getElementById("pane"); pane.replaceChildren();
   if(!q.length){
     pane.appendChild(el("div","empty", (s && s.library_complete===false)
@@ -869,9 +897,12 @@ function renderQueue(q, s){
     return; }
   var pinned=q.filter(function(r){ return r.pinned&&!r.skipped; }).length;
   var active=q.filter(function(r){ return !r.skipped; }).length;
+  var ranks=[], rn=0;
+  q.forEach(function(r,idx){ ranks[idx]=r.skipped?null:++rn; });
   pane.appendChild(table(
     [{label:"",cls:"gripcol"},{label:"Rank",n:true},{label:"Src Mb/s",n:true},
-     {label:"Src size",n:true},{label:"Title",cls:"title-cell"},{label:"NAS"},
+     {label:"Src size",n:true},{label:"CRF",n:true},
+     {label:"Title",cls:"title-cell"},{label:"NAS"},
      {label:"Status"},{label:""}],
     q, function(r,i){
       var tr=el("tr", r.encoding?"rowenc":(r.skipped?"rowskip":null));
@@ -883,11 +914,25 @@ function renderQueue(q, s){
         tr.draggable=true;
       }
       tr.appendChild(grip);
-      tr.appendChild(el("td","n muted", r.skipped?"—":String(i+1)));
+      tr.appendChild(el("td","n muted", ranks[i]==null?"—":String(ranks[i])));
       tr.appendChild(el("td","n",r.mbps.toFixed(1)));
       tr.appendChild(el("td","n",gib(r.bytes)));
+      /* CRF: the encoding row shows the encoder's ACTUAL value (the ladder
+         may have stepped it down); everything else shows the planned start,
+         muted, because every encode begins at 16. Skipped rows will not
+         encode, so no number is claimed. */
+      var lc=liveCrf[r.title.toLowerCase()];
+      var crfTd;
+      if(r.skipped){ crfTd=el("td","n muted","—"); }
+      else if(r.encoding && lc!=null){ crfTd=el("td","n",String(lc)); }
+      else{
+        crfTd=el("td","n muted","16");
+        crfTd.title="Planned start — every encode begins at CRF 16; the ladder may step down";
+      }
+      tr.appendChild(crfTd);
       tr.appendChild(el("td","title-cell",r.title));
-      tr.appendChild(el("td","muted",r.location));
+      var nasTd=el("td"); nasTd.appendChild(nasMark(r.location));
+      tr.appendChild(nasTd);
       var td=el("td");
       if(r.skipped) td.appendChild(el("span","mark skip","skipped"));
       else{
@@ -913,7 +958,7 @@ function renderQueue(q, s){
         act.appendChild(b);
       }
       tr.appendChild(act);
-      if(r.pinned && !r.skipped && i===pinned-1 && pinned<active)
+      if(r.pinned && !r.skipped && ranks[i]===pinned && pinned<active)
         tr.classList.add("pin-end");
       return tr;
     }));
@@ -966,7 +1011,12 @@ function wireDrag(tbl,q){
     var ti=parseInt(tr.dataset.idx,10);
     if(!q[ti]||q[ti].skipped) return;
     var rect=tr.getBoundingClientRect();
-    var target=(ev.clientY>rect.top+rect.height/2) ? ti+1 : ti;
+    var after=ev.clientY>rect.top+rect.height/2;
+    /* Skipped rows sit inline in the table, so a q index is not an index
+       into the active sequence; count the active rows above the drop. */
+    var target=0;
+    for(var k=0;k<ti;k++) if(!q[k].skipped) target++;
+    if(after) target++;
     var order=q.filter(function(r){ return !r.skipped; })
                .map(function(r){ return r.title; });
     var from=order.indexOf(drag.title); if(from<0) return;
@@ -991,7 +1041,7 @@ function renderLedger(rows){
   var ordered=rows.slice().reverse();
   pane.appendChild(table(
     [{label:"#",n:true},{label:"Title",cls:"title-cell"},{label:"Original",n:true},{label:"Output",n:true},
-     {label:"Saved",n:true},{label:"Shrink",n:true},{label:"Tracks"},{label:"Moved to"},
+     {label:"Saved",n:true},{label:"Shrink",n:true},{label:"CRF",n:true},{label:"Tracks"},{label:"Moved to"},
      {label:"Source of record"},{label:"Finished"}],
     ordered, function(r,i){
       var tr=el("tr");
@@ -1002,9 +1052,18 @@ function renderLedger(rows){
       tr.appendChild(el("td","n",r.output_bytes?ap+gib(r.output_bytes):"—"));
       tr.appendChild(el("td","n",r.saved_bytes?ap+gib(r.saved_bytes):"—"));
       tr.appendChild(el("td","n",pct(r.saved_pct)));
+      tr.appendChild(el("td","n"+(r.crf==null?" muted":""),
+        r.crf==null?"—":String(r.crf)));
       tr.appendChild(el("td","muted",
         (r.audio==null?"—":r.audio+"a / "+r.subs+"s")));
-      tr.appendChild(el("td","muted",r.dest||"—"));
+      var destTd=el("td");
+      if(r.dest){
+        var vol=r.dest.split("/")[0];
+        destTd.appendChild(nasMark(vol));
+        var rest=r.dest.slice(vol.length);
+        if(rest) destTd.appendChild(el("span","muted",rest));
+      }else destTd.appendChild(el("span","muted","—"));
+      tr.appendChild(destTd);
       tr.appendChild(el("td","muted",RECORD[r.provenance]||r.provenance||"—"));
       tr.appendChild(el("td","muted",(r.finished_at||"—").slice(0,10)));
       if(r.note){ tr.title=r.note; }
@@ -1025,11 +1084,13 @@ function paint(s){
   renderAlert(s.summary);
   renderStats(s.summary);
   renderLive(s.live, s.summary);
-  var key=tab+"|"+JSON.stringify(tab==="queue"?s.queue:s.ledger);
+  var key=tab+"|"+JSON.stringify(tab==="queue"
+    ? [s.queue, s.live.map(function(e){ return [e.folder, e.crf]; })]
+    : s.ledger);
   if(last.key!==key){
     if(tab==="queue"&&drag){ last.pending=true; }
     else{ last.key=key;
-      (tab==="queue"?renderQueue(s.queue, s.summary):renderLedger(s.ledger)); }
+      (tab==="queue"?renderQueue(s.queue, s.summary, s.live):renderLedger(s.ledger)); }
   }
   var nq=s.summary.queue_count!=null?s.summary.queue_count:s.queue.length;
   document.getElementById("tabQueue").textContent="Queue ("+nq+
@@ -1106,6 +1167,13 @@ document.getElementById("resetOrder").addEventListener("click",function(){
     requestAnimationFrame(function(){ pend=false; recut(); }); }
   pane.addEventListener("scroll",schedule,{passive:true});
   window.addEventListener("resize",schedule);
+  /* Overlay scrollbar: paint the thumb only while actually scrolling. */
+  var scrollTimer=null;
+  pane.addEventListener("scroll",function(){
+    pane.classList.add("scrolling");
+    clearTimeout(scrollTimer);
+    scrollTimer=setTimeout(function(){ pane.classList.remove("scrolling"); },900);
+  },{passive:true});
   new MutationObserver(function(){ cuts=[]; schedule(); })
     .observe(pane,{childList:true});
   schedule();

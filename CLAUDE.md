@@ -56,8 +56,9 @@ Who honours it:
   staged title pulls the next library title in), and stages `priority`
   titles first. It tops up at most 3 titles per run and gates every pull on
   `df` free space (source size + 10 GiB margin).
-- A skipped title stays **visible** in the queue (greyed, at the bottom, with
-  a restore button). A skip that vanished would read as "finished".
+- A skipped title stays **in place** in the queue — faded, title struck
+  through, rank "—", with a restore button. A skip that vanished (or sank out
+  of view) would read as "finished".
 
 Failure modes are loud, not silent: `save_overrides` fsyncs before its atomic
 replace, and a present-but-unparseable file falls back to stock order while
@@ -100,25 +101,25 @@ cd "/Volumes/Crucial X9/4K Movies" && nohup ./.autopilot.sh >> .autopilot.log 2>
 
 ## Editing the look and feel
 
-Everything visual is one string, `_PAGE`, in `server.py` lines ~302–1057.
-(The POST override endpoints sit above it, lines ~192–300.)
+Everything visual is one string, `_PAGE`, in `server.py` lines ~332–1228.
+(The POST override endpoints sit above it, lines ~200–330.)
 
 | Lines | What |
 |---|---|
-| 310–332 | `:root` dark design tokens — colours, radius, motion accents. **Start here.** |
-| 333–352 | `:root[data-theme="light"]` — the light overrides, same token names |
-| 353–384 | base typography, `body`, header, theme toggle, pulsing status dot |
-| 385–405 | stat card grid + change-flash + first-paint entrance stagger |
-| 406–416 | panels + live encode card |
-| 417–445 | the molten progress bar (`.barrow`/`.bar`) + 3-decimal readout |
-| 446–452 | tabs |
-| 453–514 | tables, hover-only scrollbar, pin/skip marks, grip + drop indicators, skip buttons, pane fade |
-| 515–556 | responsive media queries — ≤700px pinned title column + `.cut`; coarse pointer hides drag grips (no DnD on touch) |
-| 558–569 | pre-paint theme script (runs in `<head>`) |
-| 570–597 | markup (incl. the hidden Reset-order button) |
-| 621–651 | `api()` POST helper — the page's only writes |
-| 639–952 | `renderAlert` `renderStats` `renderLive` `renderQueue`+`wireDrag` `renderLedger` `paint` |
-| 954–1010 | seam-blanking script — blanks any column sliced at the pane edges or the pinned title |
+| 340–362 | `:root` dark design tokens — colours, radius, motion accents. **Start here.** |
+| 363–382 | `:root[data-theme="light"]` — the light overrides, same token names |
+| 383–414 | base typography, `body` (max-width 1680px), header, theme toggle, pulsing status dot |
+| 415–435 | stat card grid + change-flash + first-paint entrance stagger |
+| 436–446 | panels + live encode card |
+| 447–475 | the molten progress bar (`.barrow`/`.bar`) + 2-decimal `pctLive` readout |
+| 476–482 | tabs |
+| 483–559 | tables, scroll-reveal scrollbar (thumb only while scrolling), pin/skip/NAS marks, grips + drop indicators, skip buttons, pane fade |
+| 560–603 | responsive media queries — ≤700px pinned title column + `.cut`; coarse pointer hides drag grips (no DnD on touch), keeps scrollbar visible |
+| 604–615 | pre-paint theme script (runs in `<head>`) |
+| 616–645 | markup (incl. Reset-order button and the `#uiNotice` strip) |
+| 676–706 | `notice()` + `api()` POST helper — the page's only writes |
+| 708–1116 | `renderAlert` `renderStats` `renderLive` `renderQueue`+`wireDrag` `renderLedger` `paint` |
+| 1118–1190 | seam-blanking + scrolling-class script |
 
 Animation ground rules: the live card updates **in place** (`liveRefs`) —
 rebuilding it every SSE frame restarts every CSS animation and kills the bar's
