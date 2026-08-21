@@ -27,6 +27,62 @@ Verified: `verdict.py` does not load `server.py`. **Editing the dashboard cannot
 affect what gets deleted.** Worst case the page breaks and the pipeline keeps
 running.
 
+One nuance since the skip/reorder feature: `server.py` is no longer a pure
+reader — its two POST endpoints write `queue_overrides.json`, which the
+decision path READS (see below). That file steers only *which title encodes or
+stages next*, never the verdict, the sync, or a deletion. A broken or deleted
+overrides file degrades to stock bitrate order everywhere.
+
+## Queue overrides (skip + drag-to-reorder)
+
+`queue_overrides.json` lives beside the ledger:
+`{"skip": [titles], "priority": [titles]}` — exact folder names, matched
+case-insensitively. Written ONLY by `core.save_overrides()` (atomic
+`os.replace`, so the driver can never see a torn file); the dashboard's
+`POST /api/queue/skip` and `POST /api/queue/order` are the only callers, and
+they accept only titles the queue itself just reported — never a path.
+
+Who honours it:
+
+- `core.queue()` marks rows `skipped`/`pinned` and sorts pinned-first,
+  skipped-last; `summary()` excludes skipped rows from the queue totals —
+  EXCEPT `job_progress_pct`, whose goal deliberately keeps skipped bytes so
+  skipping work can never render as finishing it.
+- `next_title.py` never picks a skipped row. When every staged candidate is
+  hand-skipped it exits **3** (not the stop condition), and `.autopilot.sh`
+  waits 300 s instead of exiting on a false "nothing left" message.
+- `.replenish-queue.sh` (staging drive) never stages a skipped title, stops
+  counting skipped staged folders toward its 10-folder target (so skipping a
+  staged title pulls the next library title in), and stages `priority`
+  titles first. It tops up at most 3 titles per run and gates every pull on
+  `df` free space (source size + 10 GiB margin).
+- A skipped title stays **visible** in the queue (greyed, at the bottom, with
+  a restore button). A skip that vanished would read as "finished".
+
+Failure modes are loud, not silent: `save_overrides` fsyncs before its atomic
+replace, and a present-but-unparseable file falls back to stock order while
+`summary()` raises `overrides_corrupt` — both views show a banner saying
+skips are NOT being applied.
+
+The skip endpoint refuses three states with a 409 rather than pretending:
+a title that is **encoding** right now, a title whose encode **already
+finished** (the driver finds finished folders by disk scan and will
+judge/record/sync regardless of the overrides — accepting the skip would show
+a greyed row while the library original is deleted), and a **duplicate folder
+basename** (overrides key on the folder name; one click must never act on two
+files — full path keying is the known follow-up if the threshold is ever
+lowered past the duplicate pairs).
+
+Drag semantics in the UI: a drop pins the MINIMAL head of the visible order
+needed to reproduce it under the server sort — the longest tail already in
+descending-bitrate order stays unpinned, and dropping a row back into pure
+bitrate order clears the pins entirely. The table always encodes in exactly
+the order shown; "Reset order" clears the head. Mutating requests require the
+`X-Smeltr: 1` header (CSRF: a cross-origin page cannot attach it without a
+CORS preflight the server never grants), and every denied request closes its
+connection so a rejected POST's body can never be replayed as a smuggled
+second request.
+
 Before touching `core.py` / `verdict.py` / `next_title.py` / `record.py`, pause
 the driver:
 
@@ -34,25 +90,41 @@ the driver:
 pkill -f autopilot.sh && rm -rf "/Volumes/Crucial X9/4K Movies/.autopilot.lock"
 ```
 
+(`pkill` can miss the detached process — verify with `ps aux | grep autopilot.sh`
+and `kill <pid>` directly if needed. A running HandBrake encode is independent
+and survives the pause.) Restart it afterwards, exactly as its header documents:
+
+```bash
+cd "/Volumes/Crucial X9/4K Movies" && nohup ./.autopilot.sh >> .autopilot.log 2>&1 &
+```
+
 ## Editing the look and feel
 
-Everything visual is one string, `_PAGE`, in `server.py` lines ~210–724.
+Everything visual is one string, `_PAGE`, in `server.py` lines ~302–1057.
+(The POST override endpoints sit above it, lines ~192–300.)
 
 | Lines | What |
 |---|---|
-| 218–236 | `:root` dark design tokens — colours, radius. **Start here.** |
-| 237–254 | `:root[data-theme="light"]` — the light overrides, same token names |
-| 255–283 | base typography, `body`, header, theme toggle button |
-| 284–290 | stat card grid |
-| 291–301 | panels + live encode card |
-| 302–313 | progress bar |
-| 314–319 | tabs |
-| 320–352 | tables + the hover-only scrollbar |
-| 354–395 | responsive media queries — ≤700px pinned title column + `.cut`, coarse-pointer touch targets + visible scrollbar |
-| 397–408 | pre-paint theme script (runs in `<head>`) |
-| 410–430 | markup |
-| 456–603 | `renderAlert` `renderStats` `renderLive` `renderQueue` `renderLedger` |
-| 626–681 | seam-blanking script — blanks any column sliced at the pane edges or the pinned title |
+| 310–332 | `:root` dark design tokens — colours, radius, motion accents. **Start here.** |
+| 333–352 | `:root[data-theme="light"]` — the light overrides, same token names |
+| 353–384 | base typography, `body`, header, theme toggle, pulsing status dot |
+| 385–405 | stat card grid + change-flash + first-paint entrance stagger |
+| 406–416 | panels + live encode card |
+| 417–445 | the molten progress bar (`.barrow`/`.bar`) + 3-decimal readout |
+| 446–452 | tabs |
+| 453–514 | tables, hover-only scrollbar, pin/skip marks, grip + drop indicators, skip buttons, pane fade |
+| 515–556 | responsive media queries — ≤700px pinned title column + `.cut`; coarse pointer hides drag grips (no DnD on touch) |
+| 558–569 | pre-paint theme script (runs in `<head>`) |
+| 570–597 | markup (incl. the hidden Reset-order button) |
+| 621–651 | `api()` POST helper — the page's only writes |
+| 639–952 | `renderAlert` `renderStats` `renderLive` `renderQueue`+`wireDrag` `renderLedger` `paint` |
+| 954–1010 | seam-blanking script — blanks any column sliced at the pane edges or the pinned title |
+
+Animation ground rules: the live card updates **in place** (`liveRefs`) —
+rebuilding it every SSE frame restarts every CSS animation and kills the bar's
+width transition, which is exactly the bug the old renderer had. Entrance
+animations are gated on `body:not(.booted)` so SSE rebuilds don't replay them.
+`prefers-reduced-motion` disables all animation and transitions globally.
 
 **Three rules. Breaking any of them breaks the page silently:**
 

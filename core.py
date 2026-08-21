@@ -49,6 +49,53 @@ SKIP = ("lord of the rings",)
 # The stop condition: encoding pauses once nothing above this remains.
 STOP_MBPS = 70.0
 
+# Hand overrides from the dashboard: titles to skip, and titles to encode
+# first. One JSON file beside the ledger, written ONLY through
+# save_overrides() (atomic replace), so the driver can never see a
+# half-written file mid-cycle. Semantics are deliberately soft: a skipped
+# title stays visible in every view, marked, and is excluded from the pick
+# and from every queue total; deleting the file restores stock behaviour.
+OVERRIDES = os.path.join(SMELTR_DIR, "queue_overrides.json")
+
+
+def load_overrides() -> dict:
+    """{"skip": [titles], "priority": [titles]}. Tolerant of a missing or
+    malformed file -- the driver must never crash on a UI-written file."""
+    try:
+        with open(OVERRIDES, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except OSError:
+        return {"skip": [], "priority": [], "corrupt": False}
+    except ValueError:
+        # Present but unparseable: fall back to stock order but SAY SO --
+        # summary() carries the flag and both views raise a loud banner,
+        # because silently dropping the user's skips is the worst failure.
+        return {"skip": [], "priority": [], "corrupt": True}
+    if not isinstance(raw, dict):
+        return {"skip": [], "priority": [], "corrupt": True}
+
+    def strs(key):
+        v = raw.get(key)
+        return [s for s in v if isinstance(s, str)] if isinstance(v, list) else []
+    return {"skip": strs("skip"), "priority": strs("priority"), "corrupt": False}
+
+
+def save_overrides(skip: list[str], priority: list[str]) -> None:
+    """Atomic write via os.replace: the driver reads this file between
+    cycles, and a torn read must be impossible, not merely unlikely."""
+    os.makedirs(SMELTR_DIR, exist_ok=True)
+    tmp = OVERRIDES + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"skip": skip, "priority": priority},
+                            ensure_ascii=False, indent=2) + "\n")
+        # fsync before the replace: os.replace alone guarantees atomicity,
+        # not durability, and a crash could leave a zero-length file that
+        # fails open to "nothing is skipped".
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, OVERRIDES)
+
 # ---------------------------------------------------------------- log parsing
 
 # HandBrake writes progress with carriage returns and only sometimes includes
@@ -565,7 +612,20 @@ def queue(min_mbps: float = STOP_MBPS, live: Optional[list] = None,
             "encoding": folder.lower() in encoding,
             "location": _library_of(path),
         })
-    rows.sort(key=lambda r: r["mbps"], reverse=True)
+    ov = load_overrides()
+    skips = {t.lower() for t in ov["skip"]}
+    pri = {t.lower(): i for i, t in enumerate(ov["priority"])}
+    for r in rows:
+        low_t = r["title"].lower()
+        r["skipped"] = low_t in skips
+        r["pinned"] = (not r["skipped"]) and low_t in pri
+    # Skipped rows sink to the bottom but are NOT dropped: an invisible skip
+    # cannot be un-skipped, and a row that silently vanishes reads as
+    # "finished". Pinned rows come first in the hand-chosen order; everything
+    # else keeps the bitrate ranking.
+    rows.sort(key=lambda r: (r["skipped"],
+                             pri.get(r["title"].lower(), len(pri)),
+                             -r["mbps"]))
     return rows
 
 
@@ -577,10 +637,14 @@ def queue_cached(min_mbps: float = STOP_MBPS, live: Optional[list] = None,
         idx_mtime = os.path.getmtime(_index_path())
     except OSError:
         idx_mtime = None
+    try:
+        ov_mtime = os.path.getmtime(OVERRIDES)
+    except OSError:
+        ov_mtime = None
     # Mount state MUST be in the key. Without it, a NAS remount served the
     # cached empty queue for up to 90 s -- restoring the exact "nothing left to
     # encode" illusion, only now with the offline banner gone.
-    key = (min_mbps, idx_mtime, len(hist), tuple(staged_folders()),
+    key = (min_mbps, idx_mtime, ov_mtime, len(hist), tuple(staged_folders()),
            tuple(offline_roots()))
     now = time.monotonic()
     if _queue_cache["key"] == key and now - _queue_cache["at"] < QUEUE_TTL:
@@ -695,7 +759,11 @@ def summary(hist: Optional[list] = None, q: Optional[list] = None) -> dict:
     offline = offline_roots()
     complete = not offline
     live = live_encodes()
-    queue_bytes = sum(r["bytes"] or 0 for r in q)
+    # Hand-skipped rows are OUT of every queue total: a skipped title is work
+    # the pipeline will not do, and counting it would overstate what is left.
+    q_active = [r for r in q if not r.get("skipped")]
+    q_skipped = [r for r in q if r.get("skipped")]
+    queue_bytes = sum(r["bytes"] or 0 for r in q_active)
     # Count RUNNING PROCESSES, not queue rows. A title whose library file is
     # unreachable drops out of the queue, and counting rows then reported
     # "0 encoding" while HandBrake was demonstrably at 99%.
@@ -711,6 +779,11 @@ def summary(hist: Optional[list] = None, q: Optional[list] = None) -> dict:
     # NAS space is how much of it comes back, so project it at the rate we have
     # measured rather than making them do it in their head.
     reclaimable = int(queue_bytes * shrink / 100) if shrink is not None else None
+    # Job progress measures against the ORIGINAL scope: skipped bytes stay in
+    # the goal, so skipping work can never render as finishing it.
+    skipped_bytes = sum(r["bytes"] or 0 for r in q_skipped)
+    goal = (int((queue_bytes + skipped_bytes) * shrink / 100)
+            if shrink is not None else None)
     return {
         "completed": len(hist),
         "completed_measured": len(paired),
@@ -719,8 +792,10 @@ def summary(hist: Optional[list] = None, q: Optional[list] = None) -> dict:
         "source_total_bytes": src_total,
         "output_total_bytes": out_total,
         "avg_saved_pct": round(shrink, 1) if shrink is not None else None,
-        "queue_count": len(q),
-        "queue_waiting": len(q) - encoding,
+        "queue_count": len(q_active),
+        "queue_waiting": max(0, len(q_active) - encoding),
+        "queue_skipped": len(q_skipped),
+        "queue_skipped_bytes": skipped_bytes,
         "queue_encoding": encoding,
         "queue_bytes": queue_bytes,
         "queue_reclaimable_bytes": reclaimable,
@@ -731,8 +806,8 @@ def summary(hist: Optional[list] = None, q: Optional[list] = None) -> dict:
         # queue collapses to nothing, so the formula returns 100% precisely when
         # the tool has gone blind. Refuse to print a number instead.
         "job_progress_pct": (
-            round(reclaimed / (reclaimed + reclaimable) * 100, 1)
-            if complete and reclaimable is not None and (reclaimed + reclaimable) > 0
+            round(reclaimed / (reclaimed + goal) * 100, 1)
+            if complete and goal is not None and (reclaimed + goal) > 0
             else None),
         # Folders physically on the drive, NOT queue rows that happen to be
         # staged -- a staged title already in the ledger occupies disk but is
@@ -742,9 +817,10 @@ def summary(hist: Optional[list] = None, q: Optional[list] = None) -> dict:
         "staged_bytes": sum(r["source_bytes"] or 0 for r in staged),
         "staged_unencoded": len(staged_unencoded),
         "staged_unencoded_bytes": sum(r["source_bytes"] or 0 for r in staged_unencoded),
-        "staged_in_queue": len([r for r in q if r["staged"]]),
+        "staged_in_queue": len([r for r in q_active if r["staged"]]),
         "roots_offline": [volume_name(r) for r in offline],
         "library_complete": complete,
+        "overrides_corrupt": bool(load_overrides().get("corrupt")),
         "stop_mbps": STOP_MBPS,
         "x9_online": os.path.isdir(X9),
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),

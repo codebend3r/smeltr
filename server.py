@@ -7,7 +7,11 @@ Security posture (this serves real filesystem data, so it is deliberate):
   * every request needs a token minted at startup and printed once
   * Host header is allowlisted, which blocks DNS-rebinding from a browser tab
   * the client cannot name a path; the server reads a fixed set of files
-  * no endpoint mutates anything -- Smeltr is a reader
+  * the ONLY mutations are the two queue-override endpoints, which write one
+    JSON file (skip list + hand priority) through core.save_overrides();
+    nothing the dashboard can reach touches media files or the verdict logic
+  * mutating endpoints also require a custom X-Smeltr header -- a cross-origin
+    page cannot attach one without a CORS preflight this server never grants
   * CSP is nonce-based with no external origins, so nothing loads off-network
   * all values reach the DOM via textContent, never innerHTML
 """
@@ -50,6 +54,7 @@ STATE_TTL = 1.5
 
 _state_lock = threading.Lock()
 _build_lock = threading.Lock()
+_ov_lock = threading.Lock()
 _state_cache = {"at": 0.0, "payload": None}
 
 
@@ -145,6 +150,10 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def _deny(self, status: int, msg: str) -> None:
+        # Close on every denial. A rejected POST leaves its unread body on
+        # the wire; keep-alive would parse those bytes as the NEXT request,
+        # letting a hostile page smuggle a header-checked request through.
+        self.close_connection = True
         self._send(status, "text/plain; charset=utf-8", msg.encode())
 
     # ------------------------------------------------------------- endpoints
@@ -183,6 +192,119 @@ class Handler(BaseHTTPRequestHandler):
                 time.sleep(POLL_SECONDS)
         except (BrokenPipeError, ConnectionResetError, OSError):
             return
+
+    # ------------------------------------------------- queue-override writes
+    # The only two mutating routes on the server. Both funnel into
+    # core.save_overrides(), and both can name a title only by exact match
+    # against what the queue itself just reported -- never a path.
+    MAX_BODY = 65536
+
+    def do_POST(self) -> None:
+        if not self._host_ok():
+            return self._deny(421, "bad host")
+        parsed = urlparse(self.path)
+        if not self._token_ok(parse_qs(parsed.query)):
+            return self._deny(403, "missing or invalid token")
+        # CSRF gate: a browser cannot attach a custom header cross-origin
+        # without a CORS preflight, and this server never answers one.
+        if self.headers.get("X-Smeltr") != "1":
+            return self._deny(403, "missing X-Smeltr header")
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except ValueError:
+            return self._deny(400, "bad length")
+        if not 0 < length <= self.MAX_BODY:
+            return self._deny(413, "missing or oversized body")
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return self._deny(400, "invalid JSON")
+        if not isinstance(body, dict):
+            return self._deny(400, "invalid JSON")
+
+        with _ov_lock:
+            if parsed.path == "/api/queue/skip":
+                err = self._apply_skip(body)
+            elif parsed.path == "/api/queue/order":
+                err = self._apply_order(body)
+            else:
+                return self._deny(404, "not found")
+        if err:
+            return self._deny(409, err)
+        with _state_lock:
+            _state_cache["payload"] = None  # next read sees the new overrides
+        payload = json.dumps(build_state()).encode()
+        self._send(200, "application/json; charset=utf-8", payload)
+
+    def _queue_rows(self) -> list[dict]:
+        return build_state()["queue"]
+
+    def _apply_skip(self, body: dict):
+        title, skipped = body.get("title"), body.get("skipped")
+        if not isinstance(title, str) or not isinstance(skipped, bool):
+            return "expected {title: str, skipped: bool}"
+        matches = [r for r in self._queue_rows()
+                   if r["title"].lower() == title.lower()]
+        if not matches:
+            return "title is not in the queue"
+        if len(matches) > 1:
+            # Overrides key on the folder name; two distinct library files can
+            # share one. One click must never act on both.
+            return "two queue rows share this folder name; refusing to act on both"
+        row = matches[0]
+        if skipped and row.get("encoding"):
+            return "cannot skip a title that is encoding right now"
+        if skipped:
+            # An encode that already FINISHED is beyond skipping: the driver
+            # finds the folder by disk scan and will judge/record/sync it
+            # regardless of the overrides file. Accepting the skip would show
+            # a greyed row while the library original is deleted.
+            d = os.path.join(core.X9, row["title"])
+            try:
+                files = os.listdir(d)
+            except OSError:
+                files = []
+            if any("2160p HEVC" in f and f.endswith(".mkv")
+                   and not f.startswith("._") for f in files):
+                return ("this title's encode is already finished — it will be "
+                        "recorded and synced; skipping cannot stop that")
+        ov = core.load_overrides()
+        skip = [t for t in ov["skip"] if t.lower() != row["title"].lower()]
+        pri = [t for t in ov["priority"] if t.lower() != row["title"].lower()]
+        if skipped:
+            skip.append(row["title"])
+        core.save_overrides(skip, pri)
+        return None
+
+    def _apply_order(self, body: dict):
+        order = body.get("order")
+        if not isinstance(order, list) or \
+                not all(isinstance(t, str) for t in order):
+            return "expected {order: [titles]}"
+        if len(order) > 500:
+            return "order list too long"
+        rows, dups = {}, set()
+        for r in self._queue_rows():
+            low = r["title"].lower()
+            if low in rows:
+                dups.add(low)
+            rows[low] = r
+        pri, seen = [], set()
+        for t in order:
+            row = rows.get(t.lower())
+            if row is None:
+                return "a title in the order is not in the queue"
+            if t.lower() in dups:
+                return "two queue rows share this folder name; refusing to act on both"
+            if row.get("skipped"):
+                return "cannot prioritise a skipped title"
+            if row["title"].lower() in seen:
+                continue
+            seen.add(row["title"].lower())
+            pri.append(row["title"])
+        ov = core.load_overrides()
+        core.save_overrides(ov["skip"], pri)
+        return None
 
     def log_message(self, fmt, *args) -> None:
         """Silence per-request logging; this runs alongside a live encode."""
@@ -233,6 +355,10 @@ _PAGE = r"""<!doctype html>
   --tab-bd:#2c3543; --td-line:#14181f;
   --row-hover:#12151b; --row-enc:#171208;
   --thumb:#2a313d; --thumb-hover:#3b4553;
+  /* Motion accents: the molten bar's sheen, tip and heat glow, and the
+     status-dot halo. Tokens in BOTH themes, like every other colour. */
+  --sheen:rgba(255,255,255,.30); --tip:#ffe2c4; --glow:rgba(255,122,47,.40);
+  --halo-good:rgba(61,220,151,.15); --halo-good-2:rgba(61,220,151,.04);
 }
 :root[data-theme="light"]{
   color-scheme:light;
@@ -251,6 +377,8 @@ _PAGE = r"""<!doctype html>
   --tab-bd:#c6cedb; --td-line:#eff2f6;
   --row-hover:#f4f7fa; --row-enc:#fff6ea;
   --thumb:#c8cfda; --thumb-hover:#a8b2c1;
+  --sheen:rgba(255,255,255,.60); --tip:#ffd9ae; --glow:rgba(194,84,15,.30);
+  --halo-good:rgba(15,122,85,.18); --halo-good-2:rgba(15,122,85,.05);
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{-webkit-text-size-adjust:100%}
@@ -267,7 +395,10 @@ header{display:flex;align-items:baseline;gap:14px;margin-bottom:22px;flex-wrap:w
 .tag{color:var(--ink-3);font-size:12.5px;letter-spacing:.01em}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--ink-3);display:inline-block;
      margin-right:6px;vertical-align:middle}
-.dot.on{background:var(--good);box-shadow:0 0 0 3px rgba(61,220,151,.15)}
+.dot.on{background:var(--good);box-shadow:0 0 0 3px var(--halo-good);
+        animation:beat 2.4s ease-in-out infinite}
+@keyframes beat{0%,100%{box-shadow:0 0 0 3px var(--halo-good)}
+                50%{box-shadow:0 0 0 7px var(--halo-good-2)}}
 .dot.off{background:var(--bad);box-shadow:0 0 0 3px rgba(255,92,92,.15)}
 .conn{margin-left:auto;font-size:12px;color:var(--ink-3)}
 .themebtn{align-self:center;background:var(--panel);border:1px solid var(--line);
@@ -287,6 +418,20 @@ header{display:flex;align-items:baseline;gap:14px;margin-bottom:22px;flex-wrap:w
 .stat .v{font-size:22px;font-weight:640;letter-spacing:-.02em;margin-top:5px}
 .stat .s{font-size:11.5px;color:var(--ink-3);margin-top:2px}
 .v.hot{color:var(--hot-soft)} .v.cool{color:var(--cool)}
+/* A stat that just changed flashes its frame once. The entrance runs only on
+   the first paint -- body.booted turns it off, or every SSE rebuild would
+   replay it and the page would twitch every two seconds. */
+.stat.flash{animation:statflash .9s ease-out}
+@keyframes statflash{from{border-color:var(--hot);box-shadow:0 0 10px var(--glow)}}
+body:not(.booted) .stat,body:not(.booted) .card{
+  animation:rise .5s cubic-bezier(.2,.7,.3,1) both}
+body:not(.booted) .stats .stat:nth-child(2){animation-delay:.05s}
+body:not(.booted) .stats .stat:nth-child(3){animation-delay:.1s}
+body:not(.booted) .stats .stat:nth-child(4){animation-delay:.15s}
+body:not(.booted) .stats .stat:nth-child(5){animation-delay:.2s}
+body:not(.booted) .stats .stat:nth-child(6){animation-delay:.25s}
+body:not(.booted) #liveWrap .card{animation-delay:.12s}
+@keyframes rise{from{opacity:0;transform:translateY(7px)}}
 
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
       padding:18px 20px;margin-bottom:18px}
@@ -299,11 +444,28 @@ header{display:flex;align-items:baseline;gap:14px;margin-bottom:22px;flex-wrap:w
       color:var(--ink-2);background:var(--panel-2);white-space:nowrap}
 .chip.good{color:var(--good);border-color:var(--good-bd)} .chip.thin{color:var(--warn);border-color:var(--warn-bd)}
 .chip.bad{color:var(--bad);border-color:var(--bad-bd)}
-.bar{height:7px;border-radius:99px;background:var(--bar-bg);overflow:hidden;margin:14px 0 10px;
+/* The molten pour. The one deliberately loud thing on the page: a heat glow,
+   a sheen flowing along the fill, a white-hot leading tip, and the exact
+   percentage beside it. The fill node is persistent across SSE frames (see
+   renderLive), so the width transition and the keyframes actually run. */
+.barrow{display:flex;align-items:center;gap:16px;margin:14px 0 10px}
+.bar{flex:1;height:10px;border-radius:99px;background:var(--bar-bg);
      box-shadow:inset 0 1px 2px var(--bar-inset)}
-.bar>i{display:block;height:100%;border-radius:99px;
+.bar>i{position:relative;display:block;height:100%;border-radius:99px;overflow:hidden;
        background:linear-gradient(90deg,var(--hot),var(--hot-soft));
-       transition:width .5s cubic-bezier(.4,0,.2,1)}
+       box-shadow:0 0 12px var(--glow);
+       transition:width .9s cubic-bezier(.4,0,.2,1)}
+.bar>i::before{content:"";position:absolute;top:0;bottom:0;left:0;width:45%;
+       background:linear-gradient(100deg,transparent 15%,var(--sheen) 50%,transparent 85%);
+       animation:sheen 2.1s ease-in-out infinite}
+.bar>i::after{content:"";position:absolute;right:0;top:0;bottom:0;width:7px;
+       border-radius:99px;background:var(--tip);
+       animation:tipglow 1.4s ease-in-out infinite alternate}
+@keyframes sheen{from{transform:translateX(-110%)}to{transform:translateX(340%)}}
+@keyframes tipglow{from{box-shadow:0 0 4px 1px var(--glow);opacity:.7}
+                   to{box-shadow:0 0 14px 4px var(--glow);opacity:1}}
+.pctbig{font-size:21px;font-weight:680;letter-spacing:-.02em;color:var(--hot-soft);
+        white-space:nowrap}
 .kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px 18px;margin-top:12px}
 .kv div span{display:block;font-size:11px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.06em}
 .kv div b{font-weight:580;font-size:14px}
@@ -313,7 +475,8 @@ header{display:flex;align-items:baseline;gap:14px;margin-bottom:22px;flex-wrap:w
 
 .tabs{display:flex;gap:6px;margin:0 0 12px}
 .tab{background:var(--panel);border:1px solid var(--line);color:var(--ink-2);
-     padding:6px 13px;border-radius:8px;font:inherit;font-size:12.5px;cursor:pointer}
+     padding:6px 13px;border-radius:8px;font:inherit;font-size:12.5px;cursor:pointer;
+     transition:color .15s,border-color .15s,background .15s}
 .tab[aria-selected="true"]{background:var(--panel-2);color:var(--ink);border-color:var(--tab-bd)}
 .tab:focus-visible{outline:2px solid var(--cool);outline-offset:2px}
 
@@ -346,10 +509,38 @@ td.n,th.n{text-align:right}
 .mark{font-size:10.5px;padding:1.5px 6px;border-radius:5px;border:1px solid var(--line);color:var(--ink-3)}
 .mark.staged{color:var(--cool);border-color:var(--cool-bd)}
 .mark.enc{color:var(--hot-soft);border-color:var(--hot-bd)}
+.mark.pin{color:var(--cool);border-color:var(--cool-bd)}
+.mark.skip{color:var(--ink-2);border-style:dashed}
+.mark+.mark{margin-left:6px}
 .rowenc td{background:var(--row-enc)}
+.rowskip td,.rowskip td.title-cell{color:var(--ink-3)}
+/* Queue control. The grip drags, the button skips; both write only the
+   overrides file on the server, nothing else. */
+.grip{cursor:grab;color:var(--ink-3);user-select:none;-webkit-user-select:none;
+      letter-spacing:2px}
+th.gripcol,td.gripcol{width:30px;padding-right:2px}
+tr.dragsrc td{opacity:.35}
+tr.dropline td{box-shadow:inset 0 2px 0 0 var(--cool)}
+tr.dropline-after td{box-shadow:inset 0 -2px 0 0 var(--cool)}
+tr.pin-end td{border-bottom:2px solid var(--cool-bd)}
+.act{background:none;border:1px solid var(--line);color:var(--ink-3);border-radius:6px;
+     font:inherit;font-size:11px;padding:2.5px 9px;cursor:pointer;
+     transition:color .15s,border-color .15s}
+.act:hover{color:var(--bad);border-color:var(--bad-bd)}
+.act.restore:hover{color:var(--good);border-color:var(--good-bd)}
+.act:focus-visible{outline:2px solid var(--cool);outline-offset:2px}
+.act:disabled{opacity:.5;cursor:default}
+.uinote{margin:0 0 12px;padding:10px 14px;border:1px solid var(--warn-bd);
+        border-radius:var(--r);background:var(--panel);color:var(--warn);font-size:12.5px}
 .empty{padding:28px;text-align:center;color:var(--ink-3);font-size:13px}
+.lnotes{padding:10px 14px;font-size:11.5px;color:var(--ink-2);
+        border-top:1px solid var(--line);display:grid;gap:6px}
+#pane>table,#pane>.empty{animation:fadein .22s ease-out}
+@keyframes fadein{from{opacity:0}}
 footer{margin-top:22px;font-size:11.5px;color:var(--ink-3);display:flex;gap:14px;flex-wrap:wrap}
-@media (prefers-reduced-motion:reduce){.bar>i{transition:none}}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none!important;transition:none!important}
+}
 
 /* ---- Responsive. Below 700px the tables keep scrolling sideways: the
    title column pins to the left edge (the title is the identity of a row --
@@ -388,6 +579,10 @@ footer{margin-top:22px;font-size:11.5px;color:var(--ink-3);display:flex;gap:14px
 @media (pointer:coarse){
   .themebtn{width:44px;height:44px}
   .tab{padding:11px 16px}
+  /* HTML5 drag-and-drop does not exist on touch; hide the handles rather
+     than advertise a gesture that cannot work. Skip buttons stay. */
+  th.gripcol,td.gripcol{display:none}
+  .act{padding:9px 14px}
   /* The hover-only scrollbar has no hover to wait for on touch. Without this
      the History table hides 3/4 of its columns with zero affordance. */
   .scroll{scrollbar-color:var(--thumb) transparent}
@@ -422,11 +617,13 @@ footer{margin-top:22px;font-size:11.5px;color:var(--ink-3);display:flex;gap:14px
 <div class="tabs" role="tablist">
   <button class="tab" id="tabQueue"  role="tab" aria-selected="true"  aria-controls="paneQueue">Queue</button>
   <button class="tab" id="tabLedger" role="tab" aria-selected="false" aria-controls="paneLedger">History</button>
+  <button class="tab" id="resetOrder" type="button" hidden>Reset order</button>
 </div>
+<div class="uinote" id="uiNotice" hidden></div>
 <div class="wrap"><div class="scroll" id="pane"></div></div>
 
 <footer>
-  <span id="gen"></span><span id="stopnote"></span><span>read-only &middot; 127.0.0.1 only</span>
+  <span id="gen"></span><span id="stopnote"></span><span>127.0.0.1 only &middot; skip/reorder writes only queue_overrides.json</span>
 </footer>
 
 <script nonce="__NONCE__">
@@ -441,6 +638,9 @@ var RECORD={live:"measured at finish","state-file":"hand-migrated",
 function gib(b){ if(b==null) return "—";
   return b>=TIB ? (b/TIB).toFixed(2)+" TiB" : (b/GIB).toFixed(2)+" GiB"; }
 function pct(v){ return v==null ? "—" : v.toFixed(1)+"%"; }
+/* Live encode progress keeps HandBrake's full precision; everything else on
+   the page stays at one decimal. */
+function pct3(v){ return v==null ? "—" : v.toFixed(3)+"%"; }
 function dur(s){ if(s==null) return "—";
   var h=Math.floor(s/3600), m=Math.floor(s%3600/60);
   return h ? h+"h "+String(m).padStart(2,"0")+"m" : m+"m"; }
@@ -453,8 +653,45 @@ function statCard(k,v,s,cls){
   if(s) d.appendChild(el("div","s",s)); return d;
 }
 
+/* The only two writes the page can make. Both name titles by exact match
+   against the queue the server just sent; the response is a fresh state
+   snapshot, painted immediately so the click lands without waiting for SSE. */
+var noticeTimer=null;
+function notice(msg){
+  var n=document.getElementById("uiNotice");
+  n.textContent=msg; n.hidden=false;
+  clearTimeout(noticeTimer);
+  noticeTimer=setTimeout(function(){ n.hidden=true; },5000);
+}
+
+var posting=false;
+function api(path,payload){
+  if(posting) return Promise.resolve();
+  posting=true;
+  return fetch(path+(token?"?t="+encodeURIComponent(token):""),{
+    method:"POST",
+    headers:{"Content-Type":"application/json","X-Smeltr":"1"},
+    body:JSON.stringify(payload)})
+  .then(function(r){
+    if(!r.ok) return r.text().then(function(t){ throw new Error(t||"request failed"); });
+    return r.json();
+  })
+  .then(function(s){ last.state=s; last.key=null; paint(s); })
+  .catch(function(err){ notice((err&&err.message||"action failed").slice(0,120)); })
+  .finally(function(){ posting=false; });
+}
+
 function renderAlert(s){
   var host=document.getElementById("alert"); host.replaceChildren();
+  if(s.overrides_corrupt){
+    var oc=el("div","card alert");
+    oc.appendChild(el("div","live-title","queue_overrides.json is unreadable"));
+    oc.appendChild(el("div","verdict",
+      "Skips and hand-priorities are NOT being applied — the pipeline is "+
+      "running in stock bitrate order. Fix or delete the file; any skip or "+
+      "reorder here rewrites it cleanly."));
+    host.appendChild(oc);
+  }
   if(s.library_complete!==false) return;
   var c=el("div","card alert");
   c.appendChild(el("div","live-title","Library incomplete — "+
@@ -466,78 +703,144 @@ function renderAlert(s){
   host.appendChild(c);
 }
 
+var prevStats=null;
 function renderStats(s){
   var host=document.getElementById("stats"); host.replaceChildren();
-  host.appendChild(statCard("Reclaimed", gib(s.reclaimed_bytes),
-    s.completed_measured+" of "+s.completed+" encodes measured","hot"));
-  host.appendChild(statCard("Average shrink", pct(s.avg_saved_pct),
-    "weighted · "+gib(s.source_total_bytes)+" → "+gib(s.output_total_bytes)));
-  host.appendChild(statCard("Still queued", String(s.queue_waiting),
-    gib(s.queue_bytes)+" of originals above "+s.stop_mbps+" Mb/s","cool"));
-  host.appendChild(statCard("Still to reclaim", gib(s.queue_reclaimable_bytes),
-    "projected at "+pct(s.avg_saved_pct)));
-  host.appendChild(statCard("Job progress", pct(s.job_progress_pct),
-    "by reclaimed bytes, not titles"));
-  host.appendChild(statCard("Staged", String(s.staged),
-    s.queue_encoding+" encoding · "+s.staged_unencoded+" not yet encoded"));
+  var seen={};
+  function add(k,v,sub,cls){
+    var d=statCard(k,v,sub,cls);
+    if(prevStats && prevStats[k]!==undefined && prevStats[k]!==v)
+      d.classList.add("flash");
+    seen[k]=v; host.appendChild(d);
+  }
+  add("Reclaimed", gib(s.reclaimed_bytes),
+    s.completed_measured+" of "+s.completed+" encodes measured","hot");
+  add("Average shrink", pct(s.avg_saved_pct),
+    "weighted · "+gib(s.source_total_bytes)+" → "+gib(s.output_total_bytes));
+  var complete=s.library_complete!==false;
+  var skipnote=s.queue_skipped ? " · excludes "+s.queue_skipped+" skipped" : "";
+  if(complete){
+    add("Still queued", String(s.queue_waiting),
+      gib(s.queue_bytes)+" of originals above "+s.stop_mbps+" Mb/s"+
+      (s.queue_encoding ? " · incl. "+s.queue_encoding+" encoding" : "")+
+      (s.queue_skipped ? " · "+s.queue_skipped+" skipped" : ""),"cool");
+    add("Still to reclaim",
+      s.queue_reclaimable_bytes==null ? "—" : "~"+gib(s.queue_reclaimable_bytes),
+      "projected at "+pct(s.avg_saved_pct)+skipnote);
+    add("Job progress",
+      s.job_progress_pct==null ? "—" : "~"+pct(s.job_progress_pct),
+      "by reclaimed bytes, not titles"+
+      (s.queue_skipped ? " · goal still counts "+s.queue_skipped+" skipped" : ""));
+  }else{
+    /* An unmounted NAS empties the queue; a hard 0 in these slots is the
+       most dangerous cell on the page. Refuse to print a number, exactly
+       as the terminal report does. */
+    add("Still queued","unknown",
+      "library not fully mounted · "+s.queue_waiting+" readable");
+    add("Still to reclaim","unknown","library not fully mounted — partial");
+    add("Job progress","unknown","cannot be computed while a root is offline");
+  }
+  add("Staged", String(s.staged),
+    gib(s.staged_bytes)+" of originals · "+s.queue_encoding+" encoding · "+
+    s.staged_unencoded+" not yet encoded");
+  prevStats=seen;
 }
 
+function liveChips(e){
+  var top=el("div","live-top");
+  top.appendChild(el("div","live-title",e.title));
+  if(e.crf!=null) top.appendChild(el("span","chip","CRF "+e.crf));
+  if(e.geometry) top.appendChild(el("span","chip",
+    (e.source_geometry && e.source_geometry!==e.geometry)
+      ? e.source_geometry+" → "+e.geometry+" (auto-crop)" : e.geometry));
+  if(e.audio!=null){
+    var loss = e.src_audio!=null && (e.src_audio!==e.audio || e.src_subs!==e.subs);
+    top.appendChild(el("span","chip"+(loss?" bad":""), loss
+      ? "TRACK LOSS "+e.src_audio+"a/"+e.src_subs+"s → "+e.audio+"a/"+e.subs+"s"
+      : e.audio+" audio · "+e.subs+" subs"));
+  }
+  top.appendChild(e.decoder_errors
+    ? el("span","chip bad", e.decoder_errors+" decoder errors")
+    : el("span","chip", e.decoder_errors===0
+        ? "0 decoder errors" : "decoder errors not yet reported"));
+  var vc = e.verdict==="good"?"good":
+           (e.verdict==="thin"||e.verdict==="suspect")?"thin":
+           (e.verdict==="unknown"?"":"bad");
+  if(e.verdict==="downscale") vc="bad";
+  if(e.shrink_pct!=null) top.appendChild(el("span","chip "+vc, pct(e.shrink_pct)+" smaller"));
+  top.appendChild(el("span","chip "+vc, e.verdict.toUpperCase()));
+  return top;
+}
+
+function liveFields(e){
+  return [["ETA", dur(e.eta_s)],
+    ["Speed", e.avg_fps==null?"—":e.avg_fps.toFixed(1)+" fps avg"],
+    ["Written", gib(e.output_bytes)],
+    ["Projected", gib(e.projected_bytes)],
+    ["Of source", e.ratio_pct==null ? "—" :
+       pct(e.ratio_pct)+(e.crop_factor>1.01 && e.norm_ratio_pct!=null
+         ? " ("+pct(e.norm_ratio_pct)+" crop-adj)" : "")],
+    ["Source", gib(e.source_bytes)],
+    ["Started", e.started_text||"—"],
+    ["PID", String(e.pid)]];
+}
+
+/* The live card updates IN PLACE. Rebuilding it on every SSE frame silently
+   restarted every CSS animation and defeated the bar's width transition --
+   the fill was always a brand-new node, so it could never animate. Structure
+   is rebuilt only when the set of running encodes changes; numbers and chips
+   update on the nodes already there. Progress lives beside the bar at
+   HandBrake's full precision, and only there -- one number, one precision. */
+var liveRefs={};
 function renderLive(live, s){
-  var host=document.getElementById("liveWrap"); host.replaceChildren();
-  if(!live.length){
-    var c=el("div","card");
-    c.appendChild(el("div","live-title","Nothing encoding"));
-    c.appendChild(el("div","verdict", s.x9_online
-      ? "The staging drive is mounted and idle."
-      : "The staging drive is not mounted."));
-    host.appendChild(c); return;
+  var host=document.getElementById("liveWrap");
+  var sig=live.map(function(e){ return e.title; }).join("|");
+  if(host.dataset.sig!==sig){
+    host.replaceChildren(); liveRefs={}; host.dataset.sig=sig;
+    if(!live.length){
+      var c=el("div","card");
+      c.appendChild(el("div","live-title","Nothing encoding"));
+      c.appendChild(el("div","verdict", s.x9_online
+        ? "The staging drive is mounted and idle."
+        : "The staging drive is not mounted."));
+      host.appendChild(c); return;
+    }
+    live.forEach(function(e){
+      var c=el("div","card live"), refs={};
+      refs.top=liveChips(e); c.appendChild(refs.top);
+      var row=el("div","barrow"), bar=el("div","bar");
+      bar.setAttribute("role","progressbar");
+      bar.setAttribute("aria-label","Encode progress");
+      bar.setAttribute("aria-valuemin","0"); bar.setAttribute("aria-valuemax","100");
+      refs.bar=bar; refs.fill=el("i");
+      bar.appendChild(refs.fill); row.appendChild(bar);
+      refs.pct=el("div","pctbig num","—"); row.appendChild(refs.pct);
+      c.appendChild(row);
+      var kv=el("div","kv"); refs.kv={};
+      liveFields(e).forEach(function(p){
+        var d=el("div"); d.appendChild(el("span",null,p[0]));
+        var b=el("b",null,"—"); refs.kv[p[0]]=b; d.appendChild(b);
+        kv.appendChild(d);
+      });
+      c.appendChild(kv);
+      refs.verdict=el("div","verdict",""); c.appendChild(refs.verdict);
+      host.appendChild(c);
+      liveRefs[e.title]=refs;
+    });
   }
   live.forEach(function(e){
-    var c=el("div","card live");
-    var top=el("div","live-top");
-    top.appendChild(el("div","live-title",e.title));
-    if(e.crf!=null) top.appendChild(el("span","chip","CRF "+e.crf));
-    if(e.geometry) top.appendChild(el("span","chip",
-      (e.source_geometry && e.source_geometry!==e.geometry)
-        ? e.source_geometry+" → "+e.geometry+" (auto-crop)" : e.geometry));
-    if(e.audio!=null){
-      var loss = e.src_audio!=null && (e.src_audio!==e.audio || e.src_subs!==e.subs);
-      top.appendChild(el("span","chip"+(loss?" bad":""), loss
-        ? "TRACK LOSS "+e.src_audio+"a/"+e.src_subs+"s → "+e.audio+"a/"+e.subs+"s"
-        : e.audio+" audio · "+e.subs+" subs"));
-    }
-    if(e.decoder_errors) top.appendChild(el("span","chip bad",
-      e.decoder_errors+" decoder errors"));
-    var vc = e.verdict==="good"?"good":
-             (e.verdict==="thin"||e.verdict==="suspect")?"thin":
-             (e.verdict==="unknown"?"":"bad");
-    if(e.verdict==="downscale") vc="bad";
-    if(e.shrink_pct!=null) top.appendChild(el("span","chip "+vc, pct(e.shrink_pct)+" smaller"));
-    top.appendChild(el("span","chip "+vc, e.verdict.toUpperCase()));
-    c.appendChild(top);
-
-    var bar=el("div","bar"), fill=el("i");
-    fill.style.width=(e.pct||0)+"%"; bar.appendChild(fill); c.appendChild(bar);
-
-    var kv=el("div","kv");
-    [["Progress", e.pct==null?"—":e.pct.toFixed(2)+"%"],
-     ["ETA", dur(e.eta_s)],
-     ["Speed", e.avg_fps==null?"—":e.avg_fps.toFixed(1)+" fps avg"],
-     ["Written", gib(e.output_bytes)],
-     ["Projected", gib(e.projected_bytes)],
-     ["Of source", e.norm_ratio_pct==null ? "—" :
-        pct(e.norm_ratio_pct)+(e.crop_factor>1.01?" (crop-adj)":"")],
-     ["Source", gib(e.source_bytes)],
-     ["Started", e.started_text||"—"],
-     ["PID", String(e.pid)]
-    ].forEach(function(p){ var d=el("div");
-      d.appendChild(el("span",null,p[0])); d.appendChild(el("b",null,p[1])); kv.appendChild(d); });
-    c.appendChild(kv);
-    var vn=el("div","verdict", e.verdict_note);
-    if(e.verdict==="suspect"||e.verdict==="blowup"||e.verdict==="no-saving")
-      vn.className="verdict loud";
-    c.appendChild(vn);
-    host.appendChild(c);
+    var refs=liveRefs[e.title]; if(!refs) return;
+    var top=liveChips(e); refs.top.replaceWith(top); refs.top=top;
+    refs.fill.style.width=(e.pct||0)+"%";
+    refs.bar.setAttribute("aria-valuenow", String(e.pct||0));
+    refs.pct.textContent=pct3(e.pct);
+    liveFields(e).forEach(function(p){
+      var b=refs.kv[p[0]]; if(b) b.textContent=p[1];
+    });
+    refs.verdict.textContent=e.verdict_note;
+    refs.verdict.className=
+      (e.verdict==="suspect"||e.verdict==="blowup"||e.verdict==="no-saving")
+        ? "verdict loud" : "verdict";
   });
 }
 
@@ -552,26 +855,134 @@ function table(cols, rows, build){
   t.appendChild(tb); return t;
 }
 
-function renderQueue(q){
+/* The queue is hand-editable: rows drag to reorder (the order you drop is
+   the order the pipeline picks from) and any non-encoding row can be
+   skipped. Skipped rows keep their place at the BOTTOM, greyed, with a
+   restore button -- a skip that vanished would read as "finished". */
+function renderQueue(q, s){
   var pane=document.getElementById("pane"); pane.replaceChildren();
-  if(!q.length){ pane.appendChild(el("div","empty",
-    "Nothing left above the stop threshold.")); return; }
+  if(!q.length){
+    pane.appendChild(el("div","empty", (s && s.library_complete===false)
+      ? "Library not fully mounted — "+(s.roots_offline||[]).join(", ")+
+        " offline. This list is PARTIAL, not empty."
+      : "Nothing left above the stop threshold."));
+    return; }
+  var pinned=q.filter(function(r){ return r.pinned&&!r.skipped; }).length;
+  var active=q.filter(function(r){ return !r.skipped; }).length;
   pane.appendChild(table(
-    [{label:"Rank",n:true},{label:"Src Mb/s",n:true},{label:"Src size",n:true},
-     {label:"Title",cls:"title-cell"},{label:"NAS"},{label:"Status"}],
+    [{label:"",cls:"gripcol"},{label:"Rank",n:true},{label:"Src Mb/s",n:true},
+     {label:"Src size",n:true},{label:"Title",cls:"title-cell"},{label:"NAS"},
+     {label:"Status"},{label:""}],
     q, function(r,i){
-      var tr=el("tr", r.encoding?"rowenc":null);
-      tr.appendChild(el("td","n muted",String(i+1)));
+      var tr=el("tr", r.encoding?"rowenc":(r.skipped?"rowskip":null));
+      tr.dataset.title=r.title; tr.dataset.idx=String(i);
+      var grip=el("td","gripcol");
+      if(!r.skipped){
+        var g=el("span","grip","⋮⋮");
+        g.title="Drag to reorder"; grip.appendChild(g);
+        tr.draggable=true;
+      }
+      tr.appendChild(grip);
+      tr.appendChild(el("td","n muted", r.skipped?"—":String(i+1)));
       tr.appendChild(el("td","n",r.mbps.toFixed(1)));
       tr.appendChild(el("td","n",gib(r.bytes)));
       tr.appendChild(el("td","title-cell",r.title));
       tr.appendChild(el("td","muted",r.location));
       var td=el("td");
-      if(r.encoding) td.appendChild(el("span","mark enc","encoding"));
-      else if(r.staged) td.appendChild(el("span","mark staged","staged"));
-      else td.appendChild(el("span","mark","library"));
-      tr.appendChild(td); return tr;
+      if(r.skipped) td.appendChild(el("span","mark skip","skipped"));
+      else{
+        if(r.pinned) td.appendChild(el("span","mark pin","pinned"));
+        if(r.encoding) td.appendChild(el("span","mark enc","encoding"));
+        else if(r.staged) td.appendChild(el("span","mark staged","staged"));
+        else td.appendChild(el("span","mark","library"));
+      }
+      tr.appendChild(td);
+      var act=el("td");
+      if(!r.encoding){
+        var b=el("button","act"+(r.skipped?" restore":""),
+                 r.skipped?"restore":"skip");
+        b.type="button";
+        b.title=r.skipped
+          ? "Put this title back in the queue"
+          : "Skip this title — the pipeline moves on to the next one";
+        b.addEventListener("click",function(){
+          b.disabled=true;
+          api("/api/queue/skip",{title:r.title,skipped:!r.skipped})
+            .finally(function(){ b.disabled=false; });
+        });
+        act.appendChild(b);
+      }
+      tr.appendChild(act);
+      if(r.pinned && !r.skipped && i===pinned-1 && pinned<active)
+        tr.classList.add("pin-end");
+      return tr;
     }));
+  wireDrag(pane.querySelector("table"), q);
+}
+
+/* Drag semantics: dropping a row at position K pins the first K+1 visible
+   titles as the explicit head of the queue, so the table always encodes in
+   exactly the order shown. Everything below the pinned head keeps the
+   bitrate ranking. "Reset order" clears the head. */
+var drag=null;
+function wireDrag(tbl,q){
+  var tb=tbl.tBodies[0];
+  function clearMarks(){
+    Array.prototype.forEach.call(tb.rows,function(r){
+      r.classList.remove("dropline","dropline-after"); });
+  }
+  function rowOf(ev){
+    var n=ev.target;
+    while(n && n.nodeName!=="TR") n=n.parentNode;
+    return n && n.dataset && n.dataset.title!=null ? n : null;
+  }
+  tb.addEventListener("dragstart",function(ev){
+    var tr=rowOf(ev); if(!tr||!tr.draggable) return;
+    drag={title:tr.dataset.title};
+    tr.classList.add("dragsrc");
+    ev.dataTransfer.effectAllowed="move";
+    try{ ev.dataTransfer.setData("text/plain",tr.dataset.title); }catch(e){}
+  });
+  tb.addEventListener("dragend",function(ev){
+    clearMarks();
+    var tr=rowOf(ev); if(tr) tr.classList.remove("dragsrc");
+    drag=null;
+    if(last.pending){ last.pending=false; last.key=null;
+      if(last.state) paint(last.state); }
+  });
+  tb.addEventListener("dragover",function(ev){
+    if(!drag) return;
+    var tr=rowOf(ev); if(!tr||tr.dataset.title===drag.title) return;
+    var i=parseInt(tr.dataset.idx,10);
+    if(q[i] && q[i].skipped) return;   // no dropping into the skipped zone
+    ev.preventDefault(); ev.dataTransfer.dropEffect="move";
+    clearMarks();
+    var rect=tr.getBoundingClientRect();
+    tr.classList.add(ev.clientY>rect.top+rect.height/2 ? "dropline-after" : "dropline");
+  });
+  tb.addEventListener("drop",function(ev){
+    if(!drag) return; ev.preventDefault();
+    var tr=rowOf(ev); clearMarks(); if(!tr) return;
+    var ti=parseInt(tr.dataset.idx,10);
+    if(!q[ti]||q[ti].skipped) return;
+    var rect=tr.getBoundingClientRect();
+    var target=(ev.clientY>rect.top+rect.height/2) ? ti+1 : ti;
+    var order=q.filter(function(r){ return !r.skipped; })
+               .map(function(r){ return r.title; });
+    var from=order.indexOf(drag.title); if(from<0) return;
+    if(target>from) target--;
+    order.splice(from,1);
+    if(target>order.length) target=order.length;
+    order.splice(target,0,drag.title);
+    /* Pin the MINIMAL head that reproduces this exact visible order under
+       the server sort (priority first, then bitrate): the longest tail that
+       is already in descending-bitrate order needs no pinning. Dropping a
+       row back into pure bitrate order therefore clears the pins. */
+    var mb={}; q.forEach(function(r){ mb[r.title]=r.mbps; });
+    var cut=order.length-1;
+    while(cut>0 && mb[order[cut-1]]>=mb[order[cut]]) cut--;
+    api("/api/queue/order",{order:order.slice(0,cut)});
+  });
 }
 
 function renderLedger(rows){
@@ -599,6 +1010,15 @@ function renderLedger(rows){
       if(r.note){ tr.title=r.note; }
       return tr;
     }));
+  var noted=[];
+  ordered.forEach(function(r,i){
+    if(r.note) noted.push((ordered.length-i)+". "+r.title+" — "+r.note);
+  });
+  if(noted.length){
+    var box=el("div","lnotes");
+    noted.forEach(function(t){ box.appendChild(el("div",null,t)); });
+    pane.appendChild(box);
+  }
 }
 
 function paint(s){
@@ -606,9 +1026,17 @@ function paint(s){
   renderStats(s.summary);
   renderLive(s.live, s.summary);
   var key=tab+"|"+JSON.stringify(tab==="queue"?s.queue:s.ledger);
-  if(last.key!==key){ last.key=key; (tab==="queue"?renderQueue(s.queue):renderLedger(s.ledger)); }
-  document.getElementById("tabQueue").textContent="Queue ("+s.queue.length+")";
+  if(last.key!==key){
+    if(tab==="queue"&&drag){ last.pending=true; }
+    else{ last.key=key;
+      (tab==="queue"?renderQueue(s.queue, s.summary):renderLedger(s.ledger)); }
+  }
+  var nq=s.summary.queue_count!=null?s.summary.queue_count:s.queue.length;
+  document.getElementById("tabQueue").textContent="Queue ("+nq+
+    (s.summary.queue_skipped ? " · "+s.summary.queue_skipped+" skipped" : "")+")";
   document.getElementById("tabLedger").textContent="History ("+s.ledger.length+")";
+  var anyPin=s.queue.some(function(r){ return r.pinned&&!r.skipped; });
+  document.getElementById("resetOrder").hidden=!(tab==="queue"&&anyPin);
   document.getElementById("gen").textContent="updated "+s.summary.generated_at;
   document.getElementById("stopnote").textContent=
     "pausing below "+s.summary.stop_mbps+" Mb/s";
@@ -622,6 +1050,9 @@ function setTab(name){
 }
 document.getElementById("tabQueue").addEventListener("click",function(){setTab("queue");});
 document.getElementById("tabLedger").addEventListener("click",function(){setTab("ledger");});
+document.getElementById("resetOrder").addEventListener("click",function(){
+  api("/api/queue/order",{order:[]});
+});
 
 /* Seam blanking. Below 700px the title column pins while the rest scrolls,
    and a cell HALF hidden is worse than one fully hidden: sliced at the pane's
@@ -716,9 +1147,12 @@ function conn(state,text){
 var es=new EventSource("/api/stream?t="+encodeURIComponent(token));
 es.onopen=function(){ conn("on","live"); };
 es.onerror=function(){ conn("off","reconnecting"); };
+var booted=false;
 es.onmessage=function(ev){
   try{ var s=JSON.parse(ev.data); }catch(_){ return; }
   last.state=s; conn("on","live"); paint(s);
+  if(!booted){ booted=true;
+    setTimeout(function(){ document.body.classList.add("booted"); },900); }
 };
 })();
 </script>

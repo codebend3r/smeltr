@@ -134,15 +134,17 @@ def section_stats(s) -> str:
          if s["completed_unknown_source"] else str(s["completed"])),
         ("Still queued",
          (f"{s['queue_waiting']} waiting above {s['stop_mbps']:.0f} Mb/s"
-          f" + {s['queue_encoding']} encoding   ({gib(s['queue_bytes'])} of originals)")
+          f" + {s['queue_encoding']} encoding   ({gib(s['queue_bytes'])} of"
+          f" originals{', incl. the encoding' if s['queue_encoding'] else ''})")
          if complete else
          f"unknown — library not fully mounted ({s['queue_waiting']} readable)"),
         ("Still to reclaim",
-         f"{gib(s['queue_reclaimable_bytes'])}   (projected at the measured {avg:.1f}%)"
+         f"~{gib(s['queue_reclaimable_bytes'])}   (projected at the measured {avg:.1f}%)"
          if complete and s.get("queue_reclaimable_bytes") else
          ("unknown — library not fully mounted" if not complete else "0 GiB")),
         ("Job progress",
-         f"{s['job_progress_pct']:.1f}%   (by reclaimed bytes, not title count)"
+         f"~{s['job_progress_pct']:.1f}%   (by reclaimed bytes, not title count"
+         f"{'; goal still counts the skipped titles' if s.get('queue_skipped') else ''})"
          if s.get("job_progress_pct") is not None else
          ("cannot be computed — " + ", ".join(s.get("roots_offline") or [])
           + " not mounted" if not complete else "—")),
@@ -154,6 +156,11 @@ def section_stats(s) -> str:
          f"({s['queue_encoding']} encoding, {s['staged_unencoded']} not yet encoded"
          f" = {gib(s['staged_unencoded_bytes'])})"),
     ]
+    if s.get("queue_skipped"):
+        pairs.insert(4, ("Skipped by hand",
+                         f"{s['queue_skipped']} titles ({gib(s['queue_skipped_bytes'])})"
+                         " — out of Still queued and Still to reclaim;"
+                         " Job progress keeps them in its goal"))
     if not s.get("library_complete", True):
         pairs.insert(0, ("!! LIBRARY",
                          "INCOMPLETE — " + ", ".join(s.get("roots_offline") or [])
@@ -216,15 +223,25 @@ def section_queue(q, limit) -> str:
     rows = []
     for i, r in enumerate(shown, 1):
         status = "ENCODING" if r["encoding"] else ("staged" if r["staged"] else "library")
-        rows.append([i, f"{r['mbps']:.1f}", gib(r["bytes"]), r["title"],
+        if r.get("skipped"):
+            status = "SKIPPED"
+        elif r.get("pinned"):
+            status = "pinned · " + status
+        rank = "—" if r.get("skipped") else i
+        rows.append([rank, f"{r['mbps']:.1f}", gib(r["bytes"]), r["title"],
                      r["location"], status])
     # "MB/S" reads as megabytes and is 8x wrong; and neither the bitrate nor the
     # size column said whether it described the original or the output.
     body = render_table(["RANK", "SRC Mb/s", "SRC SIZE", "TITLE", "NAS", "STATUS"],
                         rows, ["r", "r", "r", "l", "l", "l"])
     note = ""
-    if len(shown) < len(q):
-        note = c(f"\n  … {len(q)-len(shown)} more not shown — use --all for the full queue.", "2")
+    hidden = q[len(shown):]
+    if hidden:
+        hw = sum(1 for r in hidden if not r.get("skipped"))
+        hs = len(hidden) - hw
+        parts = ([f"{hw} more waiting"] if hw else []) + \
+                ([f"{hs} skipped by hand"] if hs else [])
+        note = c(f"\n  … {' + '.join(parts)} not shown — use --all for the full queue.", "2")
     return indent(body, 2) + note + "\n"
 
 
@@ -307,6 +324,8 @@ def main() -> int:
         print(f"  {c('WARNING: staging drive not mounted — sizes below are incomplete', '1;33')}")
     # An offline library root silently empties the queue, which is
     # indistinguishable from having finished. Say so, loudly, every time.
+    if s.get("overrides_corrupt"):
+        print(f"  {c('!! queue_overrides.json is unreadable — skips and priorities are NOT applied.', '1;33')}")
     if not s.get("library_complete", True):
         missing = ", ".join(s.get("roots_offline") or ["unknown"])
         print(f"  {c('!! LIBRARY INCOMPLETE: ' + missing + ' not mounted.', '1;31')}")
