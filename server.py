@@ -350,6 +350,49 @@ td.n,th.n{text-align:right}
 .empty{padding:28px;text-align:center;color:var(--ink-3);font-size:13px}
 footer{margin-top:22px;font-size:11.5px;color:var(--ink-3);display:flex;gap:14px;flex-wrap:wrap}
 @media (prefers-reduced-motion:reduce){.bar>i{transition:none}}
+
+/* ---- Responsive. Below 700px the tables keep scrolling sideways: the
+   title column pins to the left edge (the title is the identity of a row --
+   an index column carries nothing the row order does not), and any column
+   sliced at a boundary is blanked by the seam script rather than clipped.
+   Every colour here is an existing token, so both themes are covered. ---- */
+@media (max-width:700px){
+  body{padding:16px 12px 48px}
+  .kv{grid-template-columns:repeat(auto-fit,minmax(104px,1fr))}
+  /* 60vh, floored so portrait phones keep a useful table, capped so the
+     floor cannot exceed a short landscape viewport. */
+  .scroll{max-height:min(max(60vh,340px),72dvh)}
+  th,td{padding:7px 9px}
+  /* Row colour lives on the tr so the pinned title inherits it opaquely --
+     a transparent pinned cell shows the columns sliding through it. */
+  tr{background:var(--panel)}
+  thead tr{background:var(--panel-2)}
+  tbody tr:hover{background:var(--row-hover)}
+  .rowenc{background:var(--row-enc)}
+  /* Both tables mark the title th and td with .title-cell, so no per-table
+     column arithmetic is needed and left:0 is the only constant. Until the
+     scroll reaches it the title sits in its natural column; from then on it
+     docks at the left edge and the rest slides beneath it. */
+  .title-cell{min-width:190px;position:sticky;left:0;z-index:1;
+    background:inherit;border-right:1px solid var(--line)}
+  /* Headers float above the pinned title cells; the pinned corner above both. */
+  th{z-index:2}
+  th.title-cell{z-index:3}
+  /* A column sliced at a boundary renders EMPTY, not clipped. Clipped on its
+     left, a right-aligned "70.64 GiB" still parses -- as "0.64 GiB"; clipped
+     on its right it loses its unit and "78.24" bare could be Mb/s or GiB.
+     The .cut class is applied by the seam script at the bottom of the page. */
+  td.cut,th.cut{color:transparent}
+  td.cut *,th.cut *{visibility:hidden}
+}
+@media (pointer:coarse){
+  .themebtn{width:44px;height:44px}
+  .tab{padding:11px 16px}
+  /* The hover-only scrollbar has no hover to wait for on touch. Without this
+     the History table hides 3/4 of its columns with zero affordance. */
+  .scroll{scrollbar-color:var(--thumb) transparent}
+  .scroll::-webkit-scrollbar-thumb{background:var(--thumb);background-clip:content-box}
+}
 </style>
 <script nonce="__NONCE__">
 /* Runs before first paint. Anything later flashes the wrong theme on load. */
@@ -500,7 +543,9 @@ function renderLive(live, s){
 
 function table(cols, rows, build){
   var t=el("table"), thead=el("thead"), tr=el("tr");
-  cols.forEach(function(c){ var th=el("th",c.n?"n":null,c.label); tr.appendChild(th); });
+  cols.forEach(function(c){
+    var th=el("th",[c.n?"n":"",c.cls||""].join(" ").trim()||null,c.label);
+    tr.appendChild(th); });
   thead.appendChild(tr); t.appendChild(thead);
   var tb=el("tbody");
   rows.forEach(function(r,i){ tb.appendChild(build(r,i)); });
@@ -513,7 +558,7 @@ function renderQueue(q){
     "Nothing left above the stop threshold.")); return; }
   pane.appendChild(table(
     [{label:"Rank",n:true},{label:"Src Mb/s",n:true},{label:"Src size",n:true},
-     {label:"Title"},{label:"NAS"},{label:"Status"}],
+     {label:"Title",cls:"title-cell"},{label:"NAS"},{label:"Status"}],
     q, function(r,i){
       var tr=el("tr", r.encoding?"rowenc":null);
       tr.appendChild(el("td","n muted",String(i+1)));
@@ -534,7 +579,7 @@ function renderLedger(rows){
   if(!rows.length){ pane.appendChild(el("div","empty","No encodes recorded yet.")); return; }
   var ordered=rows.slice().reverse();
   pane.appendChild(table(
-    [{label:"#",n:true},{label:"Title"},{label:"Original",n:true},{label:"Output",n:true},
+    [{label:"#",n:true},{label:"Title",cls:"title-cell"},{label:"Original",n:true},{label:"Output",n:true},
      {label:"Saved",n:true},{label:"Shrink",n:true},{label:"Tracks"},{label:"Moved to"},
      {label:"Source of record"},{label:"Finished"}],
     ordered, function(r,i){
@@ -577,6 +622,63 @@ function setTab(name){
 }
 document.getElementById("tabQueue").addEventListener("click",function(){setTab("queue");});
 document.getElementById("tabLedger").addEventListener("click",function(){setTab("ledger");});
+
+/* Seam blanking. Below 700px the title column pins while the rest scrolls,
+   and a cell HALF hidden is worse than one fully hidden: sliced at the pane's
+   left edge or the pinned title's edge, a right-aligned size keeps its
+   trailing digits and still parses as a plausible size; sliced at the right
+   edge it keeps its digits but loses its unit. Whichever column straddles a
+   boundary gets .cut (blank but layout-stable) until it is fully clear. The
+   straddle test uses the text box (cell inset by its padding), so a value
+   whose glyphs are fully visible is never blanked. Title cells are never
+   cut: a clipped title misleads no one, a missing one identifies nothing.
+   Geometry only -- reads no data, writes no text. */
+(function(){
+  var pane=document.getElementById("pane"), cuts=[], pend=false;
+  function applyCut(tbl,i,on){
+    for(var r=0;r<tbl.rows.length;r++){
+      var c=tbl.rows[r].cells[i];
+      if(c) c.classList.toggle("cut",on);
+    }
+  }
+  function recut(){
+    var tbl=pane.querySelector("table");
+    if(!tbl||!tbl.rows.length){ cuts=[]; return; }
+    var head=tbl.rows[0], styles=[], sticky=[], pinnedRight=null, i, rc;
+    for(i=0;i<head.cells.length;i++){
+      styles[i]=getComputedStyle(head.cells[i]);
+      sticky[i]=styles[i].position==="sticky"&&styles[i].left!=="auto";
+      if(sticky[i]){
+        rc=head.cells[i].getBoundingClientRect();
+        if(pinnedRight==null||rc.right>pinnedRight) pinnedRight=rc.right;
+      }
+    }
+    var next=[];
+    if(pinnedRight!=null){  /* the pinned title exists only below 700px */
+      var pr=pane.getBoundingClientRect();
+      var bounds=[pr.left,pinnedRight,pr.left+pane.clientWidth];
+      for(i=0;i<head.cells.length;i++){
+        if(sticky[i]||head.cells[i].classList.contains("title-cell")) continue;
+        rc=head.cells[i].getBoundingClientRect();
+        var L=rc.left+parseFloat(styles[i].paddingLeft),
+            R=rc.right-parseFloat(styles[i].paddingRight);
+        for(var b=0;b<bounds.length;b++){
+          if(L<bounds[b]-1&&R>bounds[b]+1){ next.push(i); break; }
+        }
+      }
+    }
+    cuts.forEach(function(c){ if(next.indexOf(c)<0) applyCut(tbl,c,false); });
+    next.forEach(function(c){ if(cuts.indexOf(c)<0) applyCut(tbl,c,true); });
+    cuts=next;
+  }
+  function schedule(){ if(pend) return; pend=true;
+    requestAnimationFrame(function(){ pend=false; recut(); }); }
+  pane.addEventListener("scroll",schedule,{passive:true});
+  window.addEventListener("resize",schedule);
+  new MutationObserver(function(){ cuts=[]; schedule(); })
+    .observe(pane,{childList:true});
+  schedule();
+})();
 
 /* Theme. A stored value is an explicit choice and always wins. With no stored
    choice the OS preference wins and KEEPS winning -- flipping the system theme

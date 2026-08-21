@@ -36,7 +36,7 @@ pkill -f autopilot.sh && rm -rf "/Volumes/Crucial X9/4K Movies/.autopilot.lock"
 
 ## Editing the look and feel
 
-Everything visual is one string, `_PAGE`, in `server.py` lines ~210–624.
+Everything visual is one string, `_PAGE`, in `server.py` lines ~210–724.
 
 | Lines | What |
 |---|---|
@@ -48,9 +48,11 @@ Everything visual is one string, `_PAGE`, in `server.py` lines ~210–624.
 | 302–313 | progress bar |
 | 314–319 | tabs |
 | 320–352 | tables + the hover-only scrollbar |
-| 354–363 | pre-paint theme script (runs in `<head>`) |
-| 367–387 | markup |
-| 413–560 | `renderAlert` `renderStats` `renderLive` `renderQueue` `renderLedger` |
+| 354–395 | responsive media queries — ≤700px pinned title column + `.cut`, coarse-pointer touch targets + visible scrollbar |
+| 397–408 | pre-paint theme script (runs in `<head>`) |
+| 410–430 | markup |
+| 456–603 | `renderAlert` `renderStats` `renderLive` `renderQueue` `renderLedger` |
+| 626–681 | seam-blanking script — blanks any column sliced at the pane edges or the pinned title |
 
 **Three rules. Breaking any of them breaks the page silently:**
 
