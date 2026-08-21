@@ -1,0 +1,7 @@
+# Runtime artifacts, regenerated on every start. server.log and url can contain
+# the session token when SMELTR_REQUIRE_TOKEN=1, so they must never be committed.
+url
+server.pid
+server.log
+__pycache__/
+*.pyc

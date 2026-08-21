@@ -1,0 +1,78 @@
+#!/bin/bash
+# Smeltr launcher. start | stop | status | report | url
+#
+# The dashboard is a background process holding a token minted at startup; the
+# token is written to ~/.smeltr/url and never logged anywhere else.
+set -uo pipefail
+# Resolve from this script's own location so the checkout can live anywhere and
+# be cloned without editing paths. Override with SMELTR_DIR.
+DIR="${SMELTR_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+PIDF="$DIR/server.pid"
+PY="${SMELTR_PYTHON:-python3}"
+
+# Liveness has to survive a stale pidfile AND a server started outside this
+# launcher. Checking only the pidfile once left two servers bound to two ports,
+# each printing a different token, so "the" dashboard URL became ambiguous.
+# Broad enough to catch the server however it was invoked; the pidfile written
+# by the server itself is the authoritative source and is checked first.
+# Match the FULL path. A bare "server.py" pattern matched any unrelated
+# server.py on the machine -- `stop` would have killed it, and `running` would
+# have adopted its pid and reported a stale URL as live.
+server_pids() { pgrep -f "$DIR/[s]erver\.py" 2>/dev/null; }
+running() {
+  if [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null; then return 0; fi
+  local found; found=$(server_pids | head -1)
+  if [ -n "$found" ]; then echo "$found" > "$PIDF"; return 0; fi
+  return 1
+}
+
+start() {
+  if running; then echo "already running: $(cat "$DIR/url" 2>/dev/null)"; return 0; fi
+  rm -f "$DIR/url"
+  nohup "$PY" "$DIR/server.py" > "$DIR/server.log" 2>&1 &
+  chmod 600 "$DIR/server.log" 2>/dev/null || true
+  echo $! > "$PIDF"
+  # Wait for the server to publish its URL rather than guessing a sleep length.
+  for _ in $(seq 1 100); do
+    [ -s "$DIR/url" ] && { echo "$(cat "$DIR/url")"; return 0; }
+    perl -e 'select(undef,undef,undef,0.1)' 2>/dev/null || true
+  done
+  echo "failed to start; see $DIR/server.log" >&2
+  tail -5 "$DIR/server.log" >&2
+  return 1
+}
+
+stop() {
+  local pids; pids=$(server_pids)
+  if [ -n "$pids" ]; then
+    # shellcheck disable=SC2086
+    kill $pids 2>/dev/null
+    # WAIT for them to actually die. Returning immediately meant `restart` saw
+    # the dying pid, reported "already running" with a URL that had just been
+    # deleted, and started nothing -- leaving no dashboard at all.
+    for _ in $(seq 1 50); do
+      [ -z "$(server_pids)" ] && break
+      perl -e 'select(undef,undef,undef,0.1)' 2>/dev/null || true
+    done
+    if [ -n "$(server_pids)" ]; then
+      # shellcheck disable=SC2046
+      kill -9 $(server_pids) 2>/dev/null
+    fi
+    echo "stopped"
+  else
+    echo "not running"
+  fi
+  rm -f "$PIDF" "$DIR/url"
+}
+
+case "${1:-report}" in
+  start)  start ;;
+  stop)   stop ;;
+  restart) stop >/dev/null; start ;;
+  status) running && echo "running: $(cat "$DIR/url" 2>/dev/null)" || echo "not running" ;;
+  url)    cat "$DIR/url" 2>/dev/null || { echo "not running" >&2; exit 1; } ;;
+  report) shift 2>/dev/null; running || start >/dev/null 2>&1; exec "$PY" "$DIR/report.py" "$@" ;;
+  record) shift; exec "$PY" "$DIR/record.py" "$@" ;;
+  open)   running || start >/dev/null 2>&1; exec open "$(cat "$DIR/url")" ;;
+  *)      echo "usage: smeltr {start|stop|restart|status|url|open|report [...]|record <folder> [...]}" >&2; exit 2 ;;
+esac
