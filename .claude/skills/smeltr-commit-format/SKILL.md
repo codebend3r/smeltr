@@ -74,7 +74,7 @@ config keys, CSS selectors and custom properties, JSON fields.
 
 | Kind | Example |
 |---|---|
-| Files / paths | `` `server.py` ``, `` `core.py` ``, `` `skills/queue-report/SKILL.md` `` |
+| Files / paths | `` `server.py` ``, `` `core.py` ``, `` `.claude/skills/queue-report/SKILL.md` `` |
 | Functions | `` `renderLive` ``, `` `el()` ``, `` `next_title()` `` |
 | CSS | `` `:root` ``, `` `.stat-card` ``, `` `--accent` ``, `` `prefers-color-scheme` `` |
 | CLI | `` `./smeltr restart` ``, `` `HandBrakeCLI` ``, `` `awk` `` |
@@ -118,8 +118,9 @@ skill. It is their own durable policy; changing it means editing this file.
 
 ### But naming Claude Code as subject matter is correct here
 
-This repo contains `CLAUDE.md` and symlinks its skills and agents into
-`~/.claude`. Commits about those files **must** name them. The rule forbids
+This repo contains `CLAUDE.md`, carries its skills in `.claude/skills/`, and
+symlinks its review agents into `~/.claude/agents/`. Commits about those files
+**must** name them. The rule forbids
 *attribution*, not the *string*. Do not scrub a legitimate reference to dodge a
 grep.
 
@@ -127,7 +128,7 @@ grep.
 SMLTR: Add `CLAUDE.md` for fresh-session context
 
 - `CLAUDE.md` maps which files the unattended driver depends on
-- `~/.claude/skills/*` are symlinks — editing them edits tracked files
+- `.claude/skills/*` are project-scoped — they load only inside this repo
 ```
 
 ## Quick Reference

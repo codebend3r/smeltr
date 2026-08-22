@@ -288,7 +288,7 @@ and always has** — pre-existing, not yet addressed.
 
 ## Reviewing changes
 
-Two adversarial agents live in `agents/` and are symlinked into `~/.claude`:
+Two adversarial agents live in `agents/` and are symlinked into `~/.claude/agents/`:
 `smeltr-code-critic` (code) and `smeltr-data-critic` (the numbers a human reads
 before authorising a deletion). Use the data critic after changing anything the
 dashboard displays — it has caught mislabelled units, totals computed over
@@ -321,5 +321,8 @@ structure mechanically; if one changes, change the other.
 - **A transfer that is not moving is "stalled", never a progress bar.** Log
   tails and leftover `.partial`s are not proof of life.
 
-`~/.claude/skills/*` and `~/.claude/agents/smeltr-*.md` are **symlinks into this
-repo** — editing them edits tracked files.
+The skills in `.claude/skills/` are **project-scoped**: Claude Code loads them
+only while the working directory is inside this repo, and they have no presence
+in `~/.claude/skills`. The review agents are the exception:
+`~/.claude/agents/smeltr-*.md` are still **symlinks into `agents/` in this
+repo**, so editing them edits tracked files.

@@ -164,25 +164,30 @@ loopback-write gate are what guard against devices that already hold the URL.
 
 ## Skills and agents
 
-The Claude Code skills and review agents for this job live in the repo and are
-symlinked into `~/.claude`:
+The Claude Code skills for this job are **project-scoped** — they live in
+`.claude/skills/` and load automatically whenever the working directory is
+inside this repo. Nothing needs wiring up on a fresh machine, and they leave no
+trace in `~/.claude/skills`:
 
 ```
-skills/queue-report/           this dashboard's own skill
-skills/4k-hevc-reencoding/     the CRF ladder and the mandatory track passthrough
-skills/4k-hevc-library-sync/   verified sync back to the NAS
-skills/4k-hevc-preview-encode/ 5-minute sample before committing to a long run
-skills/smeltr-commit-format/   `SMLTR:` commit subjects and bullet bodies
-skills/smeltr-pr-format/       the five required pull request sections
-skills/smeltr-release/         `npm version` -> tag -> push
+.claude/skills/queue-report/           this dashboard's own skill
+.claude/skills/4k-hevc-reencoding/     the CRF ladder and the mandatory track passthrough
+.claude/skills/4k-hevc-library-sync/   verified sync back to the NAS
+.claude/skills/4k-hevc-preview-encode/ 5-minute sample before committing to a long run
+.claude/skills/smeltr-commit-format/   `SMLTR:` commit subjects and bullet bodies
+.claude/skills/smeltr-pr-format/       the five required pull request sections
+.claude/skills/smeltr-release/         `npm version` -> tag -> push
+```
+
+The two review agents are **not** project-scoped — they are symlinked into
+`~/.claude/agents/` so they can be dispatched from anywhere:
+
+```
 agents/smeltr-code-critic.md   ruthless code reviewer
 agents/smeltr-data-critic.md   ruthless reviewer of the numbers a human reads
 ```
 
-To wire them up on a fresh machine:
-
 ```bash
-ln -s "$PWD/skills/<name>" ~/.claude/skills/<name>
 ln -s "$PWD/agents/<name>.md" ~/.claude/agents/<name>.md
 ```
 
@@ -200,4 +205,4 @@ tagged over a syntax error in the decision path. `package.json` exists only to
 drive this and is `"private": true`; the version lives in `package.json` and
 the tag and nowhere else.
 
-See `skills/smeltr-release/SKILL.md`, including how to undo a bump.
+See `.claude/skills/smeltr-release/SKILL.md`, including how to undo a bump.

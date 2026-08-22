@@ -1,7 +1,7 @@
 <!-- Title: SMLTR: <Capitalized verb> <short title>   (<=72 chars, no trailing period)
      All five sections are required. Do not add, remove, or reorder them.
      Bullets only, `-`, terse, no trailing periods, backtick every code reference.
-     See skills/smeltr-pr-format/SKILL.md -->
+     See .claude/skills/smeltr-pr-format/SKILL.md -->
 
 ## What changed
 
