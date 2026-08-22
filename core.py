@@ -139,6 +139,11 @@ def _eta_seconds(text: Optional[str]) -> Optional[int]:
     return h * 3600 + mi * 60 + s
 
 
+# HandBrake reports its own auto-crop as top/bottom/left/right. It is the only
+# evidence that distinguishes "trimmed dead pixels" from "resampled smaller".
+AUTOCROP_RE = re.compile(r"autocrop\s*[=:]\s*(\d+)/(\d+)/(\d+)/(\d+)")
+
+
 def parse_log(path: str) -> dict:
     """Pull everything useful out of one HandBrake log without reading it all."""
     head = _read_slice(path, 262144, from_end=False)
@@ -159,6 +164,8 @@ def parse_log(path: str) -> dict:
     out["geometry"] = f"{m.group(1)}x{m.group(2)}" if m else None
     m = SRC_GEOM_RE.search(head)
     out["source_geometry"] = f"{m.group(1)}x{m.group(2)}" if m else None
+    m = AUTOCROP_RE.search(head)
+    out["autocrop"] = tuple(int(g) for g in m.groups()) if m else None
 
     # Track counts come from the scan block, which lists one "+ N, <lang>" line
     # per track under an "audio tracks:" / "subtitle tracks:" header.
@@ -314,15 +321,34 @@ def crop_factor(src_geom: Optional[str], out_geom: Optional[str]) -> float:
     return sa / oa
 
 
-def is_downscale(src_geom: Optional[str], out_geom: Optional[str]) -> bool:
-    """True only if the frame got NARROWER. Cropping changes height, not width;
-    a reduced width means resolution was actually thrown away."""
+def is_downscale(src_geom: Optional[str], out_geom: Optional[str],
+                 autocrop: Optional[tuple] = None) -> bool:
+    """True only if width was lost to RESAMPLING rather than to cropping.
+
+    A narrower frame usually means resolution was thrown away, but HandBrake's
+    auto-crop is four-sided: it trims dead columns as well as letterbox rows.
+    Kubo scanned as `autocrop = 278/278/0/2` and came out 3838 wide from a 3840
+    source -- two dead columns, nothing resampled -- which the old width-only
+    test called a downscale and halted the driver on after a five-hour encode.
+
+    So subtract the columns auto-crop accounts for and judge the remainder. With
+    no autocrop data we cannot tell the two apart, and the conservative answer
+    is the one that refuses to delete an original: any width loss counts.
+    """
     if not src_geom or not out_geom:
         return False
     try:
-        return int(out_geom.lower().split("x")[0]) < int(src_geom.lower().split("x")[0])
+        src_w = int(src_geom.lower().split("x")[0])
+        out_w = int(out_geom.lower().split("x")[0])
     except ValueError:
         return False
+    cropped_w = 0
+    if autocrop and len(autocrop) == 4:
+        try:
+            cropped_w = int(autocrop[2]) + int(autocrop[3])   # left + right
+        except (TypeError, ValueError):
+            cropped_w = 0
+    return out_w < src_w - cropped_w
 
 
 # Two independent defences, deliberately measured on different scales.
@@ -481,7 +507,8 @@ def live_encodes() -> list[dict]:
         src_geom, out_geom = lg.get("source_geometry"), lg.get("geometry")
         cf = crop_factor(src_geom, out_geom)
         norm = ratio * cf if ratio is not None else None
-        code, note = _verdict(ratio, hist, norm, is_downscale(src_geom, out_geom))
+        code, note = _verdict(ratio, hist, norm,
+                              is_downscale(src_geom, out_geom, lg.get("autocrop")))
 
         title = re.sub(r"\s+(Remux-)?2160p.*$", "", src_name).strip()
         result.append({

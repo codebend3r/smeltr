@@ -79,7 +79,7 @@ def main() -> int:
     norm = ratio * core.crop_factor(src_geom, out_geom)
     code, note = core._verdict(
         ratio, core.history_ratios(normalised=True), norm,
-        core.is_downscale(src_geom, out_geom))
+        core.is_downscale(src_geom, out_geom, info.get("autocrop")))
 
     # A decoder-error count is not part of the size verdict but must never be
     # silently ignored: a corrupt output can still be small and well-shaped.
