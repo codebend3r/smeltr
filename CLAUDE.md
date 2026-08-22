@@ -20,18 +20,57 @@ on a `good` verdict. It calls this repo on every cycle.
 | `verdict.py` | **YES** — exit code decides sync-or-halt | no |
 | `next_title.py` | **YES** — picks what encodes next | no |
 | `record.py` | **YES** — writes the ledger | no |
-| `server.py` | no — never imported by the decision path | **yes** |
+| `server.py` | no — never imported by the decision path (but see below: it now spawns/kills encodes) | mostly |
 | `report.py` | no | **yes** |
 
-Verified: `verdict.py` does not load `server.py`. **Editing the dashboard cannot
-affect what gets deleted.** Worst case the page breaks and the pipeline keeps
-running.
+Verified: `verdict.py` does not load `server.py`. Worst case the page breaks
+and the pipeline keeps running.
 
-One nuance since the skip/reorder feature: `server.py` is no longer a pure
-reader — its two POST endpoints write `queue_overrides.json`, which the
-decision path READS (see below). That file steers only *which title encodes or
-stages next*, never the verdict, the sync, or a deletion. A broken or deleted
-overrides file degrades to stock bitrate order everywhere.
+`server.py` is NOT a pure observer any more. Two escalations, in order:
+
+1. Skip/reorder (2026-08-21): `POST /api/queue/skip|order` write
+   `queue_overrides.json`, which the decision path READS. Steers only *which
+   title encodes or stages next*, never the verdict, sync, or a deletion. A
+   broken or deleted overrides file degrades to stock bitrate order.
+2. Encode control (2026-08-22): `POST /api/encode/start` SPAWNS HandBrakeCLI
+   (per-title CRF from a fixed 16/18/20/22/24 menu) and `POST /api/encode/abort`
+   KILLS one, deletes its partial, and writes a skip. The encode-control block
+   in `server.py` deliberately mirrors `.autopilot.sh start_encode()` — same
+   flags, same 120 s track-parity gate (kill + delete on mismatch), same
+   handoff to `.watch-encode.sh` so the ladder/auto-kill still apply. The two
+   are SEPARATE IMPLEMENTATIONS of one procedure: a change to either must be
+   mirrored in the other. What `server.py` still cannot do: judge, record,
+   sync, or delete anything in the library. Start refuses while
+   `autopilot.sh` is alive (pgrep, not the lock file) or any encode runs;
+   abort's skip-write is what stops a running driver relaunching the same
+   title 30 s later. CRF 22/24 sit OUTSIDE the ladder (`.watch-encode.sh`
+   maps only 16→18→20): a blowup at 22/24 is still auto-killed but nothing
+   restarts it. Slow halves (parity gate, kill grace) run on daemon threads
+   and report through `encode_note` in the state payload.
+3. Stage-on-demand (2026-08-22): `POST /api/stage/start` SPAWNS an
+   `.ssh-xfer.sh pull` of one library title onto the staging drive (the
+   hover "stage" button on library-only rows). It mirrors the per-title pull
+   in `.replenish-queue.sh` — same free-space gate (source + in-flight pulls
+   + 10 GiB margin), same delete-the-folder cleanup on failure — with ONE
+   deliberate deviation: **the pull lands in a hidden `.pull-<title>` folder
+   and is renamed into place only when the byte count checks out.** The
+   replenisher may pull into a visible folder ONLY because the driver calls
+   it synchronously — it structurally cannot be at the `next_title` step
+   while its own pull is in flight. A dashboard pull is asynchronous, and a
+   visible folder holding no source `.mkv` is picked by `next_title.py` and
+   HALTS the driver (`no source file`, exit 2 — confirmed in a sandbox).
+   Hidden means invisible to `next_title.py`, `core.staged_folders()`, and
+   the replenisher's `find`; a leftover from a crashed server can only ever
+   render as a stalled arrival, never as an encodable folder. One pull at a
+   time (in-process flag AND `pgrep ssh-xfer.sh pull`, so the guard survives
+   a server restart); refused while the replenisher is mid-run (its lock +
+   pgrep — a lock with no live process is reported as STALE, with the rmdir
+   to run, since it silently starves the replenisher too). `_arrivals()`
+   tracks growth like `_transfers()`: >120 s without growth renders
+   `stalled`, never a bar. Failures report through `encode_note` (a `bad`
+   note resists `ok` overwrites for 15 min — it is often the only record);
+   log in `.pull-<slug>.log`. A completed pull is NEVER deleted over a
+   rename failure — the note says where the file is.
 
 ### Pausing the driver — the exact procedure
 
@@ -117,6 +156,14 @@ Who honours it:
 - A skipped title stays **in place** in the queue — faded, title struck
   through, rank "—", with a restore button. A skip that vanished (or sank out
   of view) would read as "finished".
+- There is no dedicated skip column any more: skip/restore, the CRF picker +
+  "start encode" (only on the single `ready` row, only while `can_start`),
+  "stage" (only on library-only rows: not staged, not arriving), and abort
+  (only on the encoding row) all live in the title cell as hover
+  actions — revealed on `:hover`/`:focus-within`, always visible on coarse
+  pointers, because the LAN phones have no hover. The `ready` row is computed
+  server-side by `_mark_ready()`, which mirrors `next_title.py`'s pick (NOT
+  simply rank 1 — library-only rows outrank staged ones constantly).
 
 Failure modes are loud, not silent: `save_overrides` fsyncs before its atomic
 replace, and a present-but-unparseable file falls back to stock order while
@@ -162,23 +209,23 @@ second request.
 
 ## Editing the look and feel
 
-Everything visual is one string, `_PAGE`, in `server.py` (starts ~line 519;
-the bind/token/allowlist config and GET/POST handlers sit above it). Map as of
-the LAN-bind change:
+Everything visual is one string, `_PAGE`, in `server.py` (starts ~line 1217;
+the bind/token/allowlist config, GET/POST handlers, encode control, and stage
+control sit above it). Map as of the stage-on-demand change:
 
 | Lines | What |
 |---|---|
-| 527–554 | `:root` dark design tokens — colours, radius, motion accents. **Start here.** |
-| 555–579 | `:root[data-theme="light"]` — the light overrides, same token names |
-| 580–691 | base typography, header, stat cards, panels, live card, molten bar, tabs |
-| 692–757 | tables, scroll-reveal scrollbar, pin/skip/NAS/transfer marks, `.minibar`, `th.unit`, grips |
-| 758–809 | `prefers-reduced-motion` + responsive ≤700px (pinned title column, `.cut`) |
-| 810–822 | pre-paint theme script (runs in `<head>`) |
-| 823–846 | markup (incl. Reset-order button, `#uiNotice`, `__SCOPE__` footer) |
-| 905–928 | `notice()` + `api()` POST helper — the page's only writes |
-| 929–1394 | `renderAlert` `renderStats` `renderLive` `renderQueue`+`wireDrag` `renderLedger` |
-| 1395–1438 | `paint()` — repaint keys; MUST cover transfers on both tabs |
-| 1504–1545 | theme toggle, seam-blanking + scrolling-class scripts |
+| 1225–1252 | `:root` dark design tokens — colours, radius, motion accents. **Start here.** |
+| 1253–1274 | `:root[data-theme="light"]` — the light overrides, same token names |
+| 1275–1391 | base typography, header, stat cards, panels, live card, molten bar, tabs |
+| 1392–1497 | tables, scroll-reveal scrollbar, pin/skip/NAS/transfer marks, `.minibar` (+ red `.minibar.pull`), `th.unit`, grips |
+| 1498–1546 | `prefers-reduced-motion` + responsive ≤700px (pinned title column, `.cut`) |
+| 1548–1560 | pre-paint theme script (runs in `<head>`) |
+| 1561–1588 | markup (incl. Reset-order button, `#uiNotice`, `__SCOPE__` footer) |
+| 1647–1670 | `notice()` + `api()` POST helper — the page's only writes |
+| 1671–2242 | `renderAlert` `renderStats` `renderLive` `renderQueue`+`wireDrag` `renderLedger` |
+| 2243–2284 | `paint()` — repaint keys; MUST cover transfers on both tabs |
+| 2285–2405 | SSE wiring, Reset-order, theme toggle, seam-blanking + scrolling-class scripts |
 
 Network scope (`server.py` config block, top of file):
 
@@ -195,7 +242,7 @@ Network scope (`server.py` config block, top of file):
 - **The token persists** in a `token` file (0600, gitignored) beside the ledger
   — a fresh mint per launch would 403 every bookmarked phone and permanently
   close its SSE stream. Delete the file to rotate.
-- Writes (skip/reorder) are gated **per request** by peer address: loopback
+- Writes (every POST: skip/reorder/encode/stage) are gated **per request** by peer address: loopback
   (you, on this Mac) always writes; a network peer is refused unless
   `SMELTR_LAN_WRITES=1`. Un-skipping re-arms a deletion, so read-only is the
   network default. `X-Smeltr` is CSRF protection against browsers, not against

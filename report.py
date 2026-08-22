@@ -218,12 +218,38 @@ def section_live(live) -> str:
     return "\n".join(out) + "\n"
 
 
+def _arriving_on_x9(title: str, staged: bool) -> bool:
+    """A pull still landing: a hidden ".pull-<title>" dir (dashboard pull) or
+    a visible staged folder holding only a .partial (replenisher pull). The
+    web dashboard reports these as "arriving"; without this check the table
+    calls a mostly-missing file "staged", as if it were encodable right now.
+    """
+    if os.path.isdir(os.path.join(core.X9, ".pull-" + title)):
+        return True
+    if not staged:
+        return False
+    try:
+        names = [n for n in os.listdir(os.path.join(core.X9, title))
+                 if not n.startswith("._")]
+    except OSError:
+        return False
+    return (any(n.endswith(".partial") for n in names)
+            and not any(n.endswith((".mkv", ".mp4", ".m2ts")) for n in names))
+
+
 def section_queue(q, limit) -> str:
     shown = q if limit in (None, 0) else q[:limit]
     rows = []
     rank_n = 0
     for r in shown:
-        status = "ENCODING" if r["encoding"] else ("staged" if r["staged"] else "library")
+        if r["encoding"]:
+            status = "ENCODING"
+        elif _arriving_on_x9(r["title"], r["staged"]):
+            status = "arriving"
+        elif r["staged"]:
+            status = "staged"
+        else:
+            status = "library"
         if r.get("skipped"):
             status = "SKIPPED"
             rank = "—"

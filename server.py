@@ -29,8 +29,12 @@ import html
 import ipaddress
 import json
 import os
+import re
 import secrets
+import shutil
+import signal
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -264,13 +268,20 @@ def _transfers() -> list:
     return rows
 
 
+_arr_track: dict = {}
+
+
 def _arrivals() -> dict:
-    """Staged folders whose source is still a growing .partial from the
-    replenisher -- on disk but not yet encodable. Keyed by folder, lowercased.
-    Without this a half-arrived pull renders as "staged", which overstates
-    what the encoder could actually start right now.
+    """Pulls still landing on the staging drive, keyed by folder (lowercased).
+
+    Two shapes: a visible staged folder holding only the replenisher's growing
+    .partial, and a hidden ".pull-<folder>" directory holding a dashboard pull
+    (renamed into place only once complete, so the decision path never sees a
+    half-arrived title). Growth is tracked exactly like _transfers(): a
+    partial that stops growing for >120s reports stalled, never progress --
+    a leftover partial is not proof of life.
     """
-    out = {}
+    found = {}
     for folder in core.staged_folders():
         stage = os.path.join(core.X9, folder)
         try:
@@ -280,12 +291,59 @@ def _arrivals() -> dict:
         partials = [n for n in names if n.endswith(".partial")]
         full = [n for n in names if n.endswith((".mkv", ".mp4", ".m2ts"))]
         if partials and not full:
-            try:
-                done = os.path.getsize(os.path.join(stage, partials[0]))
-            except OSError:
-                continue
-            out[folder.lower()] = done
+            found[folder.lower()] = os.path.join(stage, partials[0])
+    try:
+        hidden = [n for n in os.listdir(core.X9)
+                  if n.startswith(".pull-")
+                  and os.path.isdir(os.path.join(core.X9, n))]
+    except OSError:
+        hidden = []
+    for n in hidden:
+        d = os.path.join(core.X9, n)
+        try:
+            names = [m for m in os.listdir(d) if not m.startswith("._")]
+        except OSError:
+            continue
+        if names:
+            found.setdefault(n[len(".pull-"):].lower(),
+                             os.path.join(d, names[0]))
+    out = {}
+    now = time.monotonic()
+    for key, path in found.items():
+        try:
+            done = os.path.getsize(path)
+        except OSError:
+            continue
+        rec = _arr_track.get(key)
+        rate = None
+        if rec is None:
+            rec = {"done": done, "t": now, "grew": now}
+            _arr_track[key] = rec
+        elif done > rec["done"]:
+            dt = now - rec["t"]
+            if dt > 0:
+                rate = (done - rec["done"]) / dt
+            rec.update(done=done, t=now, grew=now)
+        elif done < rec["done"]:
+            # A smaller partial is a NEW attempt; restart tracking.
+            rec.update(done=done, t=now, grew=now)
+        try:
+            fresh = (time.time() - os.path.getmtime(path)) < 120
+        except OSError:
+            fresh = False
+        out[key] = {"done": done,
+                    "stalled": (now - rec["grew"] > 120) and not fresh,
+                    "rate": round(rate) if rate else None}
+    for k in list(_arr_track):
+        if k not in out:
+            del _arr_track[k]
     return out
+
+
+def _arr_fields(a) -> dict:
+    return {"arriving_bytes": a["done"] if a else None,
+            "arriving_stalled": bool(a and a["stalled"]),
+            "arriving_rate_bps": a["rate"] if a else None}
 
 
 def _src_dirs() -> dict:
@@ -339,13 +397,21 @@ def build_state() -> dict:
         sd = _src_dirs()
         arr = _arrivals()
         q = [dict(r, src_dir=sd.get(r["title"].lower()),
-                  arriving_bytes=arr.get(r["title"].lower())) for r in q]
+                  **_arr_fields(arr.get(r["title"].lower()))) for r in q]
+        _mark_ready(q, live)
+        # Snapshot the note under the lock: a torn read could pair a failure
+        # message with the previous note's "ok" kind.
+        with _state_lock:
+            note = {"msg": _encode_note["msg"], "kind": _encode_note["kind"]}
         payload = {
             "summary": core.summary(hist=hist, q=q),
             "live": live,
             "ledger": hist,
             "queue": q,
             "transfers": _transfers(),
+            "encode_note": note,
+            "crf_choices": list(CRF_CHOICES),
+            "can_start": not live and not _driver_pids(),
         }
         with _state_lock:
             # Stamp AFTER the build. Stamping before meant a slow cold build was
@@ -354,6 +420,311 @@ def build_state() -> dict:
             _state_cache["at"] = time.monotonic()
             _state_cache["payload"] = payload
     return payload
+
+
+# ------------------------------------------------------------ encode control
+# THIS is the one part of Smeltr that does not merely observe: it spawns and
+# kills HandBrake. Everything here is kept deliberately parallel to
+# .autopilot.sh's start_encode() -- same flags, same track-parity gate, same
+# handoff to .watch-encode.sh -- because the two are now separate
+# implementations of one procedure and will drift if they stop matching.
+#
+# What it deliberately does NOT do: judge, record, sync, or delete anything in
+# the library. A Smeltr-started encode produces a file on the staging drive and
+# stops. The driver is still the only thing that can delete an original.
+CRF_CHOICES = (16, 18, 20, 22, 24)
+_encode_lock = threading.Lock()
+# Surfaced in the state payload and rendered as a banner. The parity gate and
+# the abort both run in background threads, long after their POST returned 200,
+# so this is the only channel they have back to the page.
+_encode_note: dict = {"msg": None, "kind": None, "at": 0.0}
+
+
+def _set_note(msg, kind="warn") -> None:
+    """One banner slot shared by encode and stage control. A "bad" note (a
+    killed encode, a failed pull) is often the ONLY record of the event, so an
+    "ok" note may not paper over it for 15 minutes; warn/bad always write.
+    """
+    with _state_lock:
+        if kind == "ok" and _encode_note["kind"] == "bad" \
+                and time.monotonic() - _encode_note["at"] < 900:
+            return
+        _encode_note["msg"], _encode_note["kind"] = msg, kind
+        _encode_note["at"] = time.monotonic()
+        _state_cache["payload"] = None
+
+
+def _mark_ready(rows: list, live: list) -> None:
+    """Flag the ONE row the pipeline would actually encode next.
+
+    Deliberately mirrors next_title.py: staged, no 2160p HEVC output yet, not
+    skipped, not still arriving. It is NOT "row 1" -- the queue lists library
+    titles that are not on the staging drive, so the top row is frequently a
+    title next_title.py skips straight past, and painting that one green would
+    promise an encode that cannot start. Nothing is ready while an encode is
+    running: the amber encoding row is the live one.
+    """
+    for r in rows:
+        r["ready"] = False
+    if live:
+        return
+    for r in rows:
+        if r.get("skipped") or not r.get("staged"):
+            continue
+        if r.get("arriving_bytes") is not None:
+            continue
+        _, src, out = _staging_files(r["title"])
+        if out is not None or not src:
+            continue
+        r["ready"] = True
+        return
+
+
+def _slug_of(title: str) -> str:
+    """Byte-identical to .autopilot.sh slug_of(): lowercase, alnum only, 20."""
+    return re.sub(r"[^a-z0-9]", "", title.lower())[:20]
+
+
+def _pgrep(pattern: str) -> list:
+    try:
+        out = subprocess.run(["pgrep", "-f", pattern], capture_output=True,
+                             text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [int(x) for x in out.stdout.split() if x.isdigit()]
+
+
+def _driver_pids() -> list:
+    return _pgrep(r"autopilot\.sh")
+
+
+def _staging_files(title: str):
+    """(folder, source mkv, finished-or-partial HEVC output) for a staged title."""
+    d = os.path.join(core.X9, title)
+    try:
+        names = sorted(n for n in os.listdir(d) if not n.startswith("._"))
+    except OSError:
+        return None, None, None
+    src = out = None
+    for n in names:
+        if not n.endswith(".mkv"):
+            continue
+        if "2160p HEVC" in n:
+            out = out or os.path.join(d, n)
+        elif src is None:
+            src = os.path.join(d, n)
+    return d, src, out
+
+
+def _track_counts(path: str):
+    """(audio, subtitle) stream counts from ffprobe, or (None, None)."""
+    try:
+        out = subprocess.run(["ffprobe", "-v", "error", "-show_streams", path],
+                             capture_output=True, text=True, timeout=120).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    return (out.count("codec_type=audio"), out.count("codec_type=subtitle"))
+
+
+def _parity_gate(proc, src: str, out: str, log: str, title: str,
+                 slug: str, crf: int) -> None:
+    """Verify HandBrake is writing every track, then hand off to the watcher.
+
+    A multi-hour encode that silently dropped audio or subtitles is a
+    multi-hour waste, and the whole point of this job is that every track
+    survives. Runs on a thread: it waits up to 120s, which no request handler
+    can afford to block on.
+    """
+    for _ in range(120):
+        if proc.poll() is not None:
+            break
+        try:
+            with open(log, encoding="utf-8", errors="replace") as fh:
+                if "job configuration:" in fh.read():
+                    break
+        except OSError:
+            pass
+        time.sleep(1)
+    try:
+        with open(log, encoding="utf-8", errors="replace") as fh:
+            text = fh.read().replace("\r", "\n")
+    except OSError:
+        text = ""
+    oa = len(re.findall(r"^\[[0-9:]+\]\s+\* audio track", text, re.M))
+    os_ = len(re.findall(r"^\[[0-9:]+\]\s+\* subtitle track", text, re.M))
+    sa, ss = _track_counts(src)
+    if sa is None:
+        _set_note("Started %s, but ffprobe could not read the source to verify "
+                  "track parity. Encode is RUNNING and UNVERIFIED." % title)
+        return
+    if (oa, os_) != (sa, ss):
+        _kill(proc.pid)
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+        _set_note("Refused %s: source has %da/%ds but the job writes %da/%ds. "
+                  "Encode killed and the partial deleted."
+                  % (title, sa, ss, oa, os_), kind="bad")
+        return
+    watch_log = os.path.join(core.X9, ".watch-%s.log" % slug)
+    try:
+        # Truncate: a leftover KILLED| line from an earlier attempt is what the
+        # driver's ladder reads, and it would ladder against the wrong run.
+        open(watch_log, "w").close()
+        with open(watch_log, "ab") as wf:
+            subprocess.Popen(
+                ["bash", os.path.join(core.X9, ".watch-encode.sh"), slug, title,
+                 os.path.basename(src), os.path.basename(out), str(proc.pid),
+                 str(crf)],
+                stdout=wf, stderr=subprocess.STDOUT, start_new_session=True)
+    except OSError as e:
+        _set_note("%s is encoding (%da/%ds verified) but the progress watcher "
+                  "failed to start (%s) — no CRF ladder or auto-kill on this "
+                  "run." % (title, sa, ss, e))
+        return
+    _set_note("%s encoding at CRF %d — %d audio, %d subtitle tracks verified."
+              % (title, crf, sa, ss), kind="ok")
+
+
+def _kill(pid: int) -> None:
+    """SIGTERM, 30s grace, then SIGKILL. Mirrors .watch-encode.sh's auto-kill."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+    for _ in range(60):
+        time.sleep(0.5)
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
+def _abort_worker(pid: int, title: str, out) -> None:
+    """Kill the encode, delete its partial, and skip the title.
+
+    The partial MUST go: sync and record both key off "2160p HEVC", so a
+    half-written file left behind is indistinguishable from a finished encode
+    to the next disk scan. And the skip MUST be written, or a running driver
+    sees no HandBrake, asks next_title.py, gets this same title back, and
+    restarts it within 30 seconds.
+    """
+    _kill(pid)
+    freed = None
+    if out and os.path.isfile(out):
+        try:
+            freed = os.path.getsize(out)
+            os.remove(out)
+        except OSError as e:
+            _set_note("Killed %s but could NOT delete its partial (%s). Delete "
+                      "it by hand before the driver runs — it will be mistaken "
+                      "for a finished encode." % (title, e), kind="bad")
+            return
+    with _ov_lock:
+        ov = core.load_overrides()
+        skip = [t for t in ov["skip"] if t.lower() != title.lower()]
+        pri = [t for t in ov["priority"] if t.lower() != title.lower()]
+        skip.append(title)
+        try:
+            core.save_overrides(skip, pri)
+        except OSError as e:
+            _set_note("Killed %s and deleted its partial, but could not write "
+                      "the skip (%s) — a running driver may restart it."
+                      % (title, e), kind="bad")
+            return
+    _set_note("Aborted %s — partial deleted%s, title skipped so it is not "
+              "picked up again. Restore it from the queue to re-arm."
+              % (title, "" if freed is None else
+                 " (%.2f GiB discarded)" % (freed / 1073741824.0)), kind="ok")
+
+
+# ------------------------------------------------------------- stage control
+# The third thing server.py can DO (after queue overrides and encode control):
+# pull one library title onto the staging drive on demand. It deliberately
+# mirrors the per-title pull in .replenish-queue.sh -- same .ssh-xfer.sh pull,
+# same free-space margin, same delete-the-folder cleanup on failure -- because
+# the two are separate implementations of one procedure and must not drift.
+# Progress needs no plumbing of its own: the pull lands as "<name>.partial",
+# which _arrivals() already reports and the queue row already draws as a bar.
+# Still inside the sanctioned boundary: this steers which title is staged,
+# never the verdict, sync, or a deletion.
+_stage_lock = threading.Lock()
+# One dashboard-initiated pull at a time; the title travelling right now.
+_stage_active: dict = {"title": None}
+
+
+def _stage_worker(title: str, src: str, hidden: str) -> None:
+    """Run the pull into the hidden folder, then move it into place.
+
+    The rename is the commit. Until .ssh-xfer.sh's byte-count check passes,
+    nothing outside ".pull-<title>" exists, so next_title.py, the
+    replenisher's folder count, and the queue's staged flag never see a
+    half-arrived title -- a VISIBLE folder without a source .mkv is exactly
+    the state that halts the driver ("no source file", exit 2). A leftover
+    from a crashed server stays hidden too: it can only ever render as a
+    stalled arrival, never as an encodable folder.
+    """
+    slug = _slug_of(title)
+    log = os.path.join(core.X9, ".pull-%s.log" % slug)
+    xfer = os.path.join(core.X9, ".ssh-xfer.sh")
+    keep = False
+    try:
+        rc = None
+        try:
+            with open(log, "wb") as fh:
+                proc = subprocess.Popen(
+                    ["/bin/bash", xfer, "pull", src, hidden],
+                    stdout=fh, stderr=subprocess.STDOUT,
+                    start_new_session=True)
+            try:
+                rc = proc.wait(timeout=6 * 3600)
+            except subprocess.TimeoutExpired:
+                # Kill the whole group: bash's ssh child keeps the partial's
+                # fd open otherwise, and deleting a folder around a live
+                # writer leaks the bytes into an unlinked inode df still
+                # counts but no listing shows.
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except OSError:
+                    pass
+                proc.wait()
+                _set_note("Staging %s gave up after 6 hours — killed the pull;"
+                          " removing the folder." % title, kind="bad")
+        except OSError as e:
+            _set_note("Staging %s FAILED before the transfer started (%s)."
+                      % (title, e), kind="bad")
+        if rc == 0:
+            dest = os.path.join(core.X9, title)
+            try:
+                os.rename(hidden, dest)
+                keep = True
+                _set_note("Staged %s — a copy. The library original is "
+                          "untouched now, and is deleted only when a good "
+                          "encode of it syncs back." % title, kind="ok")
+            except OSError as e:
+                # Never delete a completed 70 GB pull over a rename problem.
+                keep = True
+                _set_note("Pulled %s but could NOT move it into place (%s) — "
+                          "the complete file is in %s; move it by hand."
+                          % (title, e, os.path.basename(hidden)), kind="bad")
+        elif rc is not None:
+            _set_note("Staging %s FAILED — see %s. Removing the folder."
+                      % (title, os.path.basename(log)), kind="bad")
+        if not keep:
+            # Delete only inside the staging drive, however hidden was built.
+            real = os.path.realpath(hidden)
+            if real.startswith(os.path.realpath(core.X9) + os.sep):
+                shutil.rmtree(real, ignore_errors=True)
+    finally:
+        with _stage_lock:
+            _stage_active["title"] = None
+        with _state_lock:
+            _state_cache["payload"] = None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -492,7 +863,8 @@ class Handler(BaseHTTPRequestHandler):
         # be replayed as a smuggled request.
         if not self._writes_ok():
             return self._deny(403, "read-only from the network — "
-                              "skip/reorder only from this Mac (127.0.0.1)")
+                              "skip/reorder, encode start/abort and stage "
+                              "pulls only from this Mac (127.0.0.1)")
         try:
             length = int(self.headers.get("Content-Length") or "0")
         except ValueError:
@@ -511,6 +883,12 @@ class Handler(BaseHTTPRequestHandler):
                 err = self._apply_skip(body)
             elif parsed.path == "/api/queue/order":
                 err = self._apply_order(body)
+            elif parsed.path == "/api/encode/start":
+                err = self._apply_encode_start(body)
+            elif parsed.path == "/api/encode/abort":
+                err = self._apply_encode_abort(body)
+            elif parsed.path == "/api/stage/start":
+                err = self._apply_stage_start(body)
             else:
                 return self._deny(404, "not found")
         if err:
@@ -519,6 +897,208 @@ class Handler(BaseHTTPRequestHandler):
             _state_cache["payload"] = None  # next read sees the new overrides
         payload = json.dumps(build_state()).encode()
         self._send(200, "application/json; charset=utf-8", payload)
+
+    # ------------------------------------------------------- encode control
+    # These two SPAWN and KILL HandBrake. Both return as soon as the process
+    # has been signalled; the slow halves (a 120s parity gate, a 30s kill
+    # grace) run on threads and report back through the state payload's
+    # encode_note, because a handler thread must not block for minutes.
+
+    def _apply_encode_start(self, body: dict):
+        title, crf = body.get("title"), body.get("crf")
+        if not isinstance(title, str):
+            return "expected {title: str, crf: int}"
+        if crf is None:
+            crf = 16
+        if crf not in CRF_CHOICES:
+            return "CRF must be one of %s" % ", ".join(
+                str(c) for c in CRF_CHOICES)
+        if not os.path.isdir(core.X9):
+            return "the staging drive is not mounted"
+        with _encode_lock:
+            # Refuse rather than race. The driver checks hb_running, then asks
+            # next_title.py, then spawns -- seconds during which it cannot see
+            # a HandBrake we started. Closing that window properly needs a
+            # change inside .autopilot.sh; until then the rule is that only one
+            # of us runs at a time.
+            if _driver_pids():
+                return ("autopilot.sh is running — stop the driver first, or "
+                        "let it pick the next title itself")
+            if core.live_encodes():
+                return "an encode is already running"
+            matches = [r for r in self._queue_rows()
+                       if r["title"].lower() == title.lower()]
+            if not matches:
+                return "title is not in the queue"
+            if len(matches) > 1:
+                return ("two queue rows share this folder name; refusing to "
+                        "act on both")
+            row = matches[0]
+            if row.get("skipped"):
+                return "this title is skipped — restore it first"
+            if not row.get("staged"):
+                return ("this title is not on the staging drive yet — only "
+                        "staged titles can be encoded")
+            if row.get("arriving_bytes") is not None:
+                return "this title is still being copied to the staging drive"
+            folder, src, out = _staging_files(row["title"])
+            if out is not None:
+                return ("this title already has a 2160p HEVC output — delete "
+                        "it first, or let the driver record and sync it")
+            if not src:
+                return "no source .mkv in the staging folder"
+            slug = _slug_of(row["title"])
+            log = os.path.join(core.X9, ".hb-%s.log" % slug)
+            dest = os.path.join(folder, "%s 2160p HEVC.mkv" % row["title"])
+            try:
+                fh = open(log, "wb")
+                proc = subprocess.Popen(
+                    ["HandBrakeCLI", "-i", src, "-o", dest,
+                     "-f", "av_mkv", "-e", "x265_10bit", "-q", str(crf),
+                     "--encoder-preset", "medium",
+                     "--all-audio", "--aencoder", "copy",
+                     "--audio-fallback", "ac3", "--all-subtitles"],
+                    stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
+            except OSError as e:
+                return "could not start HandBrakeCLI: %s" % e
+            _set_note("Starting %s at CRF %d — verifying track parity before "
+                      "letting it run." % (row["title"], crf), kind="ok")
+            threading.Thread(
+                target=_parity_gate,
+                args=(proc, src, dest, log, row["title"], slug, crf),
+                daemon=True).start()
+        return None
+
+    def _apply_encode_abort(self, body: dict):
+        title = body.get("title")
+        if not isinstance(title, str):
+            return "expected {title: str}"
+        with _encode_lock:
+            live = [e for e in core.live_encodes()
+                    if (e.get("folder") or e.get("title", "")).lower()
+                    == title.lower()]
+            if not live:
+                return "that title is not encoding right now"
+            if len(live) > 1:
+                return "more than one encode matches that title; refusing"
+            enc = live[0]
+            pid = enc.get("pid")
+            if not pid:
+                return "could not identify the HandBrake process"
+            folder = enc.get("folder") or title
+            _, _, out = _staging_files(folder)
+            _set_note("Aborting %s — stopping HandBrake, then discarding the "
+                      "partial." % folder, kind="warn")
+            threading.Thread(target=_abort_worker, args=(pid, folder, out),
+                             daemon=True).start()
+        return None
+
+    def _apply_stage_start(self, body: dict):
+        title = body.get("title")
+        if not isinstance(title, str):
+            return "expected {title: str}"
+        if not os.path.isdir(core.X9):
+            return "the staging drive is not mounted"
+        with _stage_lock:
+            if _stage_active["title"]:
+                return ("already pulling %s — one pull at a time"
+                        % _stage_active["title"])
+            # A pull orphaned by a server restart still owns the wire and the
+            # free space; the in-process flag cannot see it, pgrep can.
+            if _pgrep(r"ssh-xfer\.sh pull"):
+                return ("a pull is already running (it survived a server "
+                        "restart) — one at a time")
+            # The replenisher rebuilds its pick list from a live listdir; two
+            # pullers choosing at the same moment could pick the same title.
+            # Liveness by pgrep, not the lock alone: the pause procedure kills
+            # orphans with -9 and leaves mkdir locks behind.
+            if os.path.isdir(os.path.join(core.X9, ".replenish.lock")):
+                if _pgrep(r"replenish-queue\.sh"):
+                    return ("the replenisher is running — it may be staging "
+                            "this title already; try again in a minute")
+                return ("a STALE .replenish.lock is on the staging drive (no "
+                        "replenisher is running) — it blocks the replenisher "
+                        "too; remove it by hand: rmdir '%s'"
+                        % os.path.join(core.X9, ".replenish.lock"))
+            rows = self._queue_rows()
+            matches = [r for r in rows
+                       if r["title"].lower() == title.lower()]
+            if not matches:
+                return "title is not in the queue"
+            if len(matches) > 1:
+                return ("two queue rows share this folder name; refusing to "
+                        "act on both")
+            row = matches[0]
+            if row.get("skipped"):
+                return "this title is skipped — restore it first"
+            # Arriving before staged: "already there" is the wrong message
+            # for a file that is mostly missing.
+            if row.get("arriving_bytes") is not None:
+                pct = (" (%.0f%% pulled)"
+                       % (row["arriving_bytes"] / row["bytes"] * 100)
+                       if row.get("bytes") else "")
+                return ("this title is already being copied to the staging "
+                        "drive%s" % pct)
+            if row.get("staged"):
+                return "this title is already on the staging drive"
+            srcs = set()
+            for rec in core.load_index():
+                p = rec.get("path", "")
+                if not p or "2160p hevc" in os.path.basename(p).lower():
+                    continue
+                if os.path.basename(os.path.dirname(p)).lower() \
+                        == row["title"].lower():
+                    srcs.add(p)
+            if not srcs:
+                return "this title's file is not in the bitrate index"
+            if len(srcs) > 1:
+                return ("the index lists more than one source file for this "
+                        "title; refusing to pick one")
+            src = srcs.pop()
+            if not os.path.isfile(src):
+                return "the library file is unreachable — is the NAS mounted?"
+            try:
+                size = os.path.getsize(src)
+            except OSError as e:
+                return "cannot stat the library file: %s" % e
+            # Free-space gate, same margin as .replenish-queue.sh (source +
+            # 10 GiB headroom for the encode written alongside), PLUS the
+            # bytes other in-flight pulls have promised but not yet written —
+            # statvfs only counts what has already landed.
+            try:
+                st = os.statvfs(core.X9)
+                avail = st.f_bavail * st.f_frsize
+            except OSError:
+                return "cannot read free space on the staging drive"
+            inbound = sum(max(0, (r.get("bytes") or 0) - r["arriving_bytes"])
+                          for r in rows
+                          if r.get("arriving_bytes") is not None)
+            need = size + inbound + 10 * 1024 ** 3
+            if avail < need:
+                return ("only %.0f GiB free on the staging drive — need "
+                        "%.0f GiB (source + in-flight pulls + 10 GiB margin)"
+                        % (avail / 1073741824.0, need / 1073741824.0))
+            # The pull lands HIDDEN (dot-prefixed, so invisible to
+            # next_title.py, core.staged_folders(), and the replenisher's
+            # find) and is renamed into place only once the byte count checks
+            # out. A visible folder with no source file HALTS the driver.
+            hidden = os.path.join(core.X9, ".pull-" + row["title"])
+            try:
+                os.makedirs(hidden, exist_ok=True)
+            except OSError as e:
+                return "could not create the pull folder: %s" % e
+            _stage_active["title"] = row["title"]
+            try:
+                threading.Thread(target=_stage_worker,
+                                 args=(row["title"], src, hidden),
+                                 daemon=True).start()
+            except RuntimeError as e:
+                _stage_active["title"] = None
+                shutil.rmtree(hidden, ignore_errors=True)
+                return "could not start the pull thread: %s" % e
+            _set_note("Staging %s — pulling %.2f GiB from the library over "
+                      "SSH." % (row["title"], size / 1073741824.0), kind="ok")
+        return None
 
     def _queue_rows(self) -> list[dict]:
         return build_state()["queue"]
@@ -663,7 +1243,7 @@ _PAGE = r"""<!doctype html>
   --cool-bd:#1c3a47; --hot-bd:#4a3018;
   --bar-bg:#1a1f27; --bar-inset:rgba(0,0,0,.5);
   --tab-bd:#2c3543; --td-line:#14181f;
-  --row-hover:#12151b; --row-enc:#171208;
+  --row-hover:#12151b; --row-enc:#171208; --row-ready:#0b1712;
   --thumb:#2a313d; --thumb-hover:#3b4553;
   /* Motion accents: the molten bar's sheen, tip and heat glow, and the
      status-dot halo. Tokens in BOTH themes, like every other colour. */
@@ -685,7 +1265,7 @@ _PAGE = r"""<!doctype html>
   --cool-bd:#a6d3e6; --hot-bd:#f0cbab;
   --bar-bg:#e3e7ee; --bar-inset:rgba(20,25,34,.12);
   --tab-bd:#c6cedb; --td-line:#eff2f6;
-  --row-hover:#f4f7fa; --row-enc:#fff6ea;
+  --row-hover:#f4f7fa; --row-enc:#fff6ea; --row-ready:#edfaf3;
   --thumb:#c8cfda; --thumb-hover:#a8b2c1;
   --sheen:rgba(255,255,255,.60); --tip:#ffd9ae; --glow:rgba(194,84,15,.30);
   --halo-good:rgba(15,122,85,.18); --halo-good-2:rgba(15,122,85,.05);
@@ -711,16 +1291,21 @@ header{display:flex;align-items:baseline;gap:14px;margin-bottom:22px;flex-wrap:w
                 50%{box-shadow:0 0 0 7px var(--halo-good-2)}}
 .dot.off{background:var(--bad);box-shadow:0 0 0 3px rgba(255,92,92,.15)}
 .conn{margin-left:auto;font-size:12px;color:var(--ink-3)}
-.themebtn{align-self:center;background:var(--panel);border:1px solid var(--line);
-  color:var(--ink-2);width:30px;height:30px;border-radius:8px;padding:0;cursor:pointer;
-  display:grid;place-items:center}
-.themebtn:hover{color:var(--ink);border-color:var(--tab-bd)}
-.themebtn:focus-visible{outline:2px solid var(--cool);outline-offset:2px}
-/* Half-filled circle. Drawn from currentColor rather than an emoji or a font
-   glyph, so it inverts with the theme and cannot render as a colour emoji. */
+.themeseg{align-self:center;display:flex;background:var(--panel);
+  border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.themebtn{background:none;border:0;color:var(--ink-2);width:30px;height:28px;
+  padding:0;cursor:pointer;display:grid;place-items:center}
+.themebtn+.themebtn{border-left:1px solid var(--line)}
+.themebtn:hover{color:var(--ink)}
+.themebtn:focus-visible{outline:2px solid var(--cool);outline-offset:-2px}
+.themebtn[aria-pressed="true"]{background:var(--panel-2);color:var(--ink)}
+/* One glyph family, drawn from currentColor rather than emoji or font glyphs,
+   so it inverts with the theme and cannot render as a colour emoji:
+   hollow circle = light, filled = dark, half-filled = follow the system. */
 .themebtn i{display:block;width:13px;height:13px;border-radius:50%;
-  border:1.5px solid currentColor;
-  background:linear-gradient(90deg,currentColor 0 50%,transparent 50% 100%)}
+  border:1.5px solid currentColor}
+.themebtn i.full{background:currentColor}
+.themebtn i.half{background:linear-gradient(90deg,currentColor 0 50%,transparent 50% 100%)}
 
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:10px;margin-bottom:18px}
 .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:13px 15px}
@@ -748,6 +1333,9 @@ body:not(.booted) #liveWrap .card{animation-delay:.12s}
 .card.live{border-color:var(--live-bd);background:linear-gradient(180deg,var(--live-bg),var(--panel))}
 .card.alert{border-color:var(--alert-bd);background:linear-gradient(180deg,var(--alert-bg),var(--panel))}
 .card.alert .live-title{color:var(--bad)}
+/* A start/abort note that reports success is framed calm, not alarming. */
+.card.alert.okline{border-color:var(--good-bd);background:var(--panel)}
+.card.alert.okline .verdict{color:var(--good)}
 .live-top{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:4px}
 .live-title{font-size:17px;font-weight:640;letter-spacing:-.015em}
 .chip{font-size:11px;padding:2.5px 8px;border-radius:999px;border:1px solid var(--line);
@@ -791,22 +1379,16 @@ body:not(.booted) #liveWrap .card{animation-delay:.12s}
 .tab:focus-visible{outline:2px solid var(--cool);outline-offset:2px}
 
 .wrap{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:var(--panel)}
-/* Overlay-style scrollbar: visible only WHILE scrolling, like macOS. Styling
-   ::-webkit-scrollbar turns off native overlay behaviour, so the gutter is
-   reserved permanently (layout stays stable) and the thumb is painted only
-   while the pane carries .scrolling -- a class the scroll listener at the
-   bottom of the page holds for a moment after the last scroll event.
-   Hover-reveal was tried first and read as a permanently visible scrollbar,
-   because the pointer is over the table whenever anyone is looking at it. */
-.scroll{max-height:60vh;overflow:auto;overflow-x:auto;
-        scrollbar-width:thin;scrollbar-color:transparent transparent}
-.scroll.scrolling{scrollbar-color:var(--thumb) transparent}
-.scroll::-webkit-scrollbar{width:11px;height:11px}
-.scroll::-webkit-scrollbar-track,.scroll::-webkit-scrollbar-corner{background:transparent}
-.scroll::-webkit-scrollbar-thumb{background:transparent;border-radius:99px;
-  border:3px solid transparent;background-clip:content-box}
-.scroll.scrolling::-webkit-scrollbar-thumb{background:var(--thumb);background-clip:content-box}
-.scroll.scrolling::-webkit-scrollbar-thumb:hover{background:var(--thumb-hover);background-clip:content-box}
+/* NO scrollbar, and no space reserved for one. The pane still scrolls in both
+   axes -- only the bar is hidden.
+   Two properties are needed and BOTH are load-bearing. scrollbar-width:none is
+   the standard one; ::-webkit-scrollbar{display:none} is what actually removes
+   it in Safari/Chrome. Omitting the webkit rule and merely leaving the bar
+   unstyled does NOT work: macOS "Show scroll bars: Always" then paints a
+   permanent classic bar that also consumes layout width -- worse than the
+   11px gutter this replaced. Do not remove either line. */
+.scroll{max-height:60vh;overflow:auto;overflow-x:auto;scrollbar-width:none}
+.scroll::-webkit-scrollbar{display:none}
 table{border-collapse:separate;border-spacing:0;width:100%;font-size:13px;line-height:1.4}
 th,td{padding:8px 12px;text-align:left;white-space:nowrap}
 th{position:sticky;top:0;z-index:1;background:var(--panel-2);color:var(--ink-3);
@@ -830,6 +1412,7 @@ th.unit{text-transform:none}
 .minibar{display:inline-block;vertical-align:middle;margin-left:8px;width:84px;height:4px;
          border-radius:99px;background:var(--bar-bg);overflow:hidden}
 .minibar i{display:block;height:100%;background:var(--warn)}
+.minibar.pull i{background:var(--bad)}
 .xfer-pct{margin-left:6px;font-family:var(--mono);font-size:10.5px;color:var(--ink-2)}
 .mark{font-family:var(--mono);font-size:10.5px;padding:1.5px 6px;border-radius:5px;
       border:1px solid var(--line);color:var(--ink-3)}
@@ -845,9 +1428,48 @@ th.unit{text-transform:none}
 .mark.nas-hot{color:var(--hot-soft);border-color:var(--hot-bd)}
 .mark+.mark{margin-left:6px}
 .rowenc td{background:var(--row-enc)}
+.rowready td{background:var(--row-ready)}
+
+/* ---- Numeric queue columns. Colour here CARRIES INFORMATION, it is not
+   decoration: SRC Mb/s is the ranking key for the whole job, so it is banded
+   by value (>=90 hot, 80-89.9 warm, below that plain) and the eye can find the
+   fattest remaining sources without reading digits. Rank is quiet because it
+   is only a position; CRF is italic and muted because on an unstarted row it
+   is a PLAN, not a measurement. tabular-nums keeps the columns from dancing
+   as digits change. Every colour is a token so both themes reach it. ---- */
+td.q-rank{font-variant-numeric:tabular-nums;color:var(--ink-3);font-weight:560}
+td.q-mbps{font-variant-numeric:tabular-nums;font-weight:680}
+td.q-mbps.mbps-hi{color:var(--hot-soft)}
+td.q-mbps.mbps-mid{color:var(--warn)}
+td.q-mbps.mbps-lo{color:var(--ink-2)}
+td.q-size{font-variant-numeric:tabular-nums;font-weight:560;color:var(--cool)}
+td.q-crf{font-variant-numeric:tabular-nums;font-style:italic;color:var(--ink-3)}
+/* The live row shows the encoder's ACTUAL CRF -- a measurement, so it loses
+   the italic that marks a planned value. */
+.rowenc td.q-crf{font-style:normal;font-weight:640;color:var(--hot-soft)}
+.rowskip td.q-mbps,.rowskip td.q-size{color:var(--ink-3);font-weight:400}
+
+/* ---- Row actions live in the title cell and appear on hover. The reveal is
+   :hover OR :focus-within OR a coarse pointer -- a phone has no hover, and
+   this dashboard is bound to the LAN specifically so phones can reach it.
+   Hover-only here would mean the feature does not exist on the devices the
+   firewall was opened for. ---- */
+.title-cell{position:relative}
+.tcell{display:flex;align-items:center;gap:9px;justify-content:space-between}
+.tname{min-width:0}
+.rowacts{display:flex;align-items:center;gap:6px;flex:0 0 auto;
+         opacity:0;transition:opacity .12s}
+tr:hover .rowacts,tr:focus-within .rowacts,.rowacts.armed{opacity:1}
+.crfsel{background:var(--panel-2);border:1px solid var(--line);color:var(--ink-2);
+        font:inherit;font-size:11px;font-family:var(--mono);border-radius:6px;
+        padding:2px 4px;cursor:pointer}
+.crfsel:focus-visible{outline:2px solid var(--cool);outline-offset:2px}
+.act.go:hover{color:var(--good);border-color:var(--good-bd)}
+.act.armed{color:var(--bad);border-color:var(--bad-bd);font-weight:600}
 .rowskip td{opacity:.45}
 .rowskip td:last-child{opacity:1}
-.rowskip .title-cell{opacity:1;color:var(--ink-3);text-decoration:line-through}
+.rowskip .title-cell{opacity:1}
+.rowskip .tname{color:var(--ink-3);text-decoration:line-through}
 /* Queue control. The grip drags, the button skips; both write only the
    overrides file on the server, nothing else. */
 .grip{cursor:grab;color:var(--ink-3);user-select:none;-webkit-user-select:none;
@@ -918,11 +1540,9 @@ footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3)
      than advertise a gesture that cannot work. Skip buttons stay. */
   th.gripcol,td.gripcol{display:none}
   .act{padding:9px 14px;margin:-10px 0}
-  /* The scroll-reveal scrollbar shows nothing before the first scroll. On
-     touch the History table would hide 3/4 of its columns with zero
-     affordance, so the bar stays visible. */
-  .scroll{scrollbar-color:var(--thumb) transparent}
-  .scroll::-webkit-scrollbar-thumb{background:var(--thumb);background-clip:content-box}
+  /* No hover exists here, so the row actions are always shown. */
+  .rowacts{opacity:1}
+  .crfsel{padding:6px 6px;font-size:12px}
 }
 </style>
 <script nonce="__NONCE__">
@@ -943,7 +1563,11 @@ footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3)
   <div class="wordmark">SMELTR<b>.</b></div>
   <div class="tag">remuxes in &middot; ingots out</div>
   <div class="conn"><span class="dot" id="dot"></span><span id="connText">connecting</span></div>
-  <button class="themebtn" id="themeBtn" type="button" aria-label="Switch theme"><i></i></button>
+  <div class="themeseg" role="group" aria-label="Theme">
+    <button class="themebtn" id="themeLight" type="button" title="Light theme" aria-label="Light theme" aria-pressed="false"><i></i></button>
+    <button class="themebtn" id="themeDark" type="button" title="Dark theme" aria-label="Dark theme" aria-pressed="false"><i class="full"></i></button>
+    <button class="themebtn" id="themeSystem" type="button" title="Follow system theme" aria-label="Follow system theme" aria-pressed="false"><i class="half"></i></button>
+  </div>
 </header>
 
 <section id="alert"></section>
@@ -959,7 +1583,7 @@ footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3)
 <div class="wrap"><div class="scroll" id="pane"></div></div>
 
 <footer>
-  <span id="gen"></span><span id="stopnote"></span><span>__SCOPE__ &middot; skip/reorder writes only queue_overrides.json</span>
+  <span id="gen"></span><span id="stopnote"></span><span>__SCOPE__ &middot; writes: skip/reorder, encode start/abort, stage pulls &middot; never judges, syncs or deletes a library original</span>
 </footer>
 
 <script nonce="__NONCE__">
@@ -1044,8 +1668,16 @@ function api(path,payload){
   .finally(function(){ posting=false; });
 }
 
-function renderAlert(s){
+function renderAlert(s, note){
   var host=document.getElementById("alert"); host.replaceChildren();
+  /* Outcome of the last start/abort. The slow halves (track parity, the kill
+     grace) finish long after their POST returned, so this banner is how they
+     report. kind=bad stays until the next action; ok/warn are informational. */
+  if(note && note.msg){
+    var nc=el("div","card alert"+(note.kind==="ok"?" okline":""));
+    nc.appendChild(el("div","verdict"+(note.kind==="bad"?" loud":""),note.msg));
+    host.appendChild(nc);
+  }
   if(s.overrides_corrupt){
     var oc=el("div","card alert");
     oc.appendChild(el("div","live-title","queue_overrides.json is unreadable"));
@@ -1228,6 +1860,99 @@ function table(cols, rows, build){
    the order the pipeline picks from) and any non-encoding row can be
    skipped. Skipped rows keep their place at the BOTTOM, greyed, with a
    restore button -- a skip that vanished would read as "finished". */
+/* Two-step confirm shared by start and abort: first click arms the button and
+   rewrites its label with the consequence; the second click within 6s acts.
+   SSE repaints every 2s would disarm it mid-decision, so an armed control
+   pins its .rowacts visible via the armed class and paint() skips rebuilds
+   while one is armed (see armedTitle). */
+var armedTitle=null;
+function arm(b,acts,armedLabel,fire){
+  if(b.dataset.armed==="1"){
+    b.dataset.armed=""; armedTitle=null;
+    b.disabled=true;
+    fire();
+    return;
+  }
+  b.dataset.armed="1"; armedTitle=b.dataset.title;
+  var plain=b.textContent;
+  b.textContent=armedLabel;
+  b.classList.add("armed"); acts.classList.add("armed");
+  setTimeout(function(){
+    if(b.dataset.armed!=="1") return;
+    b.dataset.armed=""; armedTitle=null;
+    b.textContent=plain;
+    b.classList.remove("armed"); acts.classList.remove("armed");
+    if(last.pending&&last.state){ last.pending=false; paint(last.state); }
+  },6000);
+}
+
+function rowActions(r,s){
+  var acts=el("span","rowacts");
+  if(r.encoding){
+    /* Abort kills HandBrake, deletes the partial, and writes a skip so the
+       driver cannot immediately restart the same title. The armed label says
+       what is being thrown away. */
+    var ab=el("button","act","abort");
+    ab.type="button"; ab.dataset.title=r.title;
+    ab.title="Stop this encode, discard the partial output, and skip the title";
+    ab.addEventListener("click",function(){
+      arm(ab,acts,"discard the encode so far?",function(){
+        api("/api/encode/abort",{title:r.title});
+      });
+    });
+    acts.appendChild(ab);
+    return acts;
+  }
+  if(r.ready && s && s.can_start!==false){
+    var sel=el("select","crfsel");
+    sel.title="CRF for this encode — 16 is the pipeline default; 22 and 24 are "+
+      "outside the auto-retry ladder";
+    (s.crf_choices||[16,18,20,22,24]).forEach(function(c){
+      var o=el("option",null,"CRF "+c); o.value=String(c);
+      if(c===16) o.selected=true;
+      sel.appendChild(o);
+    });
+    /* Interacting with the select must not start a drag on the row. */
+    sel.addEventListener("mousedown",function(e){ e.stopPropagation(); });
+    var go=el("button","act go","start encode");
+    go.type="button"; go.dataset.title=r.title;
+    go.title="Start encoding this title now at the chosen CRF";
+    go.addEventListener("click",function(){
+      arm(go,acts,"start at "+sel.options[sel.selectedIndex].text+"?",function(){
+        api("/api/encode/start",{title:r.title,crf:parseInt(sel.value,10)});
+      });
+    });
+    acts.appendChild(sel); acts.appendChild(go);
+  }
+  if(!r.skipped && !r.staged && r.arriving_bytes==null){
+    /* Library-only rows can be pulled onto the staging drive on demand. The
+       armed label states the cost up front — this is a multi-GiB transfer. */
+    var pull=el("button","act","stage");
+    pull.type="button"; pull.dataset.title=r.title;
+    pull.title="Copy this title's file from the library to the staging drive now";
+    pull.addEventListener("click",function(){
+      arm(pull,acts,(r.bytes==null?"pull this title (size unknown) to the X9?"
+                    :"pull "+gib(r.bytes)+" to the X9?"),function(){
+        api("/api/stage/start",{title:r.title});
+      });
+    });
+    acts.appendChild(pull);
+  }
+  var b=el("button","act"+(r.skipped?" restore":""),
+           r.skipped?"restore":"skip");
+  b.type="button";
+  b.title=r.skipped
+    ? "Put this title back in the queue"
+    : "Skip this title — the pipeline moves on to the next one";
+  b.addEventListener("click",function(){
+    b.disabled=true;
+    api("/api/queue/skip",{title:r.title,skipped:!r.skipped})
+      .finally(function(){ b.disabled=false; });
+  });
+  acts.appendChild(b);
+  return acts;
+}
+
 function renderQueue(q, s, live, xfers, hist){
   var liveCrf={};
   (live||[]).forEach(function(e){
@@ -1252,9 +1977,12 @@ function renderQueue(q, s, live, xfers, hist){
     [{label:"",cls:"gripcol"},{label:"Rank",n:true},{label:"SRC Mb/s",n:true,cls:"unit"},
      {label:"Src size",n:true},{label:"CRF",n:true},
      {label:"Title",cls:"title-cell"},{label:"NAS"},{label:"Src folder"},
-     {label:"Status"},{label:""}],
+     {label:"Status"}],
     q, function(r,i){
-      var tr=el("tr", r.encoding?"rowenc":(r.skipped?"rowskip":null));
+      /* encoding (amber) beats ready (green) beats skipped. ready is the ONE
+         row next_title.py would pick -- server-computed, and absent entirely
+         while anything is encoding. */
+      var tr=el("tr", r.encoding?"rowenc":(r.ready?"rowready":(r.skipped?"rowskip":null)));
       tr.dataset.title=r.title; tr.dataset.idx=String(i);
       var grip=el("td","gripcol");
       if(!r.skipped){
@@ -1263,23 +1991,31 @@ function renderQueue(q, s, live, xfers, hist){
         tr.draggable=true;
       }
       tr.appendChild(grip);
-      tr.appendChild(el("td","n muted", ranks[i]==null?"—":String(ranks[i])));
-      tr.appendChild(el("td","n mono",r.mbps.toFixed(1)));
-      tr.appendChild(el("td","n mono",gib(r.bytes)));
+      tr.appendChild(el("td","n q-rank", ranks[i]==null?"—":String(ranks[i])));
+      var band=r.mbps>=90?"mbps-hi":(r.mbps>=80?"mbps-mid":"mbps-lo");
+      tr.appendChild(el("td","n mono q-mbps "+band,r.mbps.toFixed(1)));
+      tr.appendChild(el("td","n mono q-size",gib(r.bytes)));
       /* CRF: the encoding row shows the encoder's ACTUAL value (the ladder
          may have stepped it down); everything else shows the planned start,
          muted, because every encode begins at 16. Skipped rows will not
          encode, so no number is claimed. */
       var lc=liveCrf[r.title.toLowerCase()];
       var crfTd;
-      if(r.skipped){ crfTd=el("td","n muted","—"); }
-      else if(r.encoding && lc!=null){ crfTd=el("td","n",String(lc)); }
+      if(r.skipped){ crfTd=el("td","n q-crf","—"); }
+      else if(r.encoding && lc!=null){ crfTd=el("td","n q-crf",String(lc)); }
       else{
-        crfTd=el("td","n muted","16");
-        crfTd.title="Planned start — every encode begins at CRF 16; the ladder may step down";
+        crfTd=el("td","n q-crf","16");
+        crfTd.title="Planned start — encodes begin at CRF 16 unless started by hand; the ladder may step down";
       }
       tr.appendChild(crfTd);
-      tr.appendChild(el("td","title-cell",r.title));
+      var titleTd=el("td","title-cell");
+      var cell=el("div","tcell");
+      var name=el("span","tname",r.title);
+      if(r.skipped) name.className="tname struck";
+      cell.appendChild(name);
+      cell.appendChild(rowActions(r,s));
+      titleTd.appendChild(cell);
+      tr.appendChild(titleTd);
       var nasTd=el("td"); nasTd.appendChild(nasMark(r.location));
       tr.appendChild(nasTd);
       tr.appendChild(srcDirTd(r.src_dir,r.title));
@@ -1289,39 +2025,34 @@ function renderQueue(q, s, live, xfers, hist){
         if(r.pinned) td.appendChild(el("span","mark pin","pinned"));
         if(r.encoding) td.appendChild(el("span","mark enc","encoding"));
         else if(r.arriving_bytes!=null){
-          /* The replenisher is still pulling this one onto the staging
-             drive -- present as a folder, not yet encodable. Denominator is
-             the row's own library original: the same file being copied. */
-          td.appendChild(el("span","mark xfer","arriving"));
-          if(r.bytes){
-            var apc=Math.max(0,Math.min(100,r.arriving_bytes/r.bytes*100));
-            var abar=el("span","minibar"), afill=el("i");
-            afill.style.width=apc+"%"; abar.appendChild(afill);
-            td.appendChild(abar);
+          /* A pull still landing -- replenisher or dashboard, same thing.
+             Denominator is the row's own library original. A partial that is
+             not moving is "stalled", never a progress bar; one LARGER than
+             the source is a stale leftover, not progress. */
+          if(r.arriving_stalled||(r.bytes&&r.arriving_bytes>r.bytes)){
+            td.appendChild(el("span","mark stall","stalled"));
             td.appendChild(el("span","xfer-pct",
-              gib(r.arriving_bytes)+" of "+gib(r.bytes)+" pulled"));
+              gib(r.arriving_bytes)+" of "+gib(r.bytes)+" pulled — not moving"));
+          }else{
+            td.appendChild(el("span","mark xfer","arriving"));
+            if(r.bytes){
+              var apc=Math.max(0,Math.min(100,r.arriving_bytes/r.bytes*100));
+              var abar=el("span","minibar pull"), afill=el("i");
+              afill.style.width=apc+"%"; abar.appendChild(afill);
+              td.appendChild(abar);
+              var atxt=apc.toFixed(1)+"% · "+gib(r.arriving_bytes)+" of "+
+                       gib(r.bytes)+" pulled";
+              if(r.arriving_rate_bps>0)
+                atxt+=" · "+(r.arriving_rate_bps/1e6).toFixed(0)+" MB/s · "+
+                     dur((r.bytes-r.arriving_bytes)/r.arriving_rate_bps)+" left";
+              td.appendChild(el("span","xfer-pct",atxt));
+            }
           }
         }
         else if(r.staged) td.appendChild(el("span","mark staged","staged"));
         else td.appendChild(el("span","mark","library"));
       }
       tr.appendChild(td);
-      var act=el("td");
-      if(!r.encoding){
-        var b=el("button","act"+(r.skipped?" restore":""),
-                 r.skipped?"restore":"skip");
-        b.type="button";
-        b.title=r.skipped
-          ? "Put this title back in the queue"
-          : "Skip this title — the pipeline moves on to the next one";
-        b.addEventListener("click",function(){
-          b.disabled=true;
-          api("/api/queue/skip",{title:r.title,skipped:!r.skipped})
-            .finally(function(){ b.disabled=false; });
-        });
-        act.appendChild(b);
-      }
-      tr.appendChild(act);
       if(r.pinned && !r.skipped && ranks[i]===pinned && pinned<active)
         tr.classList.add("pin-end");
       return tr;
@@ -1370,7 +2101,6 @@ function renderQueue(q, s, live, xfers, hist){
     }
     st.appendChild(el("span","xfer-pct",txt));
     tr.appendChild(st);
-    tr.appendChild(el("td"));
     tbl.tBodies[0].insertBefore(tr, tbl.tBodies[0].rows[ix]||null);
   });
   wireDrag(tbl, q);
@@ -1511,7 +2241,7 @@ function renderLedger(rows, xfers){
 }
 
 function paint(s){
-  renderAlert(s.summary);
+  renderAlert(s.summary, s.encode_note);
   renderStats(s.summary);
   renderLive(s.live, s.summary);
   /* The key must cover EVERYTHING the pane draws — both tabs render live
@@ -1521,12 +2251,17 @@ function paint(s){
   var xk=(s.transfers||[]).map(function(t){ return [t.title,t.done_bytes,t.stalled]; });
   var key=tab+"|"+JSON.stringify(tab==="queue"
     ? [s.queue, s.live.map(function(e){ return [e.folder, e.crf]; }),
-       xk, s.summary.library_complete, s.summary.roots_offline]
+       xk, s.summary.library_complete, s.summary.roots_offline,
+       s.can_start, s.encode_note]
     : [s.ledger, xk]);
   if(last.key!==key){
-    if(tab==="queue"&&drag){ last.pending=true; }
+    /* An armed confirm or an active drag must survive the 2s SSE repaint. */
+    if(tab==="queue"&&(drag||armedTitle!==null)){ last.pending=true; }
     else{ last.key=key;
-      (tab==="queue"?renderQueue(s.queue, s.summary, s.live, s.transfers, s.ledger)
+      (tab==="queue"?renderQueue(s.queue,
+          Object.assign({},s.summary,
+            {can_start:s.can_start,crf_choices:s.crf_choices}),
+          s.live, s.transfers, s.ledger)
                     :renderLedger(s.ledger, s.transfers)); }
   }
   var nq=s.summary.queue_count!=null?s.summary.queue_count:s.queue.length;
@@ -1604,44 +2339,44 @@ document.getElementById("resetOrder").addEventListener("click",function(){
     requestAnimationFrame(function(){ pend=false; recut(); }); }
   pane.addEventListener("scroll",schedule,{passive:true});
   window.addEventListener("resize",schedule);
-  /* Overlay scrollbar: paint the thumb only while actually scrolling. */
-  var scrollTimer=null;
-  pane.addEventListener("scroll",function(){
-    pane.classList.add("scrolling");
-    clearTimeout(scrollTimer);
-    scrollTimer=setTimeout(function(){ pane.classList.remove("scrolling"); },900);
-  },{passive:true});
   new MutationObserver(function(){ cuts=[]; schedule(); })
     .observe(pane,{childList:true});
   schedule();
 })();
 
-/* Theme. A stored value is an explicit choice and always wins. With no stored
-   choice the OS preference wins and KEEPS winning -- flipping the system theme
-   mid-session moves the page with it, until the button is pressed once. */
+/* Theme. Three segments: an explicit light/dark choice is stored and always
+   wins; "system" CLEARS the stored choice, so the OS preference wins and
+   KEEPS winning -- flipping the system theme mid-session moves the page with
+   it. The pressed segment shows the choice, not the resolved colour. */
 var THEME_KEY="smeltr.theme";
 var mql=window.matchMedia?window.matchMedia("(prefers-color-scheme: light)"):null;
 function storedTheme(){
   try{ var v=localStorage.getItem(THEME_KEY);
        return (v==="light"||v==="dark")?v:null; }catch(e){ return null; }
 }
-function applyTheme(name){
-  document.documentElement.setAttribute("data-theme",name);
-  var b=document.getElementById("themeBtn");
-  var label=name==="dark" ? "Switch to light theme" : "Switch to dark theme";
-  b.setAttribute("aria-label",label);
-  b.title=label;
+var themeBtns={light:document.getElementById("themeLight"),
+               dark:document.getElementById("themeDark"),
+               system:document.getElementById("themeSystem")};
+function applyTheme(){
+  var mode=storedTheme()||"system";
+  var shown=mode==="system" ? (mql&&mql.matches?"light":"dark") : mode;
+  document.documentElement.setAttribute("data-theme",shown);
+  for(var k in themeBtns)
+    themeBtns[k].setAttribute("aria-pressed",k===mode?"true":"false");
 }
-applyTheme(document.documentElement.getAttribute("data-theme")||"dark");
+applyTheme();
 if(mql&&mql.addEventListener){
-  mql.addEventListener("change",function(e){
-    if(!storedTheme()) applyTheme(e.matches?"light":"dark");
-  });
+  mql.addEventListener("change",function(){ if(!storedTheme()) applyTheme(); });
 }
-document.getElementById("themeBtn").addEventListener("click",function(){
-  var next=document.documentElement.getAttribute("data-theme")==="dark"?"light":"dark";
-  try{ localStorage.setItem(THEME_KEY,next); }catch(e){}
-  applyTheme(next);
+["light","dark"].forEach(function(name){
+  themeBtns[name].addEventListener("click",function(){
+    try{ localStorage.setItem(THEME_KEY,name); }catch(e){}
+    applyTheme();
+  });
+});
+themeBtns.system.addEventListener("click",function(){
+  try{ localStorage.removeItem(THEME_KEY); }catch(e){}
+  applyTheme();
 });
 
 function conn(state,text){
@@ -1676,7 +2411,9 @@ es.onmessage=function(ev){
 # raw value, on principle.
 # Off-box the page is read-only for network peers by default; say so unless the
 # LAN-writes opt-in is on. (Loopback can always write regardless.)
-_scope_text = (f"{BIND} · token required" + ("" if LAN_WRITES else " · read-only")
+_scope_text = (f"{BIND} · token required"
+               + ("" if LAN_WRITES
+                  else " · network peers read-only — writes from this Mac only")
                if LAN_EXPOSED else "127.0.0.1 only")
 _SCOPE = html.escape(_scope_text)
 PAGE = _PAGE.replace("__NONCE__", NONCE).replace("__SCOPE__", _SCOPE)
