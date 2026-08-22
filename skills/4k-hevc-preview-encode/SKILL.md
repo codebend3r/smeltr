@@ -9,6 +9,11 @@ Re-encode only the first **5 minutes** (00:00:00 → 00:05:00) of a 4K source us
 
 > **IRON RULE — same as the parent skill.** The preview MUST use the same mandatory audio + subtitle passthrough flags. A preview that drops tracks does not represent the full encode and gives the user a misleading QC signal. See [[4k-hevc-reencoding]] §4 and §4.5 for the rationale and the empirical failure that motivated it.
 
+> **CHECK THE DRIVER FIRST.** `pgrep -f autopilot.sh` — if the unattended driver
+> is alive it will start a full encode on its own schedule, and a preview
+> sharing the CPU makes both crawl. See [[4k-hevc-reencoding]]'s first section
+> before running anything by hand.
+
 ## When to use this skill vs the full encode
 
 | Situation | Skill |
@@ -41,7 +46,7 @@ HandBrakeCLI \
   --aencoder copy \
   --audio-fallback ac3 \
   --all-subtitles \
-  > "/tmp/handbrake-<slug>-preview.log" 2>&1 &
+  > "/Volumes/Crucial X9/4K Movies/.preview-<slug>.log" 2>&1 &
 ```
 
 > **TRAP — do NOT add `--audio-lang-list` or `--subtitle-lang-list`** (see [[4k-hevc-reencoding]] §4 trap callout). `--all-audio` and `--all-subtitles` default to "any language" only when no lang-list is set. Passing `--audio-lang-list "und"` filters to ISO 639-2 "undetermined" — which matches almost no real source tracks — and silently drops everything.
@@ -58,10 +63,12 @@ If the user wants to compare two CRFs (e.g. 18 vs 22), run two previews — chan
 Within ~30 seconds of kickoff, confirm tracks were picked up. A preview that silently drops audio or subtitles is worthless for QC and you must NOT report it as "done":
 
 ```bash
-grep -E "AudioList|SubtitleList|scan: audio|scan: subtitle|\+ audio tracks|\+ subtitle tracks" /tmp/handbrake-<slug>-preview.log
+grep -E "AudioList|SubtitleList|scan: audio|scan: subtitle|\+ audio tracks|\+ subtitle tracks" "/Volumes/Crucial X9/4K Movies/.preview-<slug>.log"
 ```
 
-Apply the GREEN/RED signal interpretation from [[4k-hevc-reencoding]] §4.5 verbatim. If RED: `pkill -f HandBrakeCLI`, delete the partial output, re-run.
+Apply the GREEN/RED signal interpretation from [[4k-hevc-reencoding]] §4.5 verbatim. If RED: `kill <pid>` (the pid from `$!` at kickoff — **never** `pkill -f HandBrakeCLI`, which would also kill whatever the driver is encoding), delete the partial output, re-run.
+
+The log deliberately goes to the staging drive rather than `/tmp` (which gets wiped and has stranded watchers mid-job), and is named `.preview-<slug>.log` rather than `.hb-<slug>.log` so `core.live_encodes()` does not scan it — a 5-minute clip rendered as a live encode would corrupt the dashboard's projections and the queue's `encoding` badge.
 
 ## Step 4 — Report and let the user decide
 
@@ -96,4 +103,5 @@ When the background job finishes (typically 5–15 min on Apple Silicon at CRF 1
 - About to skip §3 verification because "it's only 10 minutes anyway" → **stop, a wrong-flags preview wastes the user's QC time and produces a false signal. Verify.**
 - About to automatically kick off the full encode after the preview finishes → **stop, the user gets to decide. That's the whole point of a preview.**
 - About to overwrite a prior preview at a different CRF → **stop, use a distinct filename so the user can compare side by side**.
+- About to leave a `PREVIEW` file in a staging folder → **stop, delete it. `verdict.py` and `record.py` both require exactly one source and one output per folder, so a third `.mkv` makes them refuse and halts the driver; and `.autopilot.sh` picks its source with `find … | head -1`, which can pick the 5-minute clip and re-encode that instead of the film.**
 - Preview filename does not contain `PREVIEW` → **stop, rename before kicking off; this is what stops it being confused with a real encode**.

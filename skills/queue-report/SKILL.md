@@ -6,7 +6,7 @@ description: Show the 4K HEVC re-encode queue as a table — live encode progres
 # queue-report
 
 A terminal snapshot of the 4K re-encode pipeline, plus the link to **Smeltr**,
-the live localhost dashboard that shows the same data updating in real time.
+the live dashboard that shows the same data updating in real time.
 
 The snapshot is a still frame. The dashboard is the moving picture. Always give
 the user both — the tables answer the question now, the link lets them watch.
@@ -25,8 +25,13 @@ the user both — the tables answer the question now, the link lets them watch.
 in the output is always valid. Other commands:
 
 ```bash
-~/Developer/git/smeltr/smeltr start|stop|restart|status|url
+~/Developer/git/smeltr/smeltr start|stop|restart|status|url|open
 ```
+
+**Print the URL exactly as `smeltr` reports it.** The dashboard binds this
+machine's LAN address by default, so the link works from a phone on the same
+network, and it carries a token — a hand-written `http://127.0.0.1:8787/` drops
+the token and 403s. Network peers are read-only unless `SMELTR_LAN_WRITES=1`.
 
 ## Recording a finished encode
 
@@ -47,8 +52,10 @@ re-encoded on top of its own output.
 
 `record` refuses to write if HandBrake is still producing the file, if the
 output was touched in the last two minutes, if the output is not smaller than
-the source, or if ffprobe cannot read either file. A ledger row is the evidence
-that authorises deleting an original — it must never be written on a guess.
+the source, if ffprobe cannot read either file, or if the output's audio or
+subtitle count does not match the source's. A ledger row is the evidence that
+authorises deleting an original — it must never be written on a guess. Use
+`--dry-run` to see the row it would write without writing it.
 
 Use `--verified` to record independent evidence (an SSIM measurement, a scene
 you watched) when a `suspect` encode has been checked and accepted.
@@ -91,6 +98,7 @@ screen made the best result look like the worst.
 
 | Verdict | Projected output | What it means |
 |---|---|---|
+| `unknown` | not yet projectable | Under 5% progress, or nothing written yet — **not** a pass |
 | `good` | < 70% of original | Real shrink; let it finish |
 | `thin` | 70–84% | Passes, but thin — **tell the user, let them call it** |
 | `no-saving` | 85–99% | Kill and restart at CRF 18 |
@@ -121,7 +129,8 @@ encode to almost nothing and would flatter the estimate into meaninglessness.
 
 ## Provenance — say where a number came from
 
-The `RECORD` column is not decoration. It marks how much a row can be trusted:
+The `SOURCE OF RECORD` column is not decoration. It marks how much a row can
+be trusted:
 
 - **`live`** — written by Smeltr the moment the encode finished. Exact bytes.
 - **`state-file`** — migrated from the old text state file. Sizes are accurate
@@ -137,11 +146,23 @@ original was deleted before its size was recorded — not a back-solved estimate
 
 ## Guardrails
 
-- This skill is **read-only**. It never starts, stops, or alters an encode, and
-  never touches the media library. Reporting and acting stay separate.
+- `smeltr report` is **read-only**. It never starts, stops, or alters an encode,
+  and never touches the media library. `smeltr record` is the one command in this
+  skill that writes, and it writes only the ledger.
+- The dashboard is no longer a pure observer: it can start an encode at a chosen
+  CRF, abort a running one, and pull a title onto the staging drive. It still
+  cannot judge, record, sync, or delete anything in the library. Do not describe
+  it to the user as read-only.
 - If the staging drive is unmounted the report says so and sizes will be
   partial. Surface that warning rather than presenting the numbers as complete.
-- Titles the user has excluded never appear. That list lives in `SKIP` in
-  `~/Developer/git/smeltr/core.py` so the dashboard and this report cannot disagree.
+- Two different exclusions, and they behave differently. Titles in `SKIP` in
+  `core.py` are permanently excluded and never appear at all. Titles skipped by
+  hand on the dashboard live in `queue_overrides.json` and **stay visible** —
+  rank `—`, status `SKIPPED`, counted in the `Skipped by hand` stat and excluded
+  from the queue totals. A skip that vanished would read as "finished". Both
+  files are shared with the dashboard, so the two views cannot disagree.
+- If `queue_overrides.json` is present but unparseable, both views raise
+  `overrides_corrupt` and fall back to stock order. Say so — skips are not being
+  applied.
 - The `#` in the queue table is display position, not a stable id. Rank shifts
   as titles complete; don't refer to "number 7" across sessions.

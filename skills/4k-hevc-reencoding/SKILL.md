@@ -1,6 +1,6 @@
 ---
 name: 4k-hevc-reencoding
-description: Use when shrinking a 4K UHD remux/Bluray/WEB-DL video to a smaller MKV while keeping it 4K, via HandBrakeCLI. Triggers include "shrink this 4K file", "make this remux smaller", "lower the bitrate but keep 4K", "re-encode to HEVC", "convert 60GB remux to something smaller", "shrink the video but keep audio/subs", or operating on a `.mkv` whose bitrate is 60–100+ Mb/s. Covers ffprobe inspection, the **CRF ladder (always start at 16; a mandatory 25%-progress size projection steps down to 18 or 20 if the encode is heading for a blowup)**, MKV container forcing, **mandatory passthrough of ALL audio and subtitle tracks (non-negotiable)**, post-kickoff verification that tracks were actually included, background execution, progress monitoring (with the `\r`-tailing trick), and Dolby Vision caveats.
+description: Use when shrinking a 4K UHD remux/Bluray/WEB-DL video to a smaller MKV while keeping it 4K, via HandBrakeCLI. Triggers include "shrink this 4K file", "make this remux smaller", "lower the bitrate but keep 4K", "re-encode to HEVC", "convert 60GB remux to something smaller", "shrink the video but keep audio/subs", or operating on a `.mkv` whose bitrate is 60–100+ Mb/s. Covers ffprobe inspection, the **CRF ladder (always start at 16; mandatory size projections at 25/50/75% step down to 18 or 20 if the encode is heading for a blowup)**, checking whether the unattended `.autopilot.sh` driver is already running this, MKV container forcing, **mandatory passthrough of ALL audio and subtitle tracks (non-negotiable)**, post-kickoff verification that tracks were actually included, background execution, progress monitoring (with the `\r`-tailing trick), and Dolby Vision caveats.
 ---
 
 # 4K HEVC Re-encoding (HandBrake)
@@ -14,6 +14,32 @@ Shrink a 4K UHD remux (typically 60–100 GB at ~90 Mb/s) into a smaller HEVC MK
 > Every encode begins at `--quality 16`. You do not get to guess a higher CRF because a source "looks grainy". Instead, when task 2 crosses 25%, project the final size (§5.5) and step down the ladder on evidence: ≥100% of original → restart at CRF 20; 85–99% → restart at CRF 18; <85% → let it run. Skipping this check is how a 6-hour encode finishes *bigger* than the remux it replaced.
 
 > **Unsure of settings?** Run a 5-minute preview encode first via the [[4k-hevc-preview-encode]] skill, then come back here for the full encode once the user has approved the look.
+
+## FIRST — is the unattended driver already doing this?
+
+`.autopilot.sh` on the staging drive runs this entire workflow unattended: it
+picks the title, starts the encode at CRF 16, verifies tracks, watches the
+checkpoints, ladders the CRF, judges, records, syncs, and deletes the library
+original. **Check before you type anything:**
+
+```bash
+pgrep -f autopilot.sh          # driver alive?
+pgrep -fl HandBrakeCLI         # something already encoding?
+```
+
+If either returns a pid, this skill is a *reference for what the driver is
+doing*, not a set of commands to run. Two consequences, both load-bearing:
+
+- **Never `pkill -f HandBrakeCLI`.** It kills whatever the driver is encoding,
+  and every `kill`/`pkill` instruction below is written for an encode you
+  started yourself. Kill by the pid you captured at kickoff.
+- **Never start a second encode by hand.** The driver refuses to run two, but
+  nothing stops you; two encodes share one CPU and both crawl.
+
+To take over manually, pause the driver first — `kill -9` the pid and remove
+`.autopilot.lock` by hand. `CLAUDE.md` in the smeltr repo has the exact
+procedure and the three traps in it. To start one encode without leaving the
+pipeline, use the dashboard's per-title CRF picker instead of this skill.
 
 ## Workflow at a glance
 
@@ -72,7 +98,7 @@ Real-world calibration from this skill's reference encode (1996 live-action film
 
 **Every encode starts at `--quality 16`.** Do not pre-emptively pick a higher CRF because the source "looks grainy" or because you want it to finish faster — you don't get to guess. The 25% checkpoint in §5.5 decides, using the actual measured output growth.
 
-The ladder has exactly three rungs and you only ever move **down** it (16 → 18 → 20), never up:
+The ladder has exactly three rungs and you only ever move **down** it (16 → 18 → 20), never up. The dashboard's per-title picker also offers **22 and 24, which sit OUTSIDE the ladder**: a blowup at 22 or 24 is still auto-killed, but nothing restarts it, so a hand-picked 22/24 encode that fails is a dead end you have to notice yourself.
 
 | Projected final size at 25% | Verdict | Action |
 |---|---|---|
@@ -108,7 +134,11 @@ Always:
 - Force MKV container with `-f av_mkv` (HandBrake's 4K presets default to MP4).
 - Use `x265_10bit` for HDR sources (HDR10 is fundamentally 10-bit; plain `x265` is 8-bit and causes banding).
 - Include EVERY one of the audio + subtitle flags below. None are optional.
-- Redirect logs to `/tmp/` so progress can be tailed without blocking.
+- Redirect the log to `$X9/.hb-<slug>.log` on the staging drive, **not** `/tmp`.
+  Two reasons, both learned live: `/tmp` gets wiped on reboot and by periodic
+  cleanup, which killed the checkpoint watcher mid-job twice (exit 127); and
+  `core.live_encodes()` scans only `.hb-*.log` on the staging drive, so an
+  encode logged to `/tmp` is invisible to the dashboard and the report.
 - Run in the **background** (5–12+ hours typical on Apple Silicon CPU at CRF 16).
 
 ```bash
@@ -123,8 +153,12 @@ HandBrakeCLI \
   --aencoder copy \
   --audio-fallback ac3 \
   --all-subtitles \
-  > "/tmp/handbrake-<slug>.log" 2>&1 &
+  > "/Volumes/Crucial X9/4K Movies/.hb-<slug>.log" 2>&1 &
 ```
+
+`<slug>` is the folder name lowercased with everything non-alphanumeric stripped,
+truncated to 20 chars — `Shrek (2001)` becomes `shrek2001`. Match that, or the
+dashboard pairs the log with the wrong title.
 
 **Flag breakdown — every row is mandatory:**
 
@@ -154,7 +188,7 @@ A HandBrake encode is multi-hour. If the wrong flags were used, you only find ou
 Within ~30–60 seconds of kickoff, the log will contain HandBrake's parsed job config and its per-track scan output. Run:
 
 ```bash
-grep -E "AudioList|SubtitleList|scan: audio|scan: subtitle|\+ audio tracks|\+ subtitle tracks" /tmp/handbrake-<slug>.log
+grep -E "AudioList|SubtitleList|scan: audio|scan: subtitle|\+ audio tracks|\+ subtitle tracks" "/Volumes/Crucial X9/4K Movies/.hb-<slug>.log"
 ```
 
 **What you must see — the GREEN signal:**
@@ -174,7 +208,9 @@ grep -E "AudioList|SubtitleList|scan: audio|scan: subtitle|\+ audio tracks|\+ su
 
 **If you see the red signal:**
 
-1. Kill the job: `pkill -f HandBrakeCLI` (or `kill <pid>`).
+1. Kill the job by **its own pid** — `kill <pid>`, captured with `$!` at
+   kickoff. Not `pkill -f HandBrakeCLI`: if the driver is running, that kills
+   its encode too.
 2. Delete the partial output file: `rm "<output>.mkv"`.
 3. Re-run the §4 command, double-checking that every audio + subtitle flag is on its own backslash-continued line and nothing got dropped during shell quoting.
 4. Re-verify within 60 s. Do **not** assume the second attempt is correct without checking the log again.
@@ -188,7 +224,7 @@ Only after the green signal is confirmed is it acceptable to "let it run" and mo
 **The `\r` trap:** HandBrakeCLI writes progress with carriage returns, not newlines. Plain `tail` shows one giant unreadable line. Always pipe through `tr`:
 
 ```bash
-tr '\r' '\n' < /tmp/handbrake-<slug>.log | tail -3
+tr '\r' '\n' < "/Volumes/Crucial X9/4K Movies/.hb-<slug>.log" | tail -3
 ```
 
 Output looks like:
@@ -203,9 +239,20 @@ Also check the growing output file:
 ls -la "<output-folder>/"
 ```
 
-## Step 5.5 — The 25% size-projection checkpoint (MANDATORY)
+## Step 5.5 — The size-projection checkpoints (MANDATORY)
 
-At CRF 16 a grain-heavy source can encode *larger* than the remux it came from. Waiting until the end to discover that wastes 6+ hours. **When task 2 crosses 25%, project the final size and apply the §2 CRF ladder.** This check is not optional and is not "nice to have if you remember" — it is the entire reason the encode starts at 16 rather than a safe-but-mushy 20.
+At CRF 16 a grain-heavy source can encode *larger* than the remux it came from. Waiting until the end to discover that wastes 6+ hours. **When task 2 crosses 25%, project the final size and apply the §2 CRF ladder**, and take the reading again at 50% and 75%. This check is not optional and is not "nice to have if you remember" — it is the entire reason the encode starts at 16 rather than a safe-but-mushy 20.
+
+> **The pipeline already does this, and it acts.** `.watch-encode.sh` takes the
+> reading at 25/50/75%, and at ≥85% it **kills the encode itself**, deletes the
+> partial, and emits a `KILLED|…|next: CRF N` line that the driver picks up to
+> relaunch one rung lower. Detection without authority to act was a slower way
+> to waste a day: Steel Magnolias flagged `NOSAVING->CRF18` at its 25%
+> checkpoint with nobody listening and ran a further ~12 hours to produce a file
+> 1% smaller than its source. `SMELTR_NO_AUTOKILL=1` returns it to
+> report-only. It never auto-kills inside the 70–84% close-call band — that one
+> is still a human call. **If a watcher is attached, do not take these readings
+> by hand and do not kill anything; read `.watch-<slug>.log`.**
 
 ### Taking the measurement
 
@@ -218,7 +265,7 @@ projected_final_size = current_output_size / (task2_percent / 100)
 ```bash
 SRC="/path/to/Movie (YYYY) Remux-2160p.mkv"
 OUT="/path/to/Movie (YYYY) 2160p HEVC.mkv"
-LOG="/tmp/handbrake-<slug>.log"
+LOG="/Volumes/Crucial X9/4K Movies/.hb-<slug>.log"
 
 PCT=$(tr '\r' '\n' < "$LOG" | grep -o "task 2 of 2, *[0-9.]*" | tail -1 | grep -o "[0-9.]*$")
 CUR=$(stat -f%z "$OUT"); SRCSZ=$(stat -f%z "$SRC")
@@ -236,10 +283,29 @@ Take the reading **at or just past 25%**, not at 5% — early frames are unrepre
 
 | Projected / original | Verdict | Action |
 |---|---|---|
-| **≥ 100%** | Blowup | `pkill -f HandBrakeCLI`, `rm` the partial output, re-run §4 with `--quality 20` |
-| **85–99%** | Not worth the hours | `pkill -f HandBrakeCLI`, `rm` the partial output, re-run §4 with `--quality 18` |
+| **≥ 100%** | Blowup | `kill <pid>`, `rm` the partial output, re-run §4 with `--quality 20` |
+| **85–99%** | Not worth the hours | `kill <pid>`, `rm` the partial output, re-run §4 with `--quality 18` |
 | **70–84%** | Close call | **Keep running**, but surface it to the user with numbers + recommendation and let them decide |
 | **< 70%** | Genuine shrink | Let it run to completion |
+| **implausibly small** | `suspect` | **Stop.** Too small to be physically plausible, or far below this job's median. Verify picture quality before anything is deleted |
+| **narrower output frame** | `downscale` | **Stop.** Resolution was thrown away, not letterboxing. Never delete the original |
+
+**The `awk` above cannot see the last two rows.** A bare byte ratio reads a
+physically improbable 9% and a routine 69% identically as "let it run" — and
+that is the sentence someone reads before deleting a 90 GB original. Smeltr
+compares each projection against the distribution of encodes actually in the
+ledger, and checks output geometry against the source. Prefer the real
+evaluator over the hand projection:
+
+```bash
+~/Developer/git/smeltr/smeltr report                # live projection + verdict
+~/Developer/git/smeltr/smeltr verdict "<folder>"    # finished encode; JSON + exit code
+```
+
+`verdict` exits `0` good, `2` halt (`suspect` / `thin` / `downscale` — a human
+must look), `3` ladder (`no-saving` / `blowup` — retry a rung lower), `4` could
+not evaluate. It is the same `core._verdict()` the dashboard uses, so the two
+can never disagree about whether an original is safe to delete.
 
 After any restart: **re-run §4.5 (track verification) within 60 s, then take a fresh §5.5 checkpoint at 25% of the new encode.** The ladder is re-evaluated per attempt — a CRF 18 retry that still projects ≥ 85% steps down to CRF 20.
 
@@ -264,6 +330,10 @@ When the background job finishes, report:
 - Effective bitrate (`ffprobe -show_format` → `bit_rate`).
 - Size reduction vs original (e.g. "60 GB → 28 GB, 53% smaller").
 - **Track parity check** — re-run the inspect command on the output and compare counts against the numbers recorded in §1. Audio count must match. Subtitle count must match. If either is short, the encode failed regardless of how good the picture looks; tell the user and offer to re-run.
+- **Record the ledger row before anything syncs or is deleted** — `smeltr record`
+  needs the source and the output both still on the staging drive. Once the sync
+  deletes the library original its size is gone for good and the row can never be
+  completed. See [[4k-hevc-library-sync]].
 - Note any cropping HandBrake auto-applied (output dimensions may differ from source, e.g. 3840×2076 instead of 3840×2160 when black bars were detected and removed — this is correct active-picture).
 - **Compare durations, and diagnose any gap before reporting it.** Two very different causes look identical in `format=duration`:
   - **Container artifact (harmless).** MKV `format.duration` is the longest *stream*, and subtitle tracks often carry trailing padding past the last frame. A source can advertise 6823 s while its video ends at 6766 s. Confirm by comparing the last video **packet timestamps**, not the container duration:
@@ -311,6 +381,7 @@ echo "Output subs:"; ffprobe -v error -show_streams "<output>.mkv" | grep -c "^c
 - Encode passed 25% and you haven't taken the §5.5 size projection → **stop, take it now; a blowup caught at 25% saves 5 hours.**
 - §5.5 projected ≥ 85% of original and you're thinking "let's just see how it ends up" → **stop, kill and step down the ladder. That's what the checkpoint is for.**
 - Log shows `"SubtitleList": []`, `Using preset: CLI Default` with no overrides, or `+ audio tracks:` / `+ subtitle tracks:` with no entries beneath them → **stop, kill the job, delete the partial output, re-run §4.**
+- About to run `pkill -f HandBrakeCLI` → **stop, check `pgrep -f autopilot.sh` first. Kill your own pid, not every encode on the machine.**
 - About to overwrite source file → **stop, output to a new name**.
 - About to delete source before user verified output → **stop, leave the original**.
 - About to use `--encoder x265` on a 10-bit HDR source → **stop, use `x265_10bit`**.
