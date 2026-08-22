@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.smeltr.watchdog</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/snowball/Developer/git/smeltr/watchdog.sh</string>
+  </array>
+  <key>StartInterval</key><integer>300</integer>
+  <key>RunAtLoad</key><true/>
+  <!-- NOT on the staging drive: launchd cannot create a log on a volume that
+       may be unmounted, and fails the job with EX_CONFIG (78) before it runs. -->
+  <key>StandardOutPath</key><string>/Users/snowball/Library/Logs/smeltr/watchdog.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/snowball/Library/Logs/smeltr/watchdog.err.log</string>
+</dict>
+</plist>
