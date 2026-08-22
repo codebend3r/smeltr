@@ -162,22 +162,46 @@ second request.
 
 ## Editing the look and feel
 
-Everything visual is one string, `_PAGE`, in `server.py` (starts ~line 481;
-the GET/POST handlers sit above it, ~160–480). Map as of v0.1.2:
+Everything visual is one string, `_PAGE`, in `server.py` (starts ~line 519;
+the bind/token/allowlist config and GET/POST handlers sit above it). Map as of
+the LAN-bind change:
 
 | Lines | What |
 |---|---|
-| 489–516 | `:root` dark design tokens — colours, radius, motion accents. **Start here.** |
-| 517–541 | `:root[data-theme="light"]` — the light overrides, same token names |
-| 542–653 | base typography, header, stat cards, panels, live card, molten bar, tabs |
-| 654–719 | tables, scroll-reveal scrollbar, pin/skip/NAS/transfer marks, `.minibar`, `th.unit`, grips |
-| 720–771 | `prefers-reduced-motion` + responsive ≤700px (pinned title column, `.cut`) |
-| 772–784 | pre-paint theme script (runs in `<head>`) |
-| 785–808 | markup (incl. Reset-order button and the `#uiNotice` strip) |
-| 867–890 | `notice()` + `api()` POST helper — the page's only writes |
-| 891–1356 | `renderAlert` `renderStats` `renderLive` `renderQueue`+`wireDrag` `renderLedger` |
-| 1357–1400 | `paint()` — repaint keys; MUST cover transfers on both tabs |
-| 1466–1507 | theme toggle, seam-blanking + scrolling-class scripts |
+| 527–554 | `:root` dark design tokens — colours, radius, motion accents. **Start here.** |
+| 555–579 | `:root[data-theme="light"]` — the light overrides, same token names |
+| 580–691 | base typography, header, stat cards, panels, live card, molten bar, tabs |
+| 692–757 | tables, scroll-reveal scrollbar, pin/skip/NAS/transfer marks, `.minibar`, `th.unit`, grips |
+| 758–809 | `prefers-reduced-motion` + responsive ≤700px (pinned title column, `.cut`) |
+| 810–822 | pre-paint theme script (runs in `<head>`) |
+| 823–846 | markup (incl. Reset-order button, `#uiNotice`, `__SCOPE__` footer) |
+| 905–928 | `notice()` + `api()` POST helper — the page's only writes |
+| 929–1394 | `renderAlert` `renderStats` `renderLive` `renderQueue`+`wireDrag` `renderLedger` |
+| 1395–1438 | `paint()` — repaint keys; MUST cover transfers on both tabs |
+| 1504–1545 | theme toggle, seam-blanking + scrolling-class scripts |
+
+Network scope (`server.py` config block, top of file):
+
+- The launcher exports `SMELTR_BIND=lan`, resolved at startup to this machine's
+  **private** LAN IPv4 (`_is_private()` — RFC1918/RFC6598 only). A VPN/tunnel/
+  public address, or `lan` with no network, **fails closed to loopback** with a
+  stderr line: the token crosses the wire in cleartext and must never guard a
+  public listener. `SMELTR_BIND=""` is treated as unset, never `0.0.0.0`.
+- Off loopback the server binds the LAN IP **and** loopback (so `127.0.0.1`
+  URLs keep working), forces the token on (`REQUIRE_TOKEN`), and adds the LAN
+  IP, `<hostname>`, `.local`, `.lan` to the Host allowlist (lowercased,
+  trailing-dot tolerant). `free_port()` requires the port free on **both**
+  addresses so a loopback squatter can't shadow us.
+- **The token persists** in a `token` file (0600, gitignored) beside the ledger
+  — a fresh mint per launch would 403 every bookmarked phone and permanently
+  close its SSE stream. Delete the file to rotate.
+- Writes (skip/reorder) are gated **per request** by peer address: loopback
+  (you, on this Mac) always writes; a network peer is refused unless
+  `SMELTR_LAN_WRITES=1`. Un-skipping re-arms a deletion, so read-only is the
+  network default. `X-Smeltr` is CSRF protection against browsers, not against
+  devices holding the URL — the token and this peer gate are what stop them.
+- `Handler.timeout = 15` keeps a slow/idle pre-auth peer from pinning a thread.
+  The footer's `__SCOPE__` states the actual exposure (`html.escape`d).
 
 Animation ground rules: the live card updates **in place** (`liveRefs`) —
 rebuilding it every SSE frame restarts every CSS animation and kills the bar's

@@ -2,22 +2,31 @@
 """
 Smeltr -- local dashboard for the 4K HEVC re-encode pipeline.
 
-Security posture (this serves real filesystem data, so it is deliberate):
-  * binds 127.0.0.1 only -- never reachable off this machine
-  * every request needs a token minted at startup and printed once
-  * Host header is allowlisted, which blocks DNS-rebinding from a browser tab
-  * the client cannot name a path; the server reads a fixed set of files
-  * the ONLY mutations are the two queue-override endpoints, which write one
-    JSON file (skip list + hand priority) through core.save_overrides();
-    nothing the dashboard can reach touches media files or the verdict logic
-  * mutating endpoints also require a custom X-Smeltr header -- a cross-origin
-    page cannot attach one without a CORS preflight this server never grants
-  * CSP is nonce-based with no external origins, so nothing loads off-network
-  * all values reach the DOM via textContent, never innerHTML
+Security posture (this serves real filesystem data, so it is deliberate).
+Two modes, chosen by SMELTR_BIND (default 127.0.0.1):
+
+  LOOPBACK (BIND=127.0.0.1): unreachable off-box. The token is optional
+  (SMELTR_REQUIRE_TOKEN=1 to force it) -- the bind is the real control.
+
+  LAN (BIND=lan, or a literal PRIVATE address): reachable from the network,
+  so the token is FORCED on and IS the auth, and the two write endpoints are
+  REFUSED for network peers unless SMELTR_LAN_WRITES=1 (this Mac's own loopback
+  requests still write) -- a phone reading progress needs no ability to steer
+  (or un-steer) the queue that deletes originals.
+
+In both modes: Host header allowlisted (blocks DNS-rebinding); no CORS headers;
+the client can never name a path (fixed file set); mutations go only through
+core.save_overrides() (skip list + priority) and also require a custom X-Smeltr
+header a cross-origin page cannot attach; CSP is nonce-based with no external
+origins; every value reaches the DOM via textContent. A LAN bind refuses any
+non-private address and fails closed to loopback -- the token rides in the URL
+in cleartext HTTP, which is acceptable on a home LAN and not on the internet.
 """
 from __future__ import annotations
 
 import hmac
+import html
+import ipaddress
 import json
 import os
 import secrets
@@ -31,26 +40,126 @@ from urllib.parse import urlparse, parse_qs
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import core
 
-TOKEN = secrets.token_urlsafe(24)
-# Whether the token is REQUIRED, as opposed to merely accepted.
-#
-# The token's only real job is keeping a second local user account on this Mac
-# from reading the dashboard. It does nothing against the threats that actually
-# matter here, which are handled by stronger controls that stay on regardless:
-# the socket binds 127.0.0.1 (unreachable off-box), the Host header is
-# allowlisted (defeats DNS rebinding), and no CORS headers are sent (a page on
-# another origin cannot read a response). What the token DID do reliably was
-# make the obvious bookmarkable URL -- http://127.0.0.1:8787/ -- return a bare
-# 403, which is not a security win, just a broken dashboard.
-#
-# Set SMELTR_REQUIRE_TOKEN=1 to restore strict mode on a shared machine.
-REQUIRE_TOKEN = os.environ.get("SMELTR_REQUIRE_TOKEN") == "1"
+# Token persists across restarts in a 0600 file, so LAN devices survive the
+# `./smeltr restart` that every dashboard edit needs; a fresh mint would 403
+# every bookmarked phone and freeze its SSE stream permanently.
+_TOKEN_FILE = os.path.join(core.SMELTR_DIR, "token")
+
+
+def _load_or_mint_token() -> str:
+    try:
+        with open(_TOKEN_FILE, encoding="utf-8") as fh:
+            tok = fh.read().strip()
+        if tok:
+            return tok
+    except OSError:
+        pass
+    tok = secrets.token_urlsafe(24)
+    try:
+        os.makedirs(core.SMELTR_DIR, exist_ok=True)
+        fd = os.open(_TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(tok + "\n")
+        os.chmod(_TOKEN_FILE, 0o600)
+    except OSError:
+        pass
+    return tok
+
+
+TOKEN = _load_or_mint_token()
+
+
+def _lan_ip() -> str | None:
+    """This machine's primary LAN IPv4, via a connected UDP socket (sends no
+    packet -- connect() on UDP only selects the route and local address)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))
+            return s.getsockname()[0]
+    except OSError:
+        return None
+
+
+# The address families a home LAN actually uses. NOT ipaddress.is_private,
+# which also returns True for the documentation/benchmarking/TEST-NET ranges
+# (192.0.2/24, 198.51.100/24, 203.0.113/24, 198.18/15) -- a public-facing
+# 203.0.113.x would sail through that check. Membership is explicit instead.
+_LAN_NETS = tuple(ipaddress.ip_network(n) for n in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"))
+
+
+def _is_private(addr: str) -> bool:
+    """True only for RFC1918 / RFC6598 (CGNAT) space. A VPN tunnel, a
+    link-local autoconfig address, or a routable public IP is NOT 'the LAN'."""
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return any(ip in net for net in _LAN_NETS)
+
+
+# Where to listen. "127.0.0.1" (the default) is loopback-only; "lan" resolves
+# to this machine's current private LAN IPv4; a literal address is used as-is.
+# An empty/whitespace value is treated as unset -- SMELTR_BIND="" must NOT mean
+# 0.0.0.0. A resolved or literal address that is not private fails CLOSED to
+# loopback with a loud stderr line: the token crosses the wire in cleartext and
+# must never guard a public listener.
+_bind_req = (os.environ.get("SMELTR_BIND") or "127.0.0.1").strip() or "127.0.0.1"
+if _bind_req == "lan":
+    cand = _lan_ip()
+    if cand and _is_private(cand):
+        BIND = cand
+    else:
+        why = ("no network" if not cand else f"{cand} is not a private LAN address")
+        print(f"smeltr: SMELTR_BIND=lan -> {why}; binding loopback only",
+              file=sys.stderr, flush=True)
+        BIND = "127.0.0.1"
+elif _bind_req == "127.0.0.1":
+    BIND = "127.0.0.1"
+elif _is_private(_bind_req):
+    BIND = _bind_req
+else:
+    print(f"smeltr: SMELTR_BIND={_bind_req!r} is not a private LAN address; "
+          "binding loopback only", file=sys.stderr, flush=True)
+    BIND = "127.0.0.1"
+LAN_EXPOSED = BIND != "127.0.0.1"
+
+# The token is REQUIRED whenever the socket is reachable off-box, or when asked.
+REQUIRE_TOKEN = os.environ.get("SMELTR_REQUIRE_TOKEN") == "1" or LAN_EXPOSED
+# Write endpoints (skip / reorder) are gated PER REQUEST by peer address, not
+# globally: a request arriving over loopback (you, on this Mac, via the aux
+# 127.0.0.1 listener) may always write; a request from a real LAN peer is
+# refused unless SMELTR_LAN_WRITES=1. Read-only is the safe default off-box --
+# un-skipping a title puts an irreplaceable original back on the deletion path,
+# and monitoring from a phone needs none of that.
+LAN_WRITES = os.environ.get("SMELTR_LAN_WRITES") == "1"
 NONCE = secrets.token_urlsafe(16)
 POLL_SECONDS = 2.0
 # Must be BELOW POLL_SECONDS. Above it, every second SSE frame was a
 # byte-identical duplicate and the effective refresh halved to 4 s. The build
 # lock -- not the TTL -- is what prevents concurrent work.
 STATE_TTL = 1.5
+
+
+# Host-header allowlist (defeats DNS rebinding). Loopback names always pass;
+# when bound to the LAN, the bind address and this machine's own names join
+# them so http://<ip>:8787 and http://<hostname>.local:8787 both work. Stored
+# lowercased and dot-stripped to match _host_ok. Never a wildcard: an arbitrary
+# Host is exactly what a rebinding attack sends.
+def _allowed_hosts() -> frozenset:
+    hosts = {"127.0.0.1", "localhost", "[::1]"}
+    if LAN_EXPOSED:
+        hosts.add(BIND.lower())
+        name = socket.gethostname().lower().strip(".")
+        if name:
+            short = name.split(".")[0]
+            # Cover the FQDN, the bare name, and the search-domain forms LAN
+            # clients actually send: .local (mDNS) and .lan (common router).
+            hosts.update({name, short, short + ".local", short + ".lan"})
+    return frozenset(h for h in hosts if h)
+
+
+ALLOWED_HOSTS = _allowed_hosts()
 
 _state_lock = threading.Lock()
 _build_lock = threading.Lock()
@@ -251,17 +360,35 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "Smeltr"
     sys_version = ""
     protocol_version = "HTTP/1.1"
+    # A LAN-reachable socket must not let an idle or slow-loris peer pin a
+    # handler thread forever before auth. StreamRequestHandler honours this on
+    # the connection's reads, so a stalled request headers/body times out.
+    timeout = 15
 
     # -------------------------------------------------------------- security
     def _host_ok(self) -> bool:
         # An IPv6 Host is bracketed and contains its own colons, so neither
         # split(":")[0] nor a colon count can strip the port correctly.
         raw = (self.headers.get("Host") or "").strip()
+        if not raw:
+            return False  # HTTP/1.1 requires a Host; absent one can't match
         if raw.startswith("["):
             host = raw[:raw.index("]") + 1] if "]" in raw else raw
         else:
             host = raw.rsplit(":", 1)[0] if ":" in raw else raw
-        return host in ("127.0.0.1", "localhost", "[::1]")
+        # Case-insensitive, and a trailing-dot FQDN (mr-meeseeks.local.) is the
+        # same host as without it -- some resolvers append the root label.
+        return host.lower().rstrip(".") in ALLOWED_HOSTS
+
+    def _peer_is_loopback(self) -> bool:
+        try:
+            return ipaddress.ip_address(self.client_address[0]).is_loopback
+        except (ValueError, IndexError):
+            return False
+
+    def _writes_ok(self) -> bool:
+        # Loopback peers always; LAN peers only with the explicit opt-in.
+        return LAN_WRITES or self._peer_is_loopback()
 
     def _token_ok(self, query: dict) -> bool:
         if not REQUIRE_TOKEN:
@@ -358,6 +485,14 @@ class Handler(BaseHTTPRequestHandler):
         # without a CORS preflight, and this server never answers one.
         if self.headers.get("X-Smeltr") != "1":
             return self._deny(403, "missing X-Smeltr header")
+        # Read-only for LAN peers unless explicitly opted in. Un-skipping a
+        # title re-arms a deletion; a device merely holding the URL must not be
+        # able to, by default -- but this Mac's own loopback requests still can.
+        # _deny closes the connection, so the unread body on the wire can never
+        # be replayed as a smuggled request.
+        if not self._writes_ok():
+            return self._deny(403, "read-only from the network — "
+                              "skip/reorder only from this Mac (127.0.0.1)")
         try:
             length = int(self.headers.get("Content-Length") or "0")
         except ValueError:
@@ -466,16 +601,37 @@ def free_port(preferred: int = 8787) -> int:
     SO_REUSEADDR matters here: without it a just-restarted server finds its own
     previous socket in TIME_WAIT, silently falls through to an ephemeral port,
     and every restart hands out a different URL.
+
+    A port is accepted only if free on the BIND address AND on loopback (when
+    LAN-exposed we serve both). Probing BIND alone could hand back a port that
+    a squatter already holds on 127.0.0.1, so every documented loopback URL
+    would then reach the squatter, not us.
     """
-    for port in (preferred, 0):
-        with socket.socket() as probe:
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                probe.bind(("127.0.0.1", port))
-                return probe.getsockname()[1]
-            except OSError:
-                continue
-    raise SystemExit("no free port available on 127.0.0.1")
+    also_loopback = LAN_EXPOSED
+    for want in (preferred, 0):
+        primary = socket.socket()
+        primary.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            primary.bind((BIND, want))
+        except OSError:
+            primary.close()
+            continue
+        port = primary.getsockname()[1]  # resolve the real port before re-probing
+        try:
+            if also_loopback:
+                aux = socket.socket()
+                aux.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    aux.bind(("127.0.0.1", port))
+                except OSError:
+                    aux.close()
+                    continue  # port held on loopback by a squatter; try the next
+                aux.close()
+            return port
+        finally:
+            primary.close()
+    raise SystemExit(f"no free port available on {BIND}"
+                     + (" + 127.0.0.1" if also_loopback else ""))
 
 
 _PAGE = r"""<!doctype html>
@@ -803,7 +959,7 @@ footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3)
 <div class="wrap"><div class="scroll" id="pane"></div></div>
 
 <footer>
-  <span id="gen"></span><span id="stopnote"></span><span>127.0.0.1 only &middot; skip/reorder writes only queue_overrides.json</span>
+  <span id="gen"></span><span id="stopnote"></span><span>__SCOPE__ &middot; skip/reorder writes only queue_overrides.json</span>
 </footer>
 
 <script nonce="__NONCE__">
@@ -1495,7 +1651,13 @@ function conn(state,text){
 
 var es=new EventSource("/api/stream?t="+encodeURIComponent(token));
 es.onopen=function(){ conn("on","live"); };
-es.onerror=function(){ conn("off","reconnecting"); };
+es.onerror=function(){
+  /* The spec permanently CLOSES an EventSource on a non-200 (e.g. a 403 from
+     a stale token) -- it will never reconnect, so "reconnecting" would be a
+     lie over frozen data. Say so plainly instead. */
+  conn("off", es.readyState===EventSource.CLOSED
+        ? "disconnected — reload the page" : "reconnecting");
+};
 var booted=false;
 es.onmessage=function(ev){
   try{ var s=JSON.parse(ev.data); }catch(_){ return; }
@@ -1508,17 +1670,45 @@ es.onmessage=function(ev){
 </body></html>
 """
 
-PAGE = _PAGE.replace("__NONCE__", NONCE)
+# The footer states the page's actual exposure; a LAN-bound page claiming
+# "127.0.0.1 only" would be lying about its own reachability. BIND is
+# operator-controlled but still HTML-escaped -- the page never interpolates a
+# raw value, on principle.
+# Off-box the page is read-only for network peers by default; say so unless the
+# LAN-writes opt-in is on. (Loopback can always write regardless.)
+_scope_text = (f"{BIND} · token required" + ("" if LAN_WRITES else " · read-only")
+               if LAN_EXPOSED else "127.0.0.1 only")
+_SCOPE = html.escape(_scope_text)
+PAGE = _PAGE.replace("__NONCE__", NONCE).replace("__SCOPE__", _SCOPE)
 
 
 def main() -> None:
     port = free_port()
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    httpd = ThreadingHTTPServer((BIND, port), Handler)
     httpd.daemon_threads = True
+    # A LAN bind must not KILL loopback: local bookmarks, CLAUDE.md, and the
+    # terminal report all say 127.0.0.1. Serve both -- same handler, same
+    # gates -- with the loopback socket best-effort (it dies with the process
+    # via daemon threads either way).
+    aux = None
+    if LAN_EXPOSED:
+        try:
+            aux = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+            aux.daemon_threads = True
+            threading.Thread(target=aux.serve_forever, daemon=True).start()
+        except OSError as e:
+            # free_port already required this port free on loopback, so this is
+            # a genuine surprise -- surface it rather than silently leaving
+            # every documented 127.0.0.1 URL dead.
+            print(f"smeltr: loopback listener failed ({e}); "
+                  "127.0.0.1 URLs will not work this run", file=sys.stderr, flush=True)
+            aux = None
     # Print the plain URL unless the token is actually required -- a link the
-    # user cannot retype is a link they cannot use.
-    url = (f"http://127.0.0.1:{port}/?t={TOKEN}" if REQUIRE_TOKEN
-           else f"http://127.0.0.1:{port}/")
+    # user cannot retype is a link they cannot use. When LAN-bound the URL
+    # names the LAN address (that is the whole point) and always carries the
+    # token, since REQUIRE_TOKEN is forced on above.
+    url = (f"http://{BIND}:{port}/?t={TOKEN}" if REQUIRE_TOKEN
+           else f"http://{BIND}:{port}/")
     urlfile = os.path.join(core.SMELTR_DIR, "url")
     pidfile = os.path.join(core.SMELTR_DIR, "server.pid")
 
@@ -1548,12 +1738,30 @@ def main() -> None:
     # plaintext despite the header claiming it is never logged.
     if sys.stdout.isatty():
         print(url, flush=True)
+
+    # The launcher stops the server with SIGTERM, whose default handler skips
+    # the finally below and leaves the token-bearing url file on disk. Turn it
+    # into a clean shutdown so the runtime files are always removed.
+    import signal
+
+    def _term(_signo, _frame):
+        raise KeyboardInterrupt
+
+    try:
+        signal.signal(signal.SIGTERM, _term)
+    except (ValueError, OSError):
+        pass
+
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        httpd.shutdown()
         httpd.server_close()
+        if aux is not None:
+            aux.shutdown()
+            aux.server_close()
         for path in (pidfile, urlfile):
             try:
                 os.unlink(path)

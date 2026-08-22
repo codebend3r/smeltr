@@ -130,17 +130,37 @@ parity check that passed on zero evidence, a ledger write with no liveness
 gate, an uppercase transform quietly turning Mb/s into MB/S, and a progress
 row that painted once and froze for an entire 45-minute transfer.
 
+## Reaching it from other devices
+
+The launcher binds the dashboard to this machine's LAN IPv4 **and** loopback
+(`SMELTR_BIND=lan`; set `SMELTR_BIND=127.0.0.1` for loopback-only). Open the
+tokened URL that `./smeltr url` prints on any phone, tablet, or TV on the
+network — the token is part of the URL, so a bookmark just works and survives a
+`./smeltr restart` (the token persists in a 0600, gitignored `token` file;
+delete it to rotate). From the network the dashboard is **read-only**: skip and
+reorder work only from this Mac. Set `SMELTR_LAN_WRITES=1` to allow queue edits
+from other devices too.
+
 ## Dashboard security
 
-The server binds `127.0.0.1` only, allowlists the `Host` header (defeating DNS
-rebinding), sends no CORS headers, and serves a nonce-based CSP with no
-external origins; every value reaches the DOM via `textContent`. The only two
-mutating routes write `queue_overrides.json` — they accept only titles the
-queue itself just reported (never a path), require the `X-Smeltr: 1` header (a
-cross-origin page cannot attach it without a CORS preflight the server never
-grants), and every denied request closes its connection so a rejected body can
-never be replayed as a smuggled second request. Set `SMELTR_REQUIRE_TOKEN=1`
-to additionally require the per-launch token on every request.
+Off loopback the URL token is forced on and **is** the auth — every route
+except `/healthz` returns 403 without it. A LAN bind refuses any non-private
+address (VPN tunnels, public IPs) and fails closed to loopback: the token
+travels in cleartext HTTP, fine on a home LAN, never on the internet. The
+`Host` header is allowlisted (defeating DNS rebinding — loopback names plus,
+when LAN-bound, the bind address, `<hostname>`, `.local`, and `.lan`), no CORS
+headers are sent, connections carry a read timeout so a pre-auth peer can't pin
+a thread, and the page has a nonce-based CSP with no external origins; every
+value reaches the DOM via `textContent`.
+
+The only two mutating routes write `queue_overrides.json` — they accept only
+titles the queue itself just reported (never a path), are refused for network
+peers by default (loopback only, unless `SMELTR_LAN_WRITES=1`), require the
+`X-Smeltr: 1` header (a cross-origin page cannot attach it without a CORS
+preflight the server never grants), and every denied request closes its
+connection so a rejected body can never be replayed as a smuggled second
+request. `X-Smeltr` guards against hostile web pages; the token and the
+loopback-write gate are what guard against devices that already hold the URL.
 
 ## Skills and agents
 

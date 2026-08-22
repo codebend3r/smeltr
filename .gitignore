@@ -1,6 +1,8 @@
 # Runtime artifacts, regenerated on every start. server.log and url can contain
-# the session token when SMELTR_REQUIRE_TOKEN=1, so they must never be committed.
+# the auth token, and `token` IS the persisted auth token, so none may ever be
+# committed.
 url
+token
 server.pid
 server.log
 __pycache__/

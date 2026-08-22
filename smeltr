@@ -9,6 +9,10 @@ set -uo pipefail
 DIR="${SMELTR_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 PIDF="$DIR/server.pid"
 PY="${SMELTR_PYTHON:-python3}"
+# Bind the dashboard to this machine's LAN address so phones/TVs on the
+# network can reach it; the server forces the URL token on whenever it is
+# bound off loopback. SMELTR_BIND=127.0.0.1 restores loopback-only.
+export SMELTR_BIND="${SMELTR_BIND:-lan}"
 
 # Liveness has to survive a stale pidfile AND a server started outside this
 # launcher. Checking only the pidfile once left two servers bound to two ports,

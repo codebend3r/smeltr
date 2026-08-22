@@ -323,7 +323,13 @@ def main() -> int:
     print()
     print(f"  {c('SMELTR', '1;38;5;208')}  {c('· 4K re-encode queue', '2')}")
     url = app_url()
-    print(f"  {c('live dashboard', '2')}  {link(url, url)}" if url else
+    # The URL carries the auth token when LAN-bound. Printing it to a pipe or
+    # file (report > out, | tee, tmux capture) would leak the token into
+    # plaintext, so strip the query when stdout is not a terminal.
+    shown = url
+    if url and not TTY and "?" in url:
+        shown = url.split("?", 1)[0]
+    print(f"  {c('live dashboard', '2')}  {link(url, shown)}" if url else
           f"  {c('dashboard not running — start it with: ~/.smeltr/smeltr start', '2')}")
     if not s["x9_online"]:
         print(f"  {c('WARNING: staging drive not mounted — sizes below are incomplete', '1;33')}")
