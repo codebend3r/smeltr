@@ -72,6 +72,62 @@ and the pipeline keeps running.
    log in `.pull-<slug>.log`. A completed pull is NEVER deleted over a
    rename failure — the note says where the file is.
 
+### The driver is CONCURRENT as of 2026-08-22
+
+HandBrake is never idle waiting on I/O. One pass of the loop dispatches a
+finished encode's record+sync to the background (`sync_async`) and starts the
+next encode in the same pass, so the push to the NAS, the replenish pull, and
+the next encode all overlap. Only ONE encode runs at a time.
+
+What that breaks if you forget it:
+
+- A running encode's output already matches `*2160p HEVC*.mkv`, so
+  `finished_folder()` would hand a LIVE encode to `verdict.py`, which returns 4
+  and halts. `encoding_this()` excludes it — matched with a literal `case` glob,
+  never pgrep (folder names contain `(YYYY)` and pgrep reads the parens as a
+  group).
+- A backgrounded sync leaves its folder on disk until `.sync-to-library.sh`
+  removes it last, so the loop would re-find and re-RECORD it 30 s later.
+  `core.record()` appends with no duplicate guard, so that is a second ledger
+  row and a double-counted reclaim. `.syncing-<slug>` holds the sync's pid;
+  a marker whose pid is gone is STALE and cleared. `.recorded-<slug>` means
+  record already ran, so an interrupted sync resumes without re-recording.
+- `sync_in_flight()` logs to **stderr**. `finished_folder()` is read with
+  `$(...)`, so anything on stdout is prepended to the folder name it returns.
+- The stop-condition `exit 0` is blocked while `syncs_in_flight()` — that
+  sync's replenish is what stages the next titles.
+
+Deletion safety is unchanged. `.sync-to-library.sh` still copies, size-verifies,
+ffprobe-verifies and track-verifies before removing a library original.
+
+The CRF ladder now fires from the `next_title` path. It used to hang off
+`finished_folder()`, but `.watch-encode.sh` deletes the partial when it
+auto-kills a blowup, so there was no finished folder and the branch could never
+run — the title simply restarted at the CRF that had just blown up.
+
+`staging/autopilot.sh` in this repo tracks the live script for history.
+**The X9 copy is what runs.** `tests/test_staging_in_sync.sh` fails on drift.
+
+### The watchdog, and why it may be blind
+
+`watchdog.sh` relaunches the driver when it is merely absent. It NEVER restarts
+past an unreviewed `HALTED:` line — a halt is the thing standing between a bad
+verdict and a deleted original.
+
+**A LaunchAgent cannot read `/Volumes` without Full Disk Access, and the failure
+is silent.** `[ -d ]` succeeds, `test -r` on a file inside returns true, and
+every read comes back empty. Blind, `smeltr next` reports STOP CONDITION — the
+job looks finished. The watchdog proves readability first and stands down
+loudly if it cannot. Grant `/bin/bash` Full Disk Access for the LaunchAgent to
+work, or run `watchdog.sh --supervise` from a shell that can already see the
+drive (works immediately, does not survive a reboot).
+
+### Tests
+
+`bash tests/run-all.sh`. The bash suites skip cleanly when the X9 is not
+mounted. They pin the log-matching and downscale gates, the concurrency
+markers, and repo/live drift.
+
 ### Pausing the driver — the exact procedure
 
 Before touching `core.py` / `verdict.py` / `next_title.py` / `record.py`, or
