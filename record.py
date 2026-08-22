@@ -47,27 +47,16 @@ def probe_tracks(path: str) -> tuple[int | None, int | None]:
 
 def encode_seconds(folder: str, output_name: str) -> int | None:
     """Wall-clock encode time, from the log's start line to the log's mtime."""
-    try:
-        names = os.listdir(core.X9)
-    except OSError:
+    info = core.log_for_output(output_name)
+    started = info.get("started_text")
+    if not started:
         return None
-    for name in names:
-        if not (name.startswith(".hb-") and name.endswith(".log")):
-            continue
-        path = os.path.join(core.X9, name)
-        info = core.parse_log(path)
-        if info.get("output_name") != output_name:
-            continue
-        started = info.get("started_text")
-        if not started:
-            return None
-        import time as _t
-        try:
-            t0 = _t.mktime(_t.strptime(started, "%a %b %d %H:%M:%S %Y"))
-        except ValueError:
-            return None
-        return int(os.path.getmtime(path) - t0)
-    return None
+    import time as _t
+    try:
+        t0 = _t.mktime(_t.strptime(started, "%a %b %d %H:%M:%S %Y"))
+    except ValueError:
+        return None
+    return int(os.path.getmtime(info["log"]) - t0)
 
 
 def main() -> int:
@@ -106,7 +95,10 @@ def main() -> int:
     # writes a permanently wrong size into the ledger -- and that row is the
     # last thing standing between an irreplaceable original and rm.
     for proc in core._ps_handbrake():
-        if proc["output_name"] == outs[0] and core._alive(proc["pid"]):
+        # basename both sides: the autopilot's -o is a full path (see
+        # core.log_for_output), so a raw compare never fired this gate -- only
+        # the mtime check below stood between a growing output and the ledger.
+        if os.path.basename(proc["output_name"]) == outs[0] and core._alive(proc["pid"]):
             sys.exit(f"refusing to record: HandBrake pid {proc['pid']} is still "
                      f"writing {outs[0]}")
     age = time.time() - os.path.getmtime(out)
@@ -129,13 +121,7 @@ def main() -> int:
         sys.exit(f"refusing to record: track parity failed — "
                  f"source {sa}a/{ss}s vs output {oa}a/{osb}s")
 
-    info = {}
-    for name in os.listdir(core.X9):
-        if name.startswith(".hb-") and name.endswith(".log"):
-            got = core.parse_log(os.path.join(core.X9, name))
-            if got.get("output_name") == outs[0]:
-                info = got
-                break
+    info = core.log_for_output(outs[0])
 
     entry = Entry(
         title=args.folder,

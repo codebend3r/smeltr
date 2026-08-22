@@ -51,7 +51,9 @@ def main() -> int:
     # looks like a finished file and scores absurdly well. Refuse to judge until
     # HandBrake says it finished.
     for proc in core._ps_handbrake():
-        if proc["output_name"] == outs[0] and core._alive(proc["pid"]):
+        # basename both sides: the autopilot's -o is a full path (see
+        # core.log_for_output), so a raw compare never fired this gate.
+        if os.path.basename(proc["output_name"]) == outs[0] and core._alive(proc["pid"]):
             print(json.dumps({"error": "encode still running", "pid": proc["pid"]}))
             return 4
 
@@ -62,13 +64,7 @@ def main() -> int:
 
     # Geometry comes from the encode's own log, so the crop factor is the real
     # one rather than an assumption.
-    info = {}
-    for name in os.listdir(core.X9):
-        if name.startswith(".hb-") and name.endswith(".log"):
-            got = core.parse_log(os.path.join(core.X9, name))
-            if got.get("output_name") == outs[0]:
-                info = got
-                break
+    info = core.log_for_output(outs[0])
 
     if not info:
         print(json.dumps({"error": f"no HandBrake log found for {outs[0]}"}))

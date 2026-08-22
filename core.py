@@ -412,6 +412,31 @@ def _verdict(ratio: Optional[float], hist: Optional[list[float]] = None,
     return "good", "Solid reduction - let it run."
 
 
+def log_for_output(output_name: str) -> dict:
+    """The parsed HandBrake log that wrote `output_name`, or {}.
+
+    Matched by BASENAME on both sides. The autopilot invokes HandBrake with a
+    full `-o` path, so the log records a full path, while every caller here has
+    a bare directory entry from os.listdir(). Comparing the two raw silently
+    never matched: it halted the driver with "no HandBrake log found" after a
+    five-hour encode, and left the ledger's geometry/CRF columns null on the
+    rows that did get written. live_encodes() keys by basename for the same
+    reason -- keep all of them basename-keyed.
+    """
+    want = os.path.basename(output_name)
+    try:
+        names = os.listdir(X9)
+    except OSError:
+        return {}
+    for name in names:
+        if not (name.startswith(".hb-") and name.endswith(".log")):
+            continue
+        got = parse_log(os.path.join(X9, name))
+        if got.get("output_name") and os.path.basename(got["output_name"]) == want:
+            return got
+    return {}
+
+
 def live_encodes() -> list[dict]:
     """Every HandBrake encode actually running right now, with progress."""
     logs = []
