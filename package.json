@@ -1,6 +1,6 @@
 {
   "name": "smeltr",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Local dashboard and ledger for a long-running 4K HEVC re-encode job",
   "license": "UNLICENSED",
