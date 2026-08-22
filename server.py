@@ -102,6 +102,53 @@ def _is_private(addr: str) -> bool:
     return any(ip in net for net in _LAN_NETS)
 
 
+# Interfaces that are NOT "the LAN" even when they carry an RFC1918/CGNAT
+# address: VPN/tunnel devices and the AWDL/link-local radios. Tailscale hands
+# out 100.64/10, which _is_private deliberately accepts for real CGNAT homes --
+# binding every private address WITHOUT this filter would newly expose the
+# dashboard across a VPN that the old single-address bind never reached.
+_TUNNEL_IFACES = ("lo", "utun", "tun", "tap", "ipsec", "ppp", "gif", "stf",
+                  "awdl", "llw", "anpi", "bridge", "ap")
+
+
+def _lan_ips() -> list[str]:
+    """Every private LAN IPv4 configured on a real, UP interface.
+
+    _lan_ip() alone returns only the DEFAULT-ROUTE address. A Mac with both
+    Ethernet and Wi-Fi live on one subnet has two, and binding just the routed
+    one left the dashboard dead on the other: a phone that resolved the host to
+    the unbound address got connection-refused, which renders as a blank page.
+
+    Parsed from ifconfig because getaddrinfo(gethostname()) reports only the
+    primary on macOS (verified live: it returned 1 of this machine's 2).
+    Ordered primary-first so the printed URL and the footer keep naming the
+    routed address. Falls back to the single-address behaviour when ifconfig is
+    missing or tells us nothing -- never widens on a parse failure.
+    """
+    found: list[str] = []
+    try:
+        out = subprocess.run(["ifconfig", "-a"], capture_output=True,
+                             text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    iface, up = "", False
+    for line in out.splitlines():
+        head = re.match(r"^([A-Za-z0-9._-]+):\s.*<(.*)>", line)
+        if head:
+            iface = head.group(1)
+            up = "UP" in head.group(2).split(",")
+            continue
+        m = re.match(r"^\s+inet (\d+\.\d+\.\d+\.\d+)", line)
+        if m and up and not iface.startswith(_TUNNEL_IFACES):
+            addr = m.group(1)
+            if _is_private(addr) and addr not in found:
+                found.append(addr)
+    primary = _lan_ip()
+    if primary and _is_private(primary):
+        found = [primary] + [a for a in found if a != primary]
+    return found
+
+
 # Where to listen. "127.0.0.1" (the default) is loopback-only; "lan" resolves
 # to this machine's current private LAN IPv4; a literal address is used as-is.
 # An empty/whitespace value is treated as unset -- SMELTR_BIND="" must NOT mean
@@ -110,23 +157,30 @@ def _is_private(addr: str) -> bool:
 # must never guard a public listener.
 _bind_req = (os.environ.get("SMELTR_BIND") or "127.0.0.1").strip() or "127.0.0.1"
 if _bind_req == "lan":
-    cand = _lan_ip()
-    if cand and _is_private(cand):
-        BIND = cand
-    else:
+    # EVERY private LAN IPv4 this machine holds, not just the routed one --
+    # see _lan_ips(). The unbound sibling address is the blank-page bug.
+    BINDS = _lan_ips()
+    if not BINDS:
+        cand = _lan_ip()
         why = ("no network" if not cand else f"{cand} is not a private LAN address")
         print(f"smeltr: SMELTR_BIND=lan -> {why}; binding loopback only",
               file=sys.stderr, flush=True)
-        BIND = "127.0.0.1"
+        BINDS = ["127.0.0.1"]
 elif _bind_req == "127.0.0.1":
-    BIND = "127.0.0.1"
+    BINDS = ["127.0.0.1"]
 elif _is_private(_bind_req):
-    BIND = _bind_req
+    # An explicit address means exactly that address. Never widened: naming one
+    # interface is how an operator deliberately narrows the exposure.
+    BINDS = [_bind_req]
 else:
     print(f"smeltr: SMELTR_BIND={_bind_req!r} is not a private LAN address; "
           "binding loopback only", file=sys.stderr, flush=True)
-    BIND = "127.0.0.1"
+    BINDS = ["127.0.0.1"]
+# The primary keeps naming the printed URL, the footer, and the log lines.
+BIND = BINDS[0]
 LAN_EXPOSED = BIND != "127.0.0.1"
+# Sibling LAN addresses; each gets its own listener alongside the primary.
+EXTRA_BINDS = [a for a in BINDS[1:] if a != "127.0.0.1"]
 
 # The token is REQUIRED whenever the socket is reachable off-box, or when asked.
 REQUIRE_TOKEN = os.environ.get("SMELTR_REQUIRE_TOKEN") == "1" or LAN_EXPOSED
@@ -153,7 +207,9 @@ STATE_TTL = 1.5
 def _allowed_hosts() -> frozenset:
     hosts = {"127.0.0.1", "localhost", "[::1]"}
     if LAN_EXPOSED:
-        hosts.add(BIND.lower())
+        # Every address we listen on, not just the primary: a Host naming the
+        # sibling interface is us, and 421-ing it renders as a blank page.
+        hosts.update(a.lower() for a in BINDS)
         name = socket.gethostname().lower().strip(".")
         if name:
             short = name.split(".")[0]
@@ -1182,36 +1238,43 @@ def free_port(preferred: int = 8787) -> int:
     previous socket in TIME_WAIT, silently falls through to an ephemeral port,
     and every restart hands out a different URL.
 
-    A port is accepted only if free on the BIND address AND on loopback (when
-    LAN-exposed we serve both). Probing BIND alone could hand back a port that
-    a squatter already holds on 127.0.0.1, so every documented loopback URL
-    would then reach the squatter, not us.
+    A port is accepted only if free on EVERY address we will listen on -- all
+    of BINDS, plus loopback when LAN-exposed. Probing one address alone could
+    hand back a port a squatter already holds on another, so one of the
+    documented URLs would reach the squatter instead of us.
     """
-    also_loopback = LAN_EXPOSED
+    addrs = list(BINDS)
+    if LAN_EXPOSED and "127.0.0.1" not in addrs:
+        addrs.append("127.0.0.1")
     for want in (preferred, 0):
         primary = socket.socket()
         primary.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            primary.bind((BIND, want))
+            primary.bind((addrs[0], want))
         except OSError:
             primary.close()
             continue
         port = primary.getsockname()[1]  # resolve the real port before re-probing
+        probes = []
         try:
-            if also_loopback:
-                aux = socket.socket()
-                aux.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # Hold each probe open until all have passed: closing as we go
+            # would let a racing squatter take an address we already cleared.
+            for addr in addrs[1:]:
+                sock = socket.socket()
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 try:
-                    aux.bind(("127.0.0.1", port))
+                    sock.bind((addr, port))
                 except OSError:
-                    aux.close()
-                    continue  # port held on loopback by a squatter; try the next
-                aux.close()
-            return port
+                    sock.close()
+                    break  # port held elsewhere; try the next candidate
+                probes.append(sock)
+            else:
+                return port
         finally:
+            for sock in probes:
+                sock.close()
             primary.close()
-    raise SystemExit(f"no free port available on {BIND}"
-                     + (" + 127.0.0.1" if also_loopback else ""))
+    raise SystemExit("no free port available on " + " + ".join(addrs))
 
 
 _PAGE = r"""<!doctype html>
@@ -2411,7 +2474,7 @@ es.onmessage=function(ev){
 # raw value, on principle.
 # Off-box the page is read-only for network peers by default; say so unless the
 # LAN-writes opt-in is on. (Loopback can always write regardless.)
-_scope_text = (f"{BIND} · token required"
+_scope_text = (" + ".join(BINDS) + " · token required"
                + ("" if LAN_WRITES
                   else " · network peers read-only — writes from this Mac only")
                if LAN_EXPOSED else "127.0.0.1 only")
@@ -2427,19 +2490,25 @@ def main() -> None:
     # terminal report all say 127.0.0.1. Serve both -- same handler, same
     # gates -- with the loopback socket best-effort (it dies with the process
     # via daemon threads either way).
-    aux = None
+    aux_servers = []
     if LAN_EXPOSED:
-        try:
-            aux = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-            aux.daemon_threads = True
-            threading.Thread(target=aux.serve_forever, daemon=True).start()
-        except OSError as e:
-            # free_port already required this port free on loopback, so this is
-            # a genuine surprise -- surface it rather than silently leaving
-            # every documented 127.0.0.1 URL dead.
-            print(f"smeltr: loopback listener failed ({e}); "
-                  "127.0.0.1 URLs will not work this run", file=sys.stderr, flush=True)
-            aux = None
+        # Loopback AND every sibling LAN address. One socket cannot cover two
+        # specific IPs, and 0.0.0.0 is forbidden here (it would also publish
+        # any VPN or public interface), so each address gets its own listener
+        # sharing the same Handler, the same token, and the same write gate.
+        for addr in EXTRA_BINDS + ["127.0.0.1"]:
+            try:
+                extra = ThreadingHTTPServer((addr, port), Handler)
+                extra.daemon_threads = True
+                threading.Thread(target=extra.serve_forever, daemon=True).start()
+                aux_servers.append(extra)
+            except OSError as e:
+                # free_port already required this port free on every address,
+                # so this is a genuine surprise -- surface it rather than
+                # silently leaving a documented URL dead.
+                print(f"smeltr: listener on {addr}:{port} failed ({e}); "
+                      f"http://{addr}:{port}/ will not work this run",
+                      file=sys.stderr, flush=True)
     # Print the plain URL unless the token is actually required -- a link the
     # user cannot retype is a link they cannot use. When LAN-bound the URL
     # names the LAN address (that is the whole point) and always carries the
@@ -2496,9 +2565,9 @@ def main() -> None:
     finally:
         httpd.shutdown()
         httpd.server_close()
-        if aux is not None:
-            aux.shutdown()
-            aux.server_close()
+        for extra in aux_servers:
+            extra.shutdown()
+            extra.server_close()
         for path in (pidfile, urlfile):
             try:
                 os.unlink(path)
