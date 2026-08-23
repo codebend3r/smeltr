@@ -107,7 +107,8 @@ class ArrivingFolders(unittest.TestCase):
     """A staged folder holding only a replenish .partial must never be
     printed: the concurrent driver reaches next_title while its backgrounded
     sync's pull is in flight, and start_encode halts on "no source file".
-    The dashboard's next_up already skipped these; the pick must agree."""
+    The dashboard's next_up and this pick share core.pick_next, so agreement
+    is by construction; this pins the driver-facing behavior."""
 
     def setUp(self):
         self._saved = (core.offline_roots, core.paused, core.queue_cached,
@@ -156,6 +157,89 @@ class ArrivingFolders(unittest.TestCase):
             {"title": "Arriving (2012)", "staged": True},
         ]
         self.assertEqual(self._main()[0], 3)
+
+
+class PickNext(unittest.TestCase):
+    """core.pick_next is the ONE pick, shared by next_title.py and the
+    dashboard's _mark_ready. Its wait reasons reach the driver log verbatim
+    through next_title's stderr, so they must name the actual state -- a
+    guessed message once sent the operator debugging overrides that were
+    fine."""
+
+    def setUp(self):
+        self._saved = (core.X9, core.queue_cached)
+        self._tmp = tempfile.TemporaryDirectory()
+        core.X9 = self._tmp.name
+
+    def tearDown(self):
+        core.X9, core.queue_cached = self._saved
+        self._tmp.cleanup()
+
+    def _folder(self, title, files):
+        d = os.path.join(self._tmp.name, title)
+        os.makedirs(d)
+        for f in files:
+            with open(os.path.join(d, f), "w"):
+                pass
+
+    def test_live_output_excludes_the_row_without_a_reason(self):
+        # The in-progress encode's own file matches *2160p HEVC*.mkv, so the
+        # live row is passed silently -- awaiting sync is not a wait state.
+        self._folder("Live (2020)", ["Live (2020).mkv",
+                                     "Live (2020) 2160p HEVC.mkv"])
+        row, waits = core.pick_next([{"title": "Live (2020)", "staged": True}])
+        self.assertIsNone(row)
+        self.assertEqual(waits, set())
+
+    def test_reasons_name_each_actual_state(self):
+        self._folder("Arriving (2012)", ["Arriving (2012).mkv.partial"])
+        self._folder("Skipped (1999)", ["Skipped (1999) Remux-2160p.mkv"])
+        row, waits = core.pick_next([
+            {"title": "Arriving (2012)", "staged": True},
+            {"title": "Skipped (1999)", "staged": True, "skipped": True},
+        ])
+        self.assertIsNone(row)
+        self.assertEqual(waits, {"arriving", "skipped"})
+
+    def test_skipped_arriving_folder_counts_as_arriving(self):
+        # No source file exists to encode regardless of the skip.
+        self._folder("Both (2005)", ["Both (2005).mkv.partial"])
+        row, waits = core.pick_next(
+            [{"title": "Both (2005)", "staged": True, "skipped": True}])
+        self.assertIsNone(row)
+        self.assertEqual(waits, {"arriving"})
+
+    def _next_title_stderr(self):
+        argv, sys.argv = sys.argv, ["next_title.py"]
+        saved = (core.offline_roots, core.paused)
+        core.offline_roots = lambda: []
+        core.paused = lambda: False
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(io.StringIO()) as err:
+                rc = next_title.main()
+            return rc, err.getvalue()
+        finally:
+            sys.argv = argv
+            core.offline_roots, core.paused = saved
+
+    def test_wait_message_names_arriving_not_skipped(self):
+        self._folder("Arriving (2012)", ["Arriving (2012).mkv.partial"])
+        core.queue_cached = lambda min_mbps=None: [
+            {"title": "Arriving (2012)", "staged": True}]
+        rc, err = self._next_title_stderr()
+        self.assertEqual(rc, 3)
+        self.assertIn("still landing", err)
+        self.assertNotIn("hand-skipped", err)
+
+    def test_wait_message_names_skipped_not_arriving(self):
+        self._folder("Skipped (1999)", ["Skipped (1999) Remux-2160p.mkv"])
+        core.queue_cached = lambda min_mbps=None: [
+            {"title": "Skipped (1999)", "staged": True, "skipped": True}]
+        rc, err = self._next_title_stderr()
+        self.assertEqual(rc, 3)
+        self.assertIn("hand-skipped", err)
+        self.assertNotIn("still landing", err)
 
 
 class ServerGates(unittest.TestCase):
@@ -271,6 +355,18 @@ class MarkReady(unittest.TestCase):
                                 paused=False)
         self.assertFalse(rows[0]["ready"])
         self.assertTrue(rows[0]["next_up"])
+
+    def test_an_arriving_pull_suppresses_both_flags(self):
+        # A dashboard pull lands in a hidden .pull-<title> dir; _arrivals()
+        # keys it onto the visible row as arriving_bytes, which pick_next
+        # cannot see from the folder's own contents. The row must carry
+        # neither flag: /api/encode/start would refuse it with a 409, and
+        # the green row must never promise a click that cannot land.
+        rows = self._rows()
+        rows[0]["arriving_bytes"] = 4096
+        self.server._mark_ready(rows, live=[], paused=False)
+        self.assertFalse(rows[0]["ready"])
+        self.assertFalse(rows[0]["next_up"])
 
 
 if __name__ == "__main__":
