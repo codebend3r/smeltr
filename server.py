@@ -454,7 +454,11 @@ def build_state() -> dict:
         arr = _arrivals()
         q = [dict(r, src_dir=sd.get(r["title"].lower()),
                   **_arr_fields(arr.get(r["title"].lower()))) for r in q]
-        _mark_ready(q, live)
+        # summary() is the ONE carrier of paused -- the same field report.py
+        # banners -- and it feeds _mark_ready so "ready" and the paused banner
+        # can never come from two reads that disagree within one snapshot.
+        summary = core.summary(hist=hist, q=q)
+        _mark_ready(q, live, summary["paused"])
         # Pending dashboard pulls, annotated onto the rows they belong to. The
         # rows are already private copies (see above), so this is safe.
         with _stage_lock:
@@ -475,8 +479,11 @@ def build_state() -> dict:
         # message with the previous note's "ok" kind.
         with _state_lock:
             note = {"msg": _encode_note["msg"], "kind": _encode_note["kind"]}
+        # One pgrep serves both fields: can_start and driver_alive read the
+        # same processes, and two calls could disagree within one payload.
+        driver = bool(_driver_pids())
         payload = {
-            "summary": core.summary(hist=hist, q=q),
+            "summary": summary,
             "live": live,
             "ledger": hist,
             "queue": q,
@@ -485,11 +492,10 @@ def build_state() -> dict:
             "crf_choices": list(CRF_CHOICES),
             "stage_queue": pending,
             "stage_active": staging_now,
-            "can_start": not live and not _driver_pids(),
-            "paused": core.paused(),
+            "can_start": not live and not driver,
             # The paused card asserts what the driver will do; it may only
             # do that when a driver actually exists to do it.
-            "driver_alive": bool(_driver_pids()),
+            "driver_alive": driver,
         }
         with _state_lock:
             # Stamp AFTER the build. Stamping before meant a slow cold build was
@@ -532,7 +538,7 @@ def _set_note(msg, kind="warn") -> None:
         _state_cache["payload"] = None
 
 
-def _mark_ready(rows: list, live: list) -> None:
+def _mark_ready(rows: list, live: list, paused: bool) -> None:
     """Flag the ONE row the pipeline would actually encode next.
 
     Deliberately mirrors next_title.py: staged, no 2160p HEVC output yet, not
@@ -542,11 +548,13 @@ def _mark_ready(rows: list, live: list) -> None:
     promise an encode that cannot start.
 
     Two flags from the one pick. "next_up" is set ALWAYS -- including while an
-    encode runs (the live row's own output file excludes it from the pick) --
-    because "which movie encodes next" must be readable at a glance, not
-    inferred from rank. "ready" additionally requires that nothing is
-    encoding: it carries the green row and the start button, and must never
-    promise an encode that cannot start.
+    encode runs (the live row's own output file excludes it from the pick) and
+    while paused (the pill says "next after resume") -- because "which movie
+    encodes next" must be readable at a glance, not inferred from rank.
+    "ready" additionally requires that nothing is encoding AND that the
+    pipeline is not paused: it carries the green row and the start button,
+    and must never promise an encode that cannot start. Gated HERE, not in
+    the page -- ready is server-computed, whole, or the invariant leaks.
     """
     for r in rows:
         r["ready"] = False
@@ -560,7 +568,7 @@ def _mark_ready(rows: list, live: list) -> None:
         if out is not None or not src:
             continue
         r["next_up"] = True
-        if not live:
+        if not live and not paused:
             r["ready"] = True
         return
 
@@ -2439,12 +2447,14 @@ function pauseSwitch(on, label){
   return row;
 }
 
-function renderLive(live, s, paused, driverAlive){
+function renderLive(live, s, driverAlive){
+  /* paused rides in the summary -- the ONE carrier, the same field report.py
+     banners -- never a second top-level copy. It and driverAlive are in the
+     sig: the pause control and the idle card's claims are built once per
+     card build, so flipping either must rebuild the card (rare events, not
+     the 2s SSE frames the animation-restart rule is about). */
+  var paused=s.paused===true;
   var host=document.getElementById("liveWrap");
-  /* paused and driverAlive are in the sig: the pause control and the idle
-     card's claims are built once per card build, so flipping either must
-     rebuild the card (rare events, not the 2s SSE frames the
-     animation-restart rule is about). */
   var sig=live.map(function(e){ return e.title; }).join("|")
     +"|p:"+(paused?1:0)+"|d:"+(driverAlive?1:0);
   if(host.dataset.sig!==sig){
@@ -2593,7 +2603,7 @@ function rowActions(r,s){
     acts.appendChild(ab);
     return acts;
   }
-  if(r.ready && s && s.can_start!==false && !s.paused){
+  if(r.ready && s && s.can_start!==false){
     var sel=el("select","crfsel");
     sel.title="CRF for this encode — 16 is the pipeline default; 22 and 24 are "+
       "outside the auto-retry ladder";
@@ -2792,11 +2802,11 @@ function renderQueue(q, s, live, xfers, hist){
      {label:"Status"}],
     q, function(r,i){
       /* encoding (amber) beats ready (green) beats skipped. ready is the ONE
-         row next_title.py would pick -- server-computed, and absent entirely
-         while anything is encoding. Paused suppresses the green: it is the
-         page's vocabulary for "going now", and while paused nothing goes. */
-      var paused=s&&s.paused;
-      var tr=el("tr", r.encoding?"rowenc":((r.ready&&!paused)?"rowready":(r.skipped?"rowskip":null)));
+         row next_title.py would pick -- server-computed WHOLE, in
+         _mark_ready: absent while anything encodes, absent while paused.
+         Green is the page's vocabulary for "going now"; no client-side
+         re-gating, or the invariant splits across the wire. */
+      var tr=el("tr", r.encoding?"rowenc":(r.ready?"rowready":(r.skipped?"rowskip":null)));
       tr.dataset.title=r.title; tr.dataset.idx=String(i);
       var grip=el("td","gripcol");
       if(!r.skipped){
@@ -3036,7 +3046,7 @@ function renderLedger(rows, xfers){
 function paint(s){
   renderAlert(s.summary, s.encode_note);
   renderStats(s.summary);
-  renderLive(s.live, s.summary, s.paused===true, s.driver_alive===true);
+  renderLive(s.live, s.summary, s.driver_alive===true);
   /* The key must cover EVERYTHING the pane's STRUCTURE depends on — both tabs
      draw live transfers, so transfers belong in BOTH keys. They were once
      omitted entirely, and the transferring row painted a single still frame
@@ -3050,7 +3060,7 @@ function paint(s){
   var key=tab+"|"+JSON.stringify(tab==="queue"
     ? [s.queue.map(qShape), s.live.map(function(e){ return [e.folder, e.crf]; }),
        xk, s.summary.library_complete, s.summary.roots_offline,
-       s.can_start, s.encode_note, s.paused, s.stage_active]
+       s.can_start, s.encode_note, s.summary.paused, s.stage_active]
     : [s.ledger, xk]);
   if(last.key!==key){
     /* An armed confirm or an active drag must survive the 2s SSE repaint. */
@@ -3059,7 +3069,6 @@ function paint(s){
       (tab==="queue"?renderQueue(s.queue,
           Object.assign({},s.summary,
             {can_start:s.can_start,crf_choices:s.crf_choices,
-             paused:s.paused===true,
              /* A busy wire changes the button's PROMISE from "pull now" to
                 "wait in line"; saying "stage" while five titles queue ahead
                 would misstate what the click does. */
