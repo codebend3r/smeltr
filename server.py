@@ -468,6 +468,10 @@ def build_state() -> dict:
             "encode_note": note,
             "crf_choices": list(CRF_CHOICES),
             "can_start": not live and not _driver_pids(),
+            "paused": core.paused(),
+            # The paused card asserts what the driver will do; it may only
+            # do that when a driver actually exists to do it.
+            "driver_alive": bool(_driver_pids()),
         }
         with _state_lock:
             # Stamp AFTER the build. Stamping before meant a slow cold build was
@@ -517,13 +521,18 @@ def _mark_ready(rows: list, live: list) -> None:
     skipped, not still arriving. It is NOT "row 1" -- the queue lists library
     titles that are not on the staging drive, so the top row is frequently a
     title next_title.py skips straight past, and painting that one green would
-    promise an encode that cannot start. Nothing is ready while an encode is
-    running: the amber encoding row is the live one.
+    promise an encode that cannot start.
+
+    Two flags from the one pick. "next_up" is set ALWAYS -- including while an
+    encode runs (the live row's own output file excludes it from the pick) --
+    because "which movie encodes next" must be readable at a glance, not
+    inferred from rank. "ready" additionally requires that nothing is
+    encoding: it carries the green row and the start button, and must never
+    promise an encode that cannot start.
     """
     for r in rows:
         r["ready"] = False
-    if live:
-        return
+        r["next_up"] = False
     for r in rows:
         if r.get("skipped") or not r.get("staged"):
             continue
@@ -532,7 +541,9 @@ def _mark_ready(rows: list, live: list) -> None:
         _, src, out = _staging_files(r["title"])
         if out is not None or not src:
             continue
-        r["ready"] = True
+        r["next_up"] = True
+        if not live:
+            r["ready"] = True
         return
 
 
@@ -815,7 +826,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def _writes_ok(self) -> bool:
         # Loopback peers always; LAN peers only with the explicit opt-in.
-        return LAN_WRITES or self._peer_is_loopback()
+        # A connection whose SOURCE address equals the listener's own local
+        # address is this Mac talking to itself -- the operator loaded the
+        # page via the LAN URL in a local browser. Same keyboard, so it
+        # writes. Compare against the live socket, never a cached address
+        # list: a snapshot goes stale when an interface drops and DHCP hands
+        # its address to another device, which would inherit write access.
+        # A remote peer cannot spoof this over TCP -- the SYN-ACK would
+        # route back to us, not to it.
+        return (LAN_WRITES or self._peer_is_loopback()
+                or self.connection.getsockname()[0] == self.client_address[0])
 
     def _token_ok(self, query: dict) -> bool:
         if not REQUIRE_TOKEN:
@@ -919,8 +939,8 @@ class Handler(BaseHTTPRequestHandler):
         # be replayed as a smuggled request.
         if not self._writes_ok():
             return self._deny(403, "read-only from the network — "
-                              "skip/reorder, encode start/abort and stage "
-                              "pulls only from this Mac (127.0.0.1)")
+                              "skip/reorder, encode start/abort, stage pulls "
+                              "and pause/resume only from this Mac")
         try:
             length = int(self.headers.get("Content-Length") or "0")
         except ValueError:
@@ -945,6 +965,8 @@ class Handler(BaseHTTPRequestHandler):
                 err = self._apply_encode_abort(body)
             elif parsed.path == "/api/stage/start":
                 err = self._apply_stage_start(body)
+            elif parsed.path == "/api/pause":
+                err = self._apply_pause(body)
             else:
                 return self._deny(404, "not found")
         if err:
@@ -1154,6 +1176,30 @@ class Handler(BaseHTTPRequestHandler):
                 return "could not start the pull thread: %s" % e
             _set_note("Staging %s — pulling %.2f GiB from the library over "
                       "SSH." % (row["title"], size / 1073741824.0), kind="ok")
+        return None
+
+    def _apply_pause(self, body: dict):
+        # Pause-after-current: writes/removes core.PAUSE_FLAG. The running
+        # encode is untouched -- it finishes, records and syncs as normal --
+        # but next_title.py answers exit 3 while the flag exists, so the
+        # driver waits instead of starting the next one. Nothing to refuse:
+        # pausing while idle just keeps the driver waiting, and resuming is
+        # picked up within one driver wait (300 s).
+        on = body.get("paused")
+        if not isinstance(on, bool):
+            return "expected {paused: bool}"
+        try:
+            core.set_paused(on)
+        except OSError as e:
+            return "could not write the pause flag: %s" % e
+        # Through the note banner, because the moment needs stating at the
+        # TOP of the page, and resume's 5-minute pickup latency is otherwise
+        # stated only while it does not yet apply and withdrawn when it does.
+        _set_note("Paused — the current encode (if any) still finishes, "
+                  "verifies and syncs; nothing new starts until resumed."
+                  if on else
+                  "Resumed — the driver picks up the next title within "
+                  "5 minutes.", kind="ok")
         return None
 
     def _queue_rows(self) -> list[dict]:
@@ -1439,7 +1485,11 @@ body:not(.booted) #liveWrap .card{animation-delay:.12s}
    so it stays visible at 0% and 100%. */
 .proj{margin:14px 0 2px;padding:12px 14px;border:1px solid var(--line);
       border-radius:var(--r);background:var(--panel-2)}
-.proj-head{display:flex;justify-content:space-between;align-items:baseline;gap:16px;flex-wrap:wrap}
+.proj-head{display:flex;justify-content:space-between;align-items:baseline;gap:16px;flex-wrap:wrap;cursor:pointer}
+.proj-disc{background:none;border:0;padding:2px 4px;margin-left:2px;
+  color:var(--ink-3);font-size:12px;line-height:1;cursor:pointer;align-self:center}
+.proj-disc:focus-visible{outline:2px solid var(--cool);outline-offset:2px}
+.proj.closed .proj-scale,.proj.closed .proj-legend,.proj.closed .proj-detail{display:none}
 .proj-head span{display:block;font-size:11px;color:var(--ink-3);
       text-transform:uppercase;letter-spacing:.06em;margin-top:3px}
 /* Units survive CSS. uppercase renders GiB as GIB -- the same defect that once
@@ -1527,6 +1577,8 @@ th.unit{text-transform:none}
 .mark{font-family:var(--mono);font-size:10.5px;padding:1.5px 6px;border-radius:5px;
       border:1px solid var(--line);color:var(--ink-3)}
 .mark.staged{color:var(--cool);border-color:var(--cool-bd)}
+.mark.next{color:var(--good);border-color:var(--good-bd)}
+.mark.next.paused{color:var(--warn);border-color:var(--warn-bd)}
 .mark.enc{color:var(--hot-soft);border-color:var(--hot-bd)}
 .mark.pin{color:var(--cool);border-color:var(--cool-bd)}
 .mark.skip{color:var(--ink-2);border-style:dashed}
@@ -1594,6 +1646,24 @@ tr.pin-end td{border-bottom:2px solid var(--cool-bd)}
      transition:color .15s,border-color .15s}
 .act:hover{color:var(--bad);border-color:var(--bad-bd)}
 .act.restore:hover{color:var(--good);border-color:var(--good-bd)}
+/* Pause-after-current: a switch, because it IS two-state ("let it run" /
+   "stop after this one"), unlike the one-shot row actions. Armed reads in
+   the warn amber -- a scheduled interruption, not a defect. Tokens only:
+   both themes inherit it. */
+.pauserow{margin-top:14px;display:flex;align-items:center;gap:10px}
+.swt{position:relative;width:36px;height:20px;flex:0 0 auto;padding:0;
+  border:1px solid var(--line);border-radius:999px;background:none;
+  cursor:pointer;transition:border-color .18s ease,background-color .18s ease}
+.swt i{position:absolute;top:3px;left:3px;width:12px;height:12px;
+  border-radius:50%;background:var(--ink-3);
+  transition:transform .18s ease,background-color .18s ease}
+.swt:hover{border-color:var(--warn-bd)}
+.swt:focus-visible{outline:2px solid var(--warn);outline-offset:2px}
+.swt.on{border-color:var(--warn-bd);background:var(--warn-bd)}
+.swt.on i{transform:translateX(16px);background:var(--warn)}
+.swt-label{font-family:var(--mono);font-size:11.5px;letter-spacing:.02em;
+  color:var(--ink-3)}
+.swt-label.on{color:var(--warn)}
 .act:focus-visible{outline:2px solid var(--cool);outline-offset:2px}
 .act:disabled{opacity:.5;cursor:default}
 .uinote{margin:0 0 12px;padding:10px 14px;border:1px solid var(--warn-bd);
@@ -1693,7 +1763,7 @@ footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3)
 <div class="wrap"><div class="scroll" id="pane"></div></div>
 
 <footer>
-  <span id="gen"></span><span id="stopnote"></span><span>__SCOPE__ &middot; writes: skip/reorder, encode start/abort, stage pulls &middot; never judges, syncs or deletes a library original</span>
+  <span id="gen"></span><span id="stopnote"></span><span>__SCOPE__ &middot; writes: skip/reorder, encode start/abort, stage pulls, pause/resume &middot; never judges, syncs or deletes a library original</span>
 </footer>
 
 <script nonce="__NONCE__">
@@ -1763,7 +1833,12 @@ function notice(msg){
 
 var posting=false;
 function api(path,payload){
-  if(posting) return Promise.resolve();
+  /* Dropping a second click with NO feedback is the one path where nothing
+     at all happens; every other failure produces a notice, so this must. */
+  if(posting){
+    notice("another action is still in flight — try again in a moment");
+    return Promise.resolve();
+  }
   posting=true;
   return fetch(path+(token?"?t="+encodeURIComponent(token):""),{
     method:"POST",
@@ -1932,8 +2007,23 @@ function bandText(r){
    encode, so it gets the tilde and whole GiB rather than two decimals. */
 function gibApprox(b){ return b==null ? "—" : "~"+Math.round(b/GIB)+" GiB"; }
 
+/* The strip collapses to its head line (size, kept-%, verdict word) on
+   request, and the choice sticks across visits. A LOUD verdict overrides the
+   collapse: a strip hiding "downscale" behind a chevron would be the exact
+   quiet-warning bug the projection rules exist to prevent. */
+var projClosed=false;
+try{ projClosed=localStorage.getItem("smeltr.proj.closed")==="1"; }catch(e){}
+var PROJ_LOUD={suspect:1,blowup:1,"no-saving":1,downscale:1};
+
+function projApply(p){
+  var open=!projClosed||!!PROJ_LOUD[p.lastV];
+  p.root.classList.toggle("closed",!open);
+  p.disc.textContent=open?"▾":"▸";
+  p.disc.setAttribute("aria-expanded",String(open));
+}
+
 function projBlock(){
-  var refs={}, n=el("div","proj"); refs.root=n;
+  var refs={}, n=el("div","proj"); refs.root=n; refs.lastV="unknown";
   var head=el("div","proj-head");
   var lhs=el("div","proj-size");
   refs.size=el("b",null,"—"); lhs.appendChild(refs.size);
@@ -1941,7 +2031,19 @@ function projBlock(){
   var rhs=el("div","proj-ratio"); refs.ratioWrap=rhs;
   refs.ratio=el("b",null,"—"); rhs.appendChild(refs.ratio);
   refs.srcCap=el("span",null,"of source"); rhs.appendChild(refs.srcCap);
-  head.appendChild(lhs); head.appendChild(rhs); n.appendChild(head);
+  refs.disc=el("button","proj-disc","▾");
+  refs.disc.type="button";
+  refs.disc.title="Collapse or expand the size projection";
+  refs.disc.setAttribute("aria-label","Collapse or expand the size projection");
+  head.appendChild(lhs); head.appendChild(rhs); head.appendChild(refs.disc);
+  /* One listener on the head serves mouse and keyboard both: activating the
+     chevron button dispatches a click that bubbles here. */
+  head.addEventListener("click",function(){
+    projClosed=!projClosed;
+    try{ localStorage.setItem("smeltr.proj.closed",projClosed?"1":"0"); }catch(e){}
+    projApply(refs);
+  });
+  n.appendChild(head);
 
   refs.scale=el("div","proj-scale");
   refs.scale.setAttribute("role","img");
@@ -1957,6 +2059,7 @@ function projBlock(){
   n.appendChild(lg);
   refs.lead=el("div","proj-lead",""); n.appendChild(refs.lead);
   refs.detail=el("div","proj-detail",""); n.appendChild(refs.detail);
+  projApply(refs);
   return {node:n, refs:refs};
 }
 
@@ -1966,7 +2069,10 @@ function updateProj(p, e){
   var lost=(v==="downscale");
   p.size.textContent=gib(e.projected_bytes);
   p.ratio.textContent=pct(r);
+  /* className= wipes "closed", so reapply the collapse after it -- with the
+     verdict this frame, which may force the strip open. */
   p.root.className=lost ? "proj lost" : "proj";
+  p.lastV=v; projApply(p);
   p.ratioWrap.className="proj-ratio "+(lost ? "lost" : cls);
   p.srcCap.textContent=e.source_bytes==null
     ? "source size unknown" : "kept, of "+gib(e.source_bytes)+" source";
@@ -2019,13 +2125,70 @@ function updateProj(p, e){
    update on the nodes already there. Progress lives beside the bar at
    HandBrake's full precision, and only there -- one number, one precision. */
 var liveRefs={};
-function renderLive(live, s){
+/* One control for both cards. The switch never touches the running encode:
+   on means only that the NEXT one will not start. Click disables until the
+   POST's repaint rebuilds the card with the server's answer. */
+function pauseSwitch(on, label){
+  var row=el("div","pauserow");
+  var sw=el("button","swt"+(on?" on":""));
+  sw.type="button";
+  sw.setAttribute("role","switch");
+  sw.setAttribute("aria-checked", on?"true":"false");
+  sw.setAttribute("aria-label","Pause after the current encode");
+  sw.title=on
+    ? "Resume — let the driver start the next encode (it rechecks within 5 minutes)"
+    : "Finish, verify and sync this encode as normal, then start nothing new — frees the CPU/GPU";
+  sw.appendChild(el("i"));
+  sw.addEventListener("click",function(){
+    sw.disabled=true;
+    api("/api/pause",{paused:!on});
+  });
+  row.appendChild(sw);
+  row.appendChild(el("span","swt-label"+(on?" on":""),label));
+  return row;
+}
+
+function renderLive(live, s, paused, driverAlive){
   var host=document.getElementById("liveWrap");
-  var sig=live.map(function(e){ return e.title; }).join("|");
+  /* paused and driverAlive are in the sig: the pause control and the idle
+     card's claims are built once per card build, so flipping either must
+     rebuild the card (rare events, not the 2s SSE frames the
+     animation-restart rule is about). */
+  var sig=live.map(function(e){ return e.title; }).join("|")
+    +"|p:"+(paused?1:0)+"|d:"+(driverAlive?1:0);
   if(host.dataset.sig!==sig){
     host.replaceChildren(); liveRefs={}; host.dataset.sig=sig;
     if(!live.length){
       var c=el("div","card");
+      if(paused){
+        /* A user-chosen state must never mask a sensor failure: the drive
+           being gone, or no driver existing to honour the resume, are the
+           louder facts and say themselves first. */
+        if(s.x9_online===false){
+          c.appendChild(el("div","live-title",
+            "Paused — and the staging drive is not mounted"));
+          c.appendChild(el("div","verdict",
+            "The X9 is unreachable, so nothing could encode regardless of "+
+            "the pause. Reconnect the drive, then resume."));
+        }else if(!driverAlive){
+          c.appendChild(el("div","live-title",
+            "Paused — but no driver is running"));
+          c.appendChild(el("div","verdict",
+            "No autopilot process exists, so nothing will start when you "+
+            "resume either. Check .autopilot.log for a HALTED: line "+
+            "before relaunching."));
+        }else{
+          c.appendChild(el("div","live-title","Paused — nothing will start"));
+          c.appendChild(el("div","verdict",
+            "The driver is idling by request: an in-flight sync still "+
+            "finishes and stages its replacement, but after that nothing "+
+            "new starts or is pulled until you resume. The CPU is yours. "+
+            "The driver rechecks every 5 minutes."));
+        }
+        c.appendChild(pauseSwitch(true,
+          "paused — nothing starts until resumed"));
+        host.appendChild(c); return;
+      }
       c.appendChild(el("div","live-title","Nothing encoding"));
       c.appendChild(el("div","verdict", s.x9_online
         ? "The staging drive is mounted and idle."
@@ -2052,6 +2215,16 @@ function renderLive(live, s){
       });
       c.appendChild(kv);
       refs.verdict=el("div","verdict",""); c.appendChild(refs.verdict);
+      /* Pause-after-current. The encode itself is never touched: the flag
+         only stops the NEXT one from starting, which is the difference
+         between this and the abort button on the queue row. The armed label
+         must name the consequence ON the card -- "sync" means the library
+         original is REPLACED, and a tooltip never renders on the phones. */
+      c.appendChild(pauseSwitch(paused, paused
+        ? "will pause after this encode — "+e.title+" still finishes, "+
+          "syncs, and replaces its "
+          +(e.source_bytes!=null?gib(e.source_bytes)+" ":"")+"library original"
+        : "pause after this encode"));
       host.appendChild(c);
       liveRefs[e.title]=refs;
     });
@@ -2132,7 +2305,7 @@ function rowActions(r,s){
     acts.appendChild(ab);
     return acts;
   }
-  if(r.ready && s && s.can_start!==false){
+  if(r.ready && s && s.can_start!==false && !s.paused){
     var sel=el("select","crfsel");
     sel.title="CRF for this encode — 16 is the pipeline default; 22 and 24 are "+
       "outside the auto-retry ladder";
@@ -2210,8 +2383,10 @@ function renderQueue(q, s, live, xfers, hist){
     q, function(r,i){
       /* encoding (amber) beats ready (green) beats skipped. ready is the ONE
          row next_title.py would pick -- server-computed, and absent entirely
-         while anything is encoding. */
-      var tr=el("tr", r.encoding?"rowenc":(r.ready?"rowready":(r.skipped?"rowskip":null)));
+         while anything is encoding. Paused suppresses the green: it is the
+         page's vocabulary for "going now", and while paused nothing goes. */
+      var paused=s&&s.paused;
+      var tr=el("tr", r.encoding?"rowenc":((r.ready&&!paused)?"rowready":(r.skipped?"rowskip":null)));
       tr.dataset.title=r.title; tr.dataset.idx=String(i);
       var grip=el("td","gripcol");
       if(!r.skipped){
@@ -2278,7 +2453,24 @@ function renderQueue(q, s, live, xfers, hist){
             }
           }
         }
-        else if(r.staged) td.appendChild(el("span","mark staged","staged"));
+        else if(r.staged){
+          td.appendChild(el("span","mark staged","staged"));
+          /* "next…" is the ONE row next_title.py would pick — computed
+             server-side (next_up), even while an encode runs. Rank cannot
+             say this: library-only rows outrank staged ones constantly, so
+             rank 1 is usually NOT the next encode. It sits BESIDE "staged",
+             not instead of it: location fact and schedule fact are
+             different columns of meaning. The wording carries the timing —
+             "now" vs after a multi-hour encode vs not-until-resumed. */
+          if(r.next_up){
+            if(s&&s.paused)
+              td.appendChild(el("span","mark next paused","next after resume"));
+            else if(live&&live.length)
+              td.appendChild(el("span","mark next","next after current"));
+            else
+              td.appendChild(el("span","mark next","next up"));
+          }
+        }
         else td.appendChild(el("span","mark","library"));
       }
       tr.appendChild(td);
@@ -2472,7 +2664,7 @@ function renderLedger(rows, xfers){
 function paint(s){
   renderAlert(s.summary, s.encode_note);
   renderStats(s.summary);
-  renderLive(s.live, s.summary);
+  renderLive(s.live, s.summary, s.paused===true, s.driver_alive===true);
   /* The key must cover EVERYTHING the pane draws — both tabs render live
      transfer progress, so transfers belong in BOTH keys. They were once
      omitted, and the transferring row painted a single still frame (at
@@ -2481,7 +2673,7 @@ function paint(s){
   var key=tab+"|"+JSON.stringify(tab==="queue"
     ? [s.queue, s.live.map(function(e){ return [e.folder, e.crf]; }),
        xk, s.summary.library_complete, s.summary.roots_offline,
-       s.can_start, s.encode_note]
+       s.can_start, s.encode_note, s.paused]
     : [s.ledger, xk]);
   if(last.key!==key){
     /* An armed confirm or an active drag must survive the 2s SSE repaint. */
@@ -2489,7 +2681,8 @@ function paint(s){
     else{ last.key=key;
       (tab==="queue"?renderQueue(s.queue,
           Object.assign({},s.summary,
-            {can_start:s.can_start,crf_choices:s.crf_choices}),
+            {can_start:s.can_start,crf_choices:s.crf_choices,
+             paused:s.paused===true}),
           s.live, s.transfers, s.ledger)
                     :renderLedger(s.ledger, s.transfers)); }
   }

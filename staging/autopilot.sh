@@ -153,8 +153,13 @@ sync_async() {
 # Structured command, never a scrape of the rendered table -- the first version
 # parsed column 2 (RANK, not Mb/s) and would have declared the job finished.
 # Exit 1 = stop condition, 2 = library not fully mounted (never treat as done),
-# 3 = every staged title is hand-skipped on the dashboard (wait, don't exit).
+# 3 = wait, don't exit: paused from the dashboard, every staged title
+#     hand-skipped, or a replenish pull still landing.
 next_title() { "$SMELTR" next "$STOP_MBPS" 2>/dev/null; }
+# The reason behind a non-zero code, for the log. Separate helper: next_title
+# must keep discarding stderr so it can never leak into the $(...) that
+# captures the title (the sync_in_flight lesson).
+next_reason() { "$SMELTR" next "$STOP_MBPS" 2>&1 >/dev/null; }
 
 # Resolve the library folder the same way .sync-to-library.sh does: exactly
 # one <root>/<bucket>/<title> match across all roots. Never guess the bucket
@@ -255,7 +260,10 @@ while true; do
       sleep 300; continue
     fi
     if [ $nrc -eq 3 ]; then
-      log "every staged title is hand-skipped - waiting for a restage rather than exiting"
+      # Log the REASON, not a guess: 3 now covers paused, all-skipped, and
+      # a pull still landing, and a wrong hard-coded message sent the
+      # operator debugging overrides that were fine.
+      log "waiting: $(next_reason)"
       sleep 300; continue
     fi
     if [ $nrc -ne 0 ] || [ -z "$title" ]; then

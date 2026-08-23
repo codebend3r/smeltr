@@ -40,18 +40,33 @@ function tbl(name) {
 }
 
 const document = {
-  createElement: () => ({
-    className: '', textContent: '', hidden: false, style: {}, attrs: {}, kids: [],
-    appendChild(c) { this.kids.push(c); return c; },
-    setAttribute(k, v) { this.attrs[k] = v; },
-  }),
+  createElement: () => {
+    const set = new Set();
+    return {
+      className: '', textContent: '', hidden: false, style: {}, attrs: {}, kids: [],
+      appendChild(c) { this.kids.push(c); return c; },
+      setAttribute(k, v) { this.attrs[k] = v; },
+      addEventListener() {},
+      /* classList is tracked apart from className, as in a real DOM:
+         updateProj assigns className and then projApply toggles "closed". */
+      classList: {
+        toggle(c, on) { (on ? set.add(c) : set.delete(c)); },
+        contains(c) { return set.has(c); },
+      },
+    };
+  },
 };
 const GIB = 2 ** 30, TIB = 2 ** 40;
-const code = [tbl('PROJ_CLASS'), tbl('PROJ_LEAD')]
-  .concat(['gib', 'pct', 'el', 'bandText', 'gibApprox', 'projBlock', 'updateProj'].map(fn))
+const code = ['var projClosed=false;',
+  'var localStorage={getItem:function(){return null},setItem:function(){}};',
+  'function _setClosed(v){projClosed=v;}',
+  tbl('PROJ_CLASS'), tbl('PROJ_LEAD'), tbl('PROJ_LOUD')]
+  .concat(['gib', 'pct', 'el', 'bandText', 'gibApprox', 'projApply', 'projBlock',
+           'updateProj'].map(fn))
   .join('\n');
 const M = new Function('document', 'GIB', 'TIB', code +
-  '\nreturn {gib,pct,el,bandText,gibApprox,projBlock,updateProj,PROJ_CLASS,PROJ_LEAD};'
+  '\nreturn {gib,pct,el,bandText,gibApprox,projBlock,updateProj,PROJ_CLASS,PROJ_LEAD,' +
+  'PROJ_LOUD,_setClosed};'
 )(document, GIB, TIB);
 
 let pass = 0, fail = 0;
@@ -181,6 +196,28 @@ M.updateProj(p, { pct: 30, verdict: 'blowup', ratio_pct: 137.0,
 ck('over-100 marker clamps to the track end', p.mark.style.left, '100%');
 ck('over-100 is flagged bad', p.ratioWrap.className, 'proj-ratio bad');
 ckHas('over-100 says larger', p.lead.textContent, 'LARGER THAN THE SOURCE');
+
+// --- the collapse never hides a loud verdict -----------------------------
+// The strip can fold to its head line, but a verdict that warns must force
+// it open: "downscale" behind a chevron is the quiet-warning bug again.
+p = build();
+M._setClosed(true);
+M.updateProj(p, { pct: 50, verdict: 'downscale', ratio_pct: 45.0,
+                  projected_bytes: 31 * GIB, source_bytes: 70 * GIB,
+                  crop_factor: 1.0, shrink_pct: 55.0 });
+ck('a loud verdict forces the strip open', p.root.classList.contains('closed'), false);
+M.updateProj(p, { pct: 42, verdict: 'good', ratio_pct: 40.0,
+                  projected_bytes: 28 * GIB, source_bytes: 70 * GIB, crop_factor: 1.0 });
+ck('a calm verdict honours the collapse', p.root.classList.contains('closed'), true);
+ck('collapsed still shows the size',  p.size.textContent !== '', true);
+ck('collapsed still shows the ratio', p.ratio.textContent !== '', true);
+ck('the chevron says it is closed',   p.disc.attrs['aria-expanded'], 'false');
+M._setClosed(false);
+M.updateProj(p, { pct: 42, verdict: 'good', ratio_pct: 40.0,
+                  projected_bytes: 28 * GIB, source_bytes: 70 * GIB, crop_factor: 1.0 });
+ck('open is the default', p.root.classList.contains('closed'), false);
+['suspect', 'blowup', 'no-saving', 'downscale'].forEach(v =>
+  ck('"' + v + '" is a loud verdict', !!M.PROJ_LOUD[v], true));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

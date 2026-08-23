@@ -1,0 +1,224 @@
+"""Pause-after-current: the dashboard's pause flag and its driver contract.
+
+The whole mechanism is two moving parts: the server writes core.PAUSE_FLAG,
+and next_title.py answers exit 3 while it exists -- the driver's existing
+wait-and-recheck path, so no autopilot.sh change was needed. These tests pin
+the facts that make that safe:
+
+  * paused is NEVER the stop condition. Exit 1 makes the driver EXIT; exit 3
+    makes it wait 300 s and recheck, which is what lets resume work without
+    touching the driver.
+  * the flag file round-trips and is idempotent both ways.
+  * a request from this machine's own bound address may write (the operator
+    on the LAN URL), other network peers may not without the opt-in.
+"""
+import contextlib
+import io
+import os
+import sys
+import tempfile
+import unittest
+
+import core
+import next_title
+
+
+class FlagFile(unittest.TestCase):
+    def setUp(self):
+        self._orig = core.PAUSE_FLAG
+        self._tmp = tempfile.TemporaryDirectory()
+        core.PAUSE_FLAG = os.path.join(self._tmp.name, "pause")
+
+    def tearDown(self):
+        core.PAUSE_FLAG = self._orig
+        self._tmp.cleanup()
+
+    def test_round_trip(self):
+        self.assertFalse(core.paused())
+        core.set_paused(True)
+        self.assertTrue(core.paused())
+        core.set_paused(False)
+        self.assertFalse(core.paused())
+
+    def test_idempotent_both_ways(self):
+        core.set_paused(True)
+        core.set_paused(True)
+        self.assertTrue(core.paused())
+        core.set_paused(False)
+        core.set_paused(False)
+        self.assertFalse(core.paused())
+
+    def test_fails_closed_when_the_flag_cannot_be_read(self):
+        # An unreadable SMELTR_DIR must read as PAUSED, not as "resume":
+        # waiting is always the safe direction, and os.path.exists would
+        # have answered False here.
+        core.set_paused(True)
+        os.chmod(self._tmp.name, 0o000)
+        try:
+            self.assertTrue(core.paused())
+        finally:
+            os.chmod(self._tmp.name, 0o700)
+        self.assertTrue(core.paused())
+
+
+class DriverContract(unittest.TestCase):
+    """next_title's exit code IS the API the driver consumes."""
+
+    def setUp(self):
+        self._saved = (core.offline_roots, core.paused, core.queue_cached)
+
+    def tearDown(self):
+        core.offline_roots, core.paused, core.queue_cached = self._saved
+
+    def _main(self):
+        # main() reads sys.argv for the threshold; under unittest argv[1]
+        # is the runner's own "discover".
+        argv, sys.argv = sys.argv, ["next_title.py"]
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                return next_title.main()
+        finally:
+            sys.argv = argv
+
+    def test_paused_is_exit_3_never_the_stop_condition(self):
+        # An empty queue normally exits 1 and the driver exits for good on
+        # it. Paused must be checked BEFORE the queue scan so a paused idle
+        # pipeline waits instead of concluding the job is finished.
+        core.offline_roots = lambda: []
+        core.paused = lambda: True
+        core.queue_cached = lambda min_mbps=None: []
+        self.assertEqual(self._main(), 3)
+
+    def test_offline_still_beats_paused(self):
+        # Blindness is the louder fact and is reported first; both codes
+        # make the driver wait rather than exit, so nothing is lost.
+        core.offline_roots = lambda: ["/Volumes/Vhagar/Media/4K Movies"]
+        core.paused = lambda: True
+        self.assertEqual(self._main(), 2)
+
+    def test_unpaused_empty_queue_is_still_the_stop_condition(self):
+        core.offline_roots = lambda: []
+        core.paused = lambda: False
+        core.queue_cached = lambda min_mbps=None: []
+        self.assertEqual(self._main(), 1)
+
+
+class ArrivingFolders(unittest.TestCase):
+    """A staged folder holding only a replenish .partial must never be
+    printed: the concurrent driver reaches next_title while its backgrounded
+    sync's pull is in flight, and start_encode halts on "no source file".
+    The dashboard's next_up already skipped these; the pick must agree."""
+
+    def setUp(self):
+        self._saved = (core.offline_roots, core.paused, core.queue_cached,
+                       core.X9)
+        self._tmp = tempfile.TemporaryDirectory()
+        core.X9 = self._tmp.name
+        core.offline_roots = lambda: []
+        core.paused = lambda: False
+
+    def tearDown(self):
+        (core.offline_roots, core.paused, core.queue_cached,
+         core.X9) = self._saved
+        self._tmp.cleanup()
+
+    def _folder(self, title, files):
+        d = os.path.join(self._tmp.name, title)
+        os.makedirs(d)
+        for f in files:
+            with open(os.path.join(d, f), "w"):
+                pass
+
+    def _main(self):
+        argv, sys.argv = sys.argv, ["next_title.py"]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as out, \
+                 contextlib.redirect_stderr(io.StringIO()):
+                rc = next_title.main()
+            return rc, out.getvalue().strip()
+        finally:
+            sys.argv = argv
+
+    def test_arriving_folder_is_passed_over(self):
+        self._folder("Arriving (2012)", ["Arriving (2012).mkv.partial"])
+        self._folder("Ready (1999)", ["Ready (1999) Remux-2160p.mkv"])
+        core.queue_cached = lambda min_mbps=None: [
+            {"title": "Arriving (2012)", "staged": True},
+            {"title": "Ready (1999)", "staged": True},
+        ]
+        self.assertEqual(self._main(), (0, "Ready (1999)"))
+
+    def test_only_arriving_folders_wait_not_stop(self):
+        # Falling through to exit 1 here would make the driver exit 0 while
+        # a pull is landing -- "finished" claimed with work still arriving.
+        self._folder("Arriving (2012)", ["Arriving (2012).mkv.partial"])
+        core.queue_cached = lambda min_mbps=None: [
+            {"title": "Arriving (2012)", "staged": True},
+        ]
+        self.assertEqual(self._main()[0], 3)
+
+
+class ServerGates(unittest.TestCase):
+    def setUp(self):
+        import server
+        self.server = server
+        self._flag = core.PAUSE_FLAG
+        self._tmp = tempfile.TemporaryDirectory()
+        core.PAUSE_FLAG = os.path.join(self._tmp.name, "pause")
+
+    def tearDown(self):
+        core.PAUSE_FLAG = self._flag
+        self._tmp.cleanup()
+
+    def _handler(self, ip):
+        h = object.__new__(self.server.Handler)
+        h.client_address = (ip, 12345)
+        return h
+
+    def test_apply_pause_validates_body(self):
+        h = self._handler("127.0.0.1")
+        self.assertIsNotNone(h._apply_pause({}))
+        self.assertIsNotNone(h._apply_pause({"paused": "yes"}))
+        self.assertIsNotNone(h._apply_pause({"paused": 1}))
+        self.assertFalse(core.paused())
+
+    def test_apply_pause_writes_and_clears_the_flag(self):
+        h = self._handler("127.0.0.1")
+        self.assertIsNone(h._apply_pause({"paused": True}))
+        self.assertTrue(core.paused())
+        self.assertIsNone(h._apply_pause({"paused": False}))
+        self.assertFalse(core.paused())
+
+    def test_self_connection_counts_as_this_mac(self):
+        # The operator loading the page via http://<lan-ip>:8787 on this Mac
+        # arrives with the machine's own address as peer, not loopback. The
+        # predicate is peer == the LISTENER'S OWN live address -- never a
+        # cached address list, which goes stale when an interface drops and
+        # DHCP hands its address to another device.
+        class _Sock:
+            def __init__(self, ip):
+                self._ip = ip
+            def getsockname(self):
+                return (self._ip, 8787)
+
+        def handler(peer, local):
+            h = self._handler(peer)
+            h.connection = _Sock(local)
+            return h
+
+        self.assertTrue(handler("192.0.2.10", "192.0.2.10")._writes_ok())
+        self.assertTrue(handler("127.0.0.1", "127.0.0.1")._writes_ok())
+        if not self.server.LAN_WRITES:
+            # A different LAN peer -- including an address this machine
+            # USED to hold -- may not write.
+            self.assertFalse(handler("192.0.2.99", "192.0.2.10")._writes_ok())
+
+    def test_state_payload_carries_paused(self):
+        # The UI's pause button and paused banner key off this field.
+        import inspect
+        src = inspect.getsource(self.server.build_state)
+        self.assertIn('"paused": core.paused()', src)
+
+
+if __name__ == "__main__":
+    unittest.main()

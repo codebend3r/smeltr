@@ -9,7 +9,8 @@ the driver would have concluded the job was finished and exited cleanly with 110
 titles still queued. Structured data, not table scraping.
 
 Exit codes: 0 a title was printed | 1 stop condition | 2 library incomplete
-            3 every staged candidate is hand-skipped (driver should wait)
+            3 paused from the dashboard, or every staged candidate is
+              hand-skipped (driver should wait either way)
 """
 from __future__ import annotations
 
@@ -31,7 +32,15 @@ def main() -> int:
               f"not mounted", file=sys.stderr)
         return 2
 
+    # NOT the stop condition: the user asked for the CPU back, not for the
+    # job to end. Exit 3 is the driver's wait-and-recheck path, so removing
+    # the flag resumes without touching the driver.
+    if core.paused():
+        print("paused from the dashboard; waiting", file=sys.stderr)
+        return 3
+
     passed_skipped = False
+    passed_arriving = False
     for row in core.queue_cached(min_mbps=threshold):
         if not row["staged"]:
             continue
@@ -42,17 +51,26 @@ def main() -> int:
             continue
         if any("2160p HEVC" in f and f.endswith(".mkv") for f in files):
             continue          # already encoded, awaiting sync
+        if not any(f.endswith(".mkv") for f in files):
+            # A replenish pull still landing: the folder holds only a
+            # .partial. The concurrent driver reaches this step while its
+            # backgrounded sync's pull is in flight, so this is a routine
+            # state -- and printing the title would make start_encode halt
+            # on "no source file" mid-pull.
+            passed_arriving = True
+            continue
         if row.get("skipped"):
             passed_skipped = True
             continue          # hand-skipped from the dashboard
         print(row["title"])
         return 0
 
-    if passed_skipped:
-        # NOT the stop condition: work remains, the user just skipped all of
-        # it. A distinct code lets the driver wait for a restage instead of
-        # exiting for good on a message that would be false.
-        print("every remaining staged title is hand-skipped; waiting", file=sys.stderr)
+    if passed_skipped or passed_arriving:
+        # NOT the stop condition: work remains -- the user skipped it, or a
+        # pull is still landing. A distinct code lets the driver wait
+        # instead of exiting for good on a message that would be false.
+        print("every remaining staged title is hand-skipped or still "
+              "arriving; waiting", file=sys.stderr)
         return 3
     print(f"stop condition: nothing staged above {threshold:.0f} Mb/s", file=sys.stderr)
     return 1

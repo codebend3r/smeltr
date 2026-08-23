@@ -363,6 +363,11 @@ def main() -> int:
     # indistinguishable from having finished. Say so, loudly, every time.
     if s.get("overrides_corrupt"):
         print(f"  {c('!! queue_overrides.json is unreadable — skips and priorities are NOT applied.', '1;33')}")
+    # A paused pipeline must never render as a healthy one -- this is the
+    # view a 1am SSH session uses, and without the line it is byte-identical
+    # to a running job.
+    if s.get("paused"):
+        print(f"  {c('PAUSED — the current encode (if any) still finishes and syncs; nothing new starts. Resume from the dashboard.', '1;33')}")
     if not s.get("library_complete", True):
         missing = ", ".join(s.get("roots_offline") or ["unknown"])
         print(f"  {c('!! LIBRARY INCOMPLETE: ' + missing + ' not mounted.', '1;31')}")

@@ -58,6 +58,42 @@ STOP_MBPS = 70.0
 # and from every queue total; deleting the file restores stock behaviour.
 OVERRIDES = os.path.join(SMELTR_DIR, "queue_overrides.json")
 
+# Pause-after-current, from the dashboard: an empty flag file beside the
+# ledger. While it exists next_title.py answers exit 3 -- the driver's
+# existing wait-and-recheck path -- so the running encode still finishes,
+# records and syncs, but no new encode starts. Deleting the file resumes
+# within one driver wait (300 s). A flag file, not an overrides key:
+# .replenish-queue.sh parses the overrides JSON and must keep staging
+# while paused (pausing frees the CPU, not the disk).
+PAUSE_FLAG = os.path.join(SMELTR_DIR, "pause")
+
+
+def paused() -> bool:
+    # Fail CLOSED: waiting is always the safe direction. os.path.exists
+    # answers False on ANY OSError, so an unreadable SMELTR_DIR (the silent-
+    # blindness class watchdog.sh exists for) would read as "not paused" and
+    # resume a pipeline the operator believes is stopped. Never raise either:
+    # an exception would escape next_title.main() and exit non-zero, which
+    # the driver reads as the stop condition.
+    try:
+        os.stat(PAUSE_FLAG)
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+
+
+def set_paused(on: bool) -> None:
+    if on:
+        with open(PAUSE_FLAG, "a", encoding="utf-8"):
+            pass
+    else:
+        try:
+            os.unlink(PAUSE_FLAG)
+        except FileNotFoundError:
+            pass
+
 
 def load_overrides() -> dict:
     """{"skip": [titles], "priority": [titles]}. Tolerant of a missing or
@@ -917,6 +953,11 @@ def summary(hist: Optional[list] = None, q: Optional[list] = None) -> dict:
                           for r in offline],
         "library_complete": complete,
         "overrides_corrupt": bool(load_overrides().get("corrupt")),
+        # In summary, not only the dashboard payload: `smeltr report` must
+        # never render a paused pipeline as a healthy one (same rule as
+        # overrides_corrupt -- every view says it, or the state is invisible
+        # from exactly the terminal a 1am SSH session uses).
+        "paused": paused(),
         "stop_mbps": STOP_MBPS,
         "x9_online": os.path.isdir(X9),
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
