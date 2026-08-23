@@ -77,31 +77,50 @@ class Floor(unittest.TestCase):
 
 
 class RelativeToHistory(unittest.TestCase):
+    """The baseline MOVES: every completed encode appends a row and shifts the
+    median. So assert relationships, never a snapshot of today's number -- an
+    earlier version of this file hardcoded 35.1% and 14.0% and broke the moment
+    Kubo landed."""
+
     def setUp(self):
         self.hist = core.history_ratios(normalised=True)
         self.base = statistics.median(self.hist)
+        self.thr = self.base * core.OUTLIER_FACTOR
 
-    def test_baseline_is_what_the_ledger_actually_holds(self):
+    def test_baseline_has_enough_history_to_mean_anything(self):
         self.assertGreaterEqual(len(self.hist), core.MIN_HISTORY)
-        self.assertAlmostEqual(self.base, 35.1, places=1)
 
-    def test_threshold(self):
-        self.assertAlmostEqual(self.base * core.OUTLIER_FACTOR, 14.0, places=1)
+    def test_baseline_is_plausible_for_this_library(self):
+        """Wide bounds on purpose. This catches a broken ledger, not drift."""
+        self.assertTrue(10.0 < self.base < 80.0, f"median {self.base:.1f}%")
 
-    def test_just_below_is_suspect(self):
-        self.assertEqual(core._verdict(13.9, self.hist, 13.9, False)[0], "suspect")
+    def test_just_below_the_threshold_is_suspect(self):
+        r = self.thr - 0.1
+        self.assertEqual(core._verdict(r, self.hist, r, False)[0], "suspect")
 
-    def test_just_above_is_good(self):
-        self.assertEqual(core._verdict(14.1, self.hist, 14.1, False)[0], "good")
+    def test_just_above_the_threshold_is_good(self):
+        r = self.thr + 0.1
+        self.assertEqual(core._verdict(r, self.hist, r, False)[0], "good")
 
     def test_flight_still_asks_for_a_human(self):
-        """Deliberately retained: 12.6% normalised is under the 14.0% line.
+        """A deliberate decision, not a side effect -- re-decide if this fails.
 
-        The smallest output this library has ever produced, against a ~92 GB
-        original. The SSIM check that cleared it was worth having.
+        Flight (2012) keeps 12.6% per encoded pixel against a ~92 GB original:
+        the smallest output this job has ever produced. The SSIM check that
+        cleared it was worth having, so OUTLIER_FACTOR was set to keep it above
+        the line rather than to auto-sync it.
+
+        The baseline drops as more thin encodes land. If it drops far enough
+        that 12.6% clears, this fails ON PURPOSE -- that is a safety threshold
+        moving on its own, and it needs a human decision, not a green suite.
         """
         code, note = core._verdict(9.4, self.hist, 12.6, False)
-        self.assertEqual(code, "suspect")
+        self.assertEqual(
+            code, "suspect",
+            f"Flight-class (12.6% normalised) now clears the relative line "
+            f"({self.thr:.1f}%). The baseline has drifted to {self.base:.1f}%. "
+            f"Deleting a ~92 GB original unreviewed is now possible -- decide "
+            f"deliberately whether that is wanted before changing this test.")
         # It trips the RELATIVE rule, not the floor -- the note must not claim
         # a floor that did not fire.
         self.assertNotIn("floor", note)
@@ -144,8 +163,16 @@ class Band(unittest.TestCase):
         self.assertEqual(self.v(100.0), "blowup")
 
     def test_below_band_is_not_a_defect(self):
-        """4 of the first 12 landed under 30% and every one was good."""
-        for r in (30.0, 25.1, 22.8, 18.6, 14.1):
+        """4 of the first 12 landed under 30% and every one was good.
+
+        Only values above the relative line are asserted -- below it the
+        outlier rule legitimately takes over, and that boundary is pinned in
+        RelativeToHistory, not here.
+        """
+        thr = statistics.median(self.hist) * core.OUTLIER_FACTOR
+        for r in (30.0, 25.1, 22.8, 18.6):
+            if r <= thr:
+                continue
             self.assertEqual(self.v(r), "good", f"{r}% should be good")
 
 
@@ -160,26 +187,20 @@ class Precedence(unittest.TestCase):
 
 
 class LedgerRegression(unittest.TestCase):
-    """Recalibration must not silently reclassify work already shipped."""
+    """Replay real shipped rows. Anchors are named; everything else is an
+    invariant, so a completed encode does not have to be pasted in here."""
 
-    EXPECTED = {
-        "Flight (2012)": "suspect",
-        "Shrek (2001)": "good",
-        "Hunt for the Wilderpeople (2016)": "good",
-        "Gemini Man (2019)": "good",
-        "Riddick (2013)": "good",
-        "Sudden Death (1995)": "good",
-        "What Dreams May Come (1998)": "good",
-        "Armageddon (1998)": "good",
-        "GoodFellas (1990)": "good",
-        "Leaving Las Vegas (1995)": "good",
-        "Steel Magnolias (1989)": "good",
+    # The rows the calibration was reasoned about. New titles are covered by
+    # the invariant below rather than being added to this list.
+    ANCHORS = {
+        "Flight (2012)": "suspect",      # SSIM-verified good, kept for review
         "Oldboy (Oldeuboi) (2003)": "thin",
+        "Shrek (2001)": "good",
+        "Hunt for the Wilderpeople (2016)": "good",   # heavy crop: 22.8 raw, 30.8 norm
     }
 
-    def test_every_measured_row_keeps_its_verdict(self):
+    def measured(self):
         hist = core.history_ratios(normalised=True)
-        seen = set()
         for r in rows():
             sb, ob = r.get("source_bytes"), r.get("output_bytes")
             if not sb or not ob:
@@ -187,16 +208,29 @@ class LedgerRegression(unittest.TestCase):
             raw = ob / sb * 100.0
             norm = raw * core.crop_factor(r.get("source_geometry"),
                                           r.get("output_geometry"))
-            code, _ = core._verdict(raw, hist, norm, False)
-            self.assertEqual(code, self.EXPECTED[r["title"]],
-                             f"{r['title']} at {raw:.1f}% raw / {norm:.1f}% norm")
-            seen.add(r["title"])
-        self.assertEqual(seen, set(self.EXPECTED))
+            yield r["title"], raw, norm, core._verdict(raw, hist, norm, False)[0]
+
+    def test_anchor_rows_keep_their_verdict(self):
+        seen = {}
+        for title, raw, norm, code in self.measured():
+            if title in self.ANCHORS:
+                seen[title] = code
+                self.assertEqual(code, self.ANCHORS[title],
+                                 f"{title} at {raw:.1f}% raw / {norm:.1f}% norm")
+        self.assertEqual(set(seen), set(self.ANCHORS), "an anchor row left the ledger")
+
+    def test_no_shipped_row_reads_as_kill_it(self):
+        """Every row here is work that completed. `blowup` / `no-saving` /
+        `downscale` all mean "kill it and start over", which cannot be true of
+        something already on the NAS -- if one fires, a threshold is wrong."""
+        for title, raw, norm, code in self.measured():
+            self.assertIn(code, ("good", "thin", "suspect"),
+                          f"{title} at {raw:.1f}% raw / {norm:.1f}% norm -> {code}")
 
     def test_the_unmeasurable_row_is_excluded(self):
         missing = [r for r in rows() if not r.get("source_bytes")]
         self.assertEqual(len(missing), 1)
-        self.assertNotIn(missing[0]["title"], self.EXPECTED)
+        self.assertNotIn(missing[0]["title"], self.ANCHORS)
 
 
 if __name__ == "__main__":
