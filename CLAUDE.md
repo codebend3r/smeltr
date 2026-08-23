@@ -26,7 +26,7 @@ on a `good` verdict. It calls this repo on every cycle.
 Verified: `verdict.py` does not load `server.py`. Worst case the page breaks
 and the pipeline keeps running.
 
-`server.py` is NOT a pure observer any more. Two escalations, in order:
+`server.py` is NOT a pure observer any more. Four escalations, in order:
 
 1. Skip/reorder (2026-08-21): `POST /api/queue/skip|order` write
    `queue_overrides.json`, which the decision path READS. Steers only *which
@@ -70,7 +70,23 @@ and the pipeline keeps running.
    `stalled`, never a bar. Failures report through `encode_note` (a `bad`
    note resists `ok` overwrites for 15 min — it is often the only record);
    log in `.pull-<slug>.log`. A completed pull is NEVER deleted over a
-   rename failure — the note says where the file is.
+   rename failure — the note says where the file is. (Since 2026-08-23
+   `next_title.py` also passes over a visible folder with no source `.mkv`
+   and exits 3 — a wait, not a halt — so the hidden folder is now
+   defence-in-depth rather than the only thing preventing that halt.)
+4. Pause-after-current (2026-08-23): `POST /api/pause` writes/removes a
+   `pause` flag file beside the ledger (gitignored). While it exists
+   `next_title.py` answers exit **3** — the driver's existing
+   wait-and-recheck path, no `.autopilot.sh` structural change — so the
+   RUNNING encode still finishes, records, syncs and **deletes its library
+   original**; only the next encode is withheld. The live-card switch says
+   exactly that. Resume is picked up within 300 s. A paused pipeline can
+   never exit 0: pause is checked before the queue scan, so an empty queue
+   while paused waits instead of claiming the stop condition.
+   `core.paused()` fails CLOSED (an unreadable `SMELTR_DIR` reads as paused
+   — waiting is the safe direction). `summary()` carries `paused` so
+   `smeltr report` banners it too; the paused idle card yields to the
+   louder facts first (`x9_online` false, then no driver process).
 
 ### The driver is CONCURRENT as of 2026-08-22
 
@@ -122,6 +138,12 @@ loudly if it cannot. Grant `/bin/bash` Full Disk Access for the LaunchAgent to
 work, or run `watchdog.sh --supervise` from a shell that can already see the
 drive (works immediately, does not survive a reboot).
 
+**A running `--supervise` races any intentional driver stop** — it relaunches
+the moment the driver is absent (twice on 2026-08-23; the lock let one
+instance win, harmlessly, but a relaunch mid-script-edit would not be). Stop
+the watchdog BEFORE stopping the driver on purpose; step 1 of the pause
+procedure below.
+
 **It sweeps the staging drive before it restarts anything** (2026-08-22). A
 reboot mid-encode leaves an unfinalised `*2160p HEVC*.mkv`, which
 `finished_folder()` matches as FINISHED and `verdict.py` then halts on — so a
@@ -150,11 +172,15 @@ where `node` is absent.
 
 Before touching `core.py` / `verdict.py` / `next_title.py` / `record.py`, or
 any `.sh` on the staging drive, pause the driver. Learned the hard way on
-2026-08-21 — three traps in this, all confirmed live:
+2026-08-21 (and extended 2026-08-23) — four traps in this, all confirmed live:
 
-1. **`pkill -f autopilot.sh` misses the detached process.** Find the pid with
+1. **Stop the watchdog first.** A running `watchdog.sh --supervise` relaunches
+   an absent driver and will race the kill below. `pgrep -fl "watchdog.sh
+   --supervise"`, plain `kill` it (it has no trap games), and relaunch it at
+   the end — it lives in the REPO, not on the X9.
+2. **`pkill -f autopilot.sh` misses the detached process.** Find the pid with
    `pgrep -f autopilot.sh` and signal it directly.
-2. **Plain `kill` (SIGTERM) does not stop it.** Bash defers the signal while
+3. **Plain `kill` (SIGTERM) does not stop it.** Bash defers the signal while
    waiting on a child, and its `trap 'rmdir $LOCK' EXIT INT TERM` removes the
    lock and then **continues the loop** — now unlocked. Use `kill -9 <pid>`,
    then remove the lock yourself:
@@ -164,7 +190,7 @@ any `.sh` on the staging drive, pause the driver. Learned the hard way on
    rm -rf "/Volumes/Crucial X9/4K Movies/.autopilot.lock"
    ```
 
-3. **Killing the driver does not kill its children.** A running HandBrake
+4. **Killing the driver does not kill its children.** A running HandBrake
    encode, an in-flight `.sync-to-library.sh` push, and a `.replenish-queue.sh`
    pull all survive as orphans, keep logging into `.autopilot.log`, and finish
    their own verify/cleanup safely. That is fine — but it means:
@@ -177,10 +203,12 @@ any `.sh` on the staging drive, pause the driver. Learned the hard way on
      scan, re-judges it, and writes a second ledger row (double-counted
      reclaim). Wait for `SYNCED:` in the log / the staging folder to vanish.
 
-Restart it afterwards, exactly as its header documents:
+Restart it afterwards, exactly as its header documents, then the watchdog
+(from the repo — `./watchdog.sh` does not exist on the X9):
 
 ```bash
 cd "/Volumes/Crucial X9/4K Movies" && nohup ./.autopilot.sh >> .autopilot.log 2>&1 &
+nohup ~/Developer/git/smeltr/watchdog.sh --supervise >/dev/null 2>&1 &
 ```
 
 ## Library roots — kept in sync BY HAND in four places
@@ -219,9 +247,11 @@ Who honours it:
   skipped-last; `summary()` excludes skipped rows from the queue totals —
   EXCEPT `job_progress_pct`, whose goal deliberately keeps skipped bytes so
   skipping work can never render as finishing it.
-- `next_title.py` never picks a skipped row. When every staged candidate is
-  hand-skipped it exits **3** (not the stop condition), and `.autopilot.sh`
-  waits 300 s instead of exiting on a false "nothing left" message.
+- `next_title.py` never picks a skipped row. Exit **3** (not the stop
+  condition) now covers three wait states — every staged candidate
+  hand-skipped, paused from the dashboard, or a staged folder holding only a
+  still-landing `.partial` — and `.autopilot.sh` waits 300 s, logging the
+  actual reason via `next_reason()` instead of a hard-coded guess.
 - `.replenish-queue.sh` (staging drive) never stages a skipped title, stops
   counting skipped staged folders toward its 10-folder target (so skipping a
   staged title pulls the next library title in), and stages `priority`
