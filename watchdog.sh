@@ -11,13 +11,18 @@
 # So: restart a driver that is merely absent. NEVER restart through an
 # unreviewed HALTED: line -- notify a human instead, once.
 #
+# It also sweeps the staging drive before restarting. An encode killed
+# mid-write leaves an unfinalised .mkv that the driver matches as FINISHED and
+# halts on, so restarting into one just trades a dead pipeline for a halted
+# one. See the triage block for what is and is not deleted.
+#
 #   */5 * * * *  or a launchd StartInterval. Safe to run concurrently.
 #   touch "$X9/.watchdog-off"  disables it without unloading anything.
 set -uo pipefail
 
 
-X9="/Volumes/Crucial X9/4K Movies"
-SMELTR="$HOME/Developer/git/smeltr/smeltr"
+X9="${SMELTR_X9:-/Volumes/Crucial X9/4K Movies}"
+SMELTR="${SMELTR_BIN:-$HOME/Developer/git/smeltr/smeltr}"
 LOG="$X9/.autopilot.log"
 # Logs live in ~/Library/Logs, NOT on the staging drive. A LaunchAgent may not
 # be able to read /Volumes at all (Full Disk Access), and a watchdog whose only
@@ -33,6 +38,106 @@ notify() {
   osascript -e "display notification \"$(printf '%s' "$1" | tr '"' "'" | cut -c1-200)\" \
                 with title \"Smeltr\" sound name \"Basso\"" >/dev/null 2>&1 || true
 }
+
+# --- staging-output triage (the tests extract this block) -----------------
+# Is HandBrakeCLI writing this exact file right now? Matched on argv with a
+# literal `case` glob, never a pgrep pattern -- every folder name carries a
+# `(YYYY)` that pgrep would read as a regex group and match nothing.
+hb_holds() {
+  local pid args
+  for pid in $(pgrep -x HandBrakeCLI 2>/dev/null); do
+    args=$(ps -p "$pid" -o args= 2>/dev/null)
+    case "$args" in *"$1"*) return 0 ;; esac
+  done
+  return 1
+}
+
+# Container duration in seconds, or NOTHING. An MKV killed mid-write was never
+# finalised and carries no duration header at all -- "nothing" is the signal.
+probe_duration() {
+  ffprobe -v error -show_entries format=duration -of csv=p=0 "$1" 2>/dev/null \
+    | head -1 | grep -Ex '[0-9]+(\.[0-9]+)?'
+}
+
+# Seconds since last write, or nothing if it cannot be read.
+mtime_age() {
+  local m; m=$(stat -f %m "$1" 2>/dev/null)
+  [ -n "$m" ] || return 1
+  echo $(( $(date +%s) - m ))
+}
+
+# A `*2160p HEVC*.mkv` on the staging drive is one of three very different
+# things, and restarting the driver blindly gets one of them catastrophically
+# wrong:
+#
+#   live      HandBrake is still writing it. The driver's encoding_this()
+#             excludes it, so a restart is harmless -- but it is not
+#             "finished", and calling it that in the log is how this was
+#             misread for a whole afternoon.
+#   finished  a real encode whose sync was interrupted. Restarting is exactly
+#             how it gets recorded and synced. Must be left strictly alone.
+#   corpse    an encode killed mid-write -- reboot, power loss, OOM. The
+#             driver STILL matches it as finished, hands it to verdict.py and
+#             HALTS, parking the whole pipeline on a file that can only ever
+#             be garbage. Confirmed 2026-08-22: a reboot left a 3.0 GB Kubo
+#             partial and nothing moved again until a human looked.
+#
+# A corpse shows up in one of two ways, and BOTH must be caught. The Kubo one
+# had no container duration at all -- killed before the header was finalised.
+# But a muxer that writes its duration up front leaves a truncated file that
+# probes "fine" and merely reports a duration far short of the source, so
+# testing only for a missing duration would have walked straight past it.
+# So: compare against the source, which is the same check
+# `.sync-to-library.sh` already trusts to clear a deletion.
+#
+# Only a corpse is deleted, and only on positive proof of all of: nothing
+# holds it open, it has not been written for 120 s, ffprobe reads the SOURCE
+# beside it in the same breath, and the output is missing or short against it.
+# Probing the source is the load-bearing half -- it is what stops a transient
+# I/O error from deleting a good finished encode, because a drive too sick to
+# probe the output cannot probe the source either. The 2% tolerance is enormous
+# headroom: a real encode matches its source to milliseconds (Shrek, 7 ms in
+# 5431 s), while a killed one is short by whatever percent it had left to run.
+# A corpse costs one re-encode to rebuild; the source is untouched and no
+# library original is ever in scope here.
+#
+# Echoes one verdict word per output. wlog writes to the log file, so none of
+# this narration can reach stdout and poison the caller's $(...) capture.
+triage_outputs() {
+  local out dir src age d_out d_src
+  while IFS= read -r out; do
+    [ -n "$out" ] || continue
+    dir=$(dirname "$out")
+    if hb_holds "$out"; then
+      wlog "  live encode writing $(basename "$dir") - left alone"
+      echo live; continue
+    fi
+    age=$(mtime_age "$out")
+    if [ -z "${age:-}" ] || [ "$age" -lt 120 ]; then
+      wlog "  $(basename "$dir") written ${age:-?}s ago - too fresh to judge, left alone"
+      echo fresh; continue
+    fi
+    src=$(find "$dir" -maxdepth 1 -type f -name '*.mkv' \
+            ! -name '*2160p HEVC*' ! -name '._*' -print -quit 2>/dev/null)
+    d_src=""
+    [ -n "$src" ] && d_src=$(probe_duration "$src")
+    if [ -z "${d_src:-}" ]; then
+      wlog "  cannot probe the SOURCE in $(basename "$dir") - refusing to judge its output"
+      echo unknown; continue
+    fi
+    d_out=$(probe_duration "$out")
+    if [ -n "${d_out:-}" ] && \
+       awk -v o="$d_out" -v s="$d_src" 'BEGIN{exit !(o >= s * 0.98)}'; then
+      wlog "  NOTE: finished output in $(basename "$dir") (${d_out}s of ${d_src}s) - restart will judge and RECORD it"
+      echo finished; continue
+    fi
+    wlog "  CORPSE: $(basename "$out") runs ${d_out:-nothing readable} against a ${d_src}s source. Deleting."
+    wlog "    the source beside it probes clean, so the file is bad, not the drive."
+    rm -f "$out" "$dir/._$(basename "$out")"
+    echo corpse
+  done
+}
+# --- end staging-output triage -------------------------------------------
 
 # --supervise: loop here instead of relying on launchd. Launch it from a shell
 # that can already read the staging drive and it works with no TCC grant at all;
@@ -99,6 +204,17 @@ if printf '%s' "$since_up" | grep -q 'HALTED:'; then
   exit 0
 fi
 
+# Sort out what is already sitting on the staging drive BEFORE asking what to
+# do next, so the pick is made against a clean drive and the driver is never
+# handed a file that can only halt it.
+verdicts=$(find "$X9" -mindepth 2 -maxdepth 2 -type f -name '*2160p HEVC*.mkv' \
+             ! -name '._*' 2>/dev/null | triage_outputs)
+if printf '%s\n' "$verdicts" | grep -q '^unknown$'; then
+  wlog "NOT restarting: an output could not be judged - the drive may be sick"
+  notify "Autopilot is down and an encode cannot be judged - needs you."
+  exit 0
+fi
+
 # Not halted, just absent. Is there anything to do? `smeltr next` is the same
 # decision the driver itself makes, so the watchdog cannot disagree with it.
 "$SMELTR" next 70 >/dev/null 2>&1; nrc=$?
@@ -107,14 +223,6 @@ case $nrc in
   2) wlog "library not fully mounted; not restarting"; exit 0 ;;
   *) exit 0 ;;                                       # stop condition / all skipped
 esac
-
-# A finished folder with no driver means a sync was interrupted. Restarting is
-# how it gets finished -- but core.record() has no duplicate guard, so say so
-# loudly enough that a double-counted row can be spotted in the log later.
-if find "$X9" -mindepth 2 -maxdepth 2 -name '*2160p HEVC*.mkv' ! -name '._*' \
-     -print -quit 2>/dev/null | grep -q .; then
-  wlog "NOTE: a finished output is on the staging drive; restarting driver will judge it"
-fi
 
 wlog "driver absent with work queued — restarting"
 notify "Autopilot was down. Restarting it."

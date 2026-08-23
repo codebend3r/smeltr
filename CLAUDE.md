@@ -122,11 +122,26 @@ loudly if it cannot. Grant `/bin/bash` Full Disk Access for the LaunchAgent to
 work, or run `watchdog.sh --supervise` from a shell that can already see the
 drive (works immediately, does not survive a reboot).
 
+**It sweeps the staging drive before it restarts anything** (2026-08-22). A
+reboot mid-encode leaves an unfinalised `*2160p HEVC*.mkv`, which
+`finished_folder()` matches as FINISHED and `verdict.py` then halts on — so a
+naive relaunch just trades a dead pipeline for a halted one. `triage_outputs()`
+sorts every staged output into `live` / `fresh` / `finished` / `corpse` /
+`unknown` and deletes ONLY a corpse. A corpse needs all of: nothing holds it
+open, no write for 120 s, the SOURCE beside it probes clean, and the output is
+missing or >2% short against that source. Probing the source is what makes the
+deletion safe — a drive too sick to probe the output cannot probe the source
+either, so an I/O blip yields `unknown`, which refuses the restart and notifies
+instead. `finished` is never touched: that is an interrupted sync, and
+restarting is how it completes. Two corpse shapes exist and both are pinned in
+the tests — no duration at all (the live Kubo case), and a truncated file whose
+muxer wrote its duration up front and so probes "fine" but runs short.
+
 ### Tests
 
 `bash tests/run-all.sh`. The bash suites skip cleanly when the X9 is not
 mounted. They pin the log-matching and downscale gates, the concurrency
-markers, and repo/live drift.
+markers, the watchdog's corpse/finished boundary, and repo/live drift.
 
 ### Pausing the driver — the exact procedure
 
