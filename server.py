@@ -1312,6 +1312,8 @@ _PAGE = r"""<!doctype html>
      status-dot halo. Tokens in BOTH themes, like every other colour. */
   --sheen:rgba(255,255,255,.30); --tip:#ffe2c4; --glow:rgba(255,122,47,.40);
   --halo-good:rgba(61,220,151,.15); --halo-good-2:rgba(61,220,151,.04);
+  /* Size-projection band: the 30-80% target zone and its edges. */
+  --band:rgba(61,220,151,.13); --band-bd:rgba(61,220,151,.34);
 }
 :root[data-theme="light"]{
   color-scheme:light;
@@ -1332,6 +1334,7 @@ _PAGE = r"""<!doctype html>
   --thumb:#c8cfda; --thumb-hover:#a8b2c1;
   --sheen:rgba(255,255,255,.60); --tip:#ffd9ae; --glow:rgba(194,84,15,.30);
   --halo-good:rgba(15,122,85,.18); --halo-good-2:rgba(15,122,85,.05);
+  --band:rgba(15,122,85,.11); --band-bd:rgba(15,122,85,.30);
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{-webkit-text-size-adjust:100%}
@@ -1427,6 +1430,34 @@ body:not(.booted) #liveWrap .card{animation-delay:.12s}
                    to{box-shadow:0 0 14px 4px var(--glow);opacity:1}}
 .pctbig{font-size:26px;font-weight:680;letter-spacing:-.02em;line-height:1;
         color:var(--hot-soft);white-space:nowrap}
+/* Size projection -- the whole point of the job, in one strip. The scale is
+   0-100% OF THE SOURCE, so further left is always better, and the shaded zone
+   is the 30-80% target band. It renders before a projection exists: an empty
+   scale reads as "not known yet", where a missing component reads as "nothing
+   to say". No overflow:hidden -- the marker overhangs the track deliberately
+   so it stays visible at 0% and 100%. */
+.proj{margin:14px 0 2px;padding:12px 14px;border:1px solid var(--line);
+      border-radius:var(--r);background:var(--panel-2)}
+.proj-head{display:flex;justify-content:space-between;align-items:baseline;gap:16px;flex-wrap:wrap}
+.proj-head span{display:block;font-size:11px;color:var(--ink-3);
+      text-transform:uppercase;letter-spacing:.06em;margin-top:3px}
+.proj-size b,.proj-ratio b{font-size:22px;font-weight:680;letter-spacing:-.02em;line-height:1}
+.proj-ratio{text-align:right;margin-left:auto}
+.proj-ratio b{color:var(--ink-2)}
+.proj-ratio.on b{color:var(--good)}   .proj-ratio.under b{color:var(--cool)}
+.proj-ratio.over b{color:var(--warn)} .proj-ratio.bad b{color:var(--bad)}
+.proj-scale{position:relative;height:12px;margin:14px 0 6px;border-radius:99px;
+      background:var(--bar-bg);box-shadow:inset 0 1px 2px var(--bar-inset)}
+.proj-zone{position:absolute;top:0;bottom:0;left:30%;width:50%;background:var(--band);
+      border-left:1px solid var(--band-bd);border-right:1px solid var(--band-bd)}
+.proj-mark{position:absolute;top:-4px;bottom:-4px;width:3px;border-radius:2px;
+      transform:translateX(-50%);background:var(--ink);
+      transition:left .9s cubic-bezier(.4,0,.2,1)}
+.proj-mark.on{background:var(--good)}   .proj-mark.under{background:var(--cool)}
+.proj-mark.over{background:var(--warn)} .proj-mark.bad{background:var(--bad)}
+.proj-legend{display:flex;justify-content:space-between;gap:8px;font-size:10.5px;
+      color:var(--ink-3);text-transform:uppercase;letter-spacing:.06em}
+.proj-note{margin-top:9px;font-size:12.5px;color:var(--ink-2);max-width:70ch}
 .kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px 18px;margin-top:12px}
 .kv div span{display:block;font-size:11px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.06em}
 .kv div b{font-weight:580;font-size:14px}
@@ -1840,13 +1871,82 @@ function liveFields(e){
   return [["ETA", dur(e.eta_s)],
     ["Speed", e.avg_fps==null?"—":e.avg_fps.toFixed(1)+" fps avg"],
     ["Written", gib(e.output_bytes)],
-    ["Projected", gib(e.projected_bytes)],
-    ["Of source", e.ratio_pct==null ? "—" :
-       pct(e.ratio_pct)+(e.crop_factor>1.01 && e.norm_ratio_pct!=null
-         ? " ("+pct(e.norm_ratio_pct)+" crop-adj)" : "")],
     ["Source", gib(e.source_bytes)],
     ["Started", e.started_text||"—"],
     ["PID", String(e.pid)]];
+}
+
+/* Which side of the 30-80% target band a projection falls on. The band is the
+   user's target, NOT a defect threshold, and the wording has to keep those
+   apart: 5 of the first 12 completed encodes landed under 30% and every one of
+   them was a good encode on a clean digital source. So "below target band" is
+   informational (--cool), and only the physically implausible floor and the
+   not-worth-doing ceiling are warnings. */
+function projBand(r){
+  if(r==null)  return {cls:"",      label:""};
+  if(r>=100)   return {cls:"bad",   label:"LARGER THAN THE SOURCE"};
+  if(r>=85)    return {cls:"bad",   label:"BARELY SMALLER THAN THE SOURCE"};
+  if(r>80)     return {cls:"over",  label:"ABOVE THE 30-80% TARGET BAND"};
+  if(r>=30)    return {cls:"on",    label:"IN THE 30-80% TARGET BAND"};
+  if(r>=12)    return {cls:"under", label:"BELOW THE TARGET BAND — normal for a clean source"};
+  return {cls:"bad", label:"IMPLAUSIBLY SMALL FOR 4K AT THIS CRF"};
+}
+
+function projBlock(){
+  var refs={}, n=el("div","proj");
+  var head=el("div","proj-head");
+  var lhs=el("div","proj-size");
+  refs.size=el("b",null,"—"); lhs.appendChild(refs.size);
+  lhs.appendChild(el("span",null,"projected final size"));
+  var rhs=el("div","proj-ratio"); refs.ratioWrap=rhs;
+  refs.ratio=el("b",null,"—"); rhs.appendChild(refs.ratio);
+  refs.srcCap=el("span",null,"of source"); rhs.appendChild(refs.srcCap);
+  head.appendChild(lhs); head.appendChild(rhs); n.appendChild(head);
+
+  refs.scale=el("div","proj-scale");
+  refs.scale.setAttribute("role","img");
+  refs.scale.appendChild(el("i","proj-zone"));
+  refs.mark=el("i","proj-mark"); refs.mark.hidden=true;
+  refs.scale.appendChild(refs.mark);
+  n.appendChild(refs.scale);
+
+  var lg=el("div","proj-legend");
+  lg.appendChild(el("span",null,"0"));
+  lg.appendChild(el("span",null,"target 30–80%"));
+  lg.appendChild(el("span",null,"100% = source"));
+  n.appendChild(lg);
+  refs.note=el("div","proj-note",""); n.appendChild(refs.note);
+  return {node:n, refs:refs};
+}
+
+function updateProj(p, e){
+  var r=e.ratio_pct, b=projBand(r);
+  p.size.textContent=gib(e.projected_bytes);
+  p.ratio.textContent=pct(r);
+  p.ratioWrap.className="proj-ratio "+b.cls;
+  p.srcCap.textContent=e.source_bytes==null
+    ? "source size unknown" : "of "+gib(e.source_bytes)+" source";
+  if(r==null){
+    p.mark.hidden=true;
+    /* Never fill the gap with a guess. Below 5% the projection is dominated by
+       studio logos and black frames, which encode to almost nothing. */
+    p.note.textContent=(e.pct!=null && e.pct<5)
+      ? "Estimate opens at 5% — logos and black frames flatter it before that."
+      : "No projection yet.";
+    p.scale.setAttribute("aria-label","Projected size not available yet");
+    return;
+  }
+  p.mark.hidden=false;
+  p.mark.style.left=Math.max(0,Math.min(100,r))+"%";
+  p.mark.className="proj-mark "+b.cls;
+  var note=b.label;
+  if(e.crop_factor>1.01 && e.norm_ratio_pct!=null)
+    note+=" · "+pct(e.norm_ratio_pct)+" per retained pixel after auto-crop";
+  if(e.source_bytes!=null && e.projected_bytes!=null)
+    note+=" · frees "+gib(e.source_bytes-e.projected_bytes);
+  p.note.textContent=note;
+  p.scale.setAttribute("aria-label",
+    "Projected output is "+pct(r)+" of the source. Target band is 30 to 80 percent.");
 }
 
 /* The live card updates IN PLACE. Rebuilding it on every SSE frame silently
@@ -1880,6 +1980,7 @@ function renderLive(live, s){
       bar.appendChild(refs.fill); row.appendChild(bar);
       refs.pct=el("div","pctbig num","—"); row.appendChild(refs.pct);
       c.appendChild(row);
+      var pj=projBlock(); refs.proj=pj.refs; c.appendChild(pj.node);
       var kv=el("div","kv"); refs.kv={};
       liveFields(e).forEach(function(p){
         var d=el("div"); d.appendChild(el("span",null,p[0]));
@@ -1898,6 +1999,7 @@ function renderLive(live, s){
     refs.fill.style.width=(e.pct||0)+"%";
     refs.bar.setAttribute("aria-valuenow", String(e.pct||0));
     refs.pct.textContent=pctLive(e.pct);
+    updateProj(refs.proj, e);
     liveFields(e).forEach(function(p){
       var b=refs.kv[p[0]]; if(b) b.textContent=p[1];
     });

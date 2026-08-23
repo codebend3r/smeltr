@@ -141,7 +141,10 @@ muxer wrote its duration up front and so probes "fine" but runs short.
 
 `bash tests/run-all.sh`. The bash suites skip cleanly when the X9 is not
 mounted. They pin the log-matching and downscale gates, the concurrency
-markers, the watchdog's corpse/finished boundary, and repo/live drift.
+markers, the watchdog's corpse/finished boundary, the projection band's
+boundaries and wording, and repo/live drift. The projection suite runs under
+`node` against the functions pulled straight out of `_PAGE`, and skips cleanly
+where `node` is absent.
 
 ### Pausing the driver — the exact procedure
 
@@ -286,17 +289,46 @@ control sit above it). Map as of the stage-on-demand change:
 
 | Lines | What |
 |---|---|
-| 1225–1252 | `:root` dark design tokens — colours, radius, motion accents. **Start here.** |
-| 1253–1274 | `:root[data-theme="light"]` — the light overrides, same token names |
-| 1275–1391 | base typography, header, stat cards, panels, live card, molten bar, tabs |
-| 1392–1497 | tables, scroll-reveal scrollbar, pin/skip/NAS/transfer marks, `.minibar` (+ red `.minibar.pull`), `th.unit`, grips |
-| 1498–1546 | `prefers-reduced-motion` + responsive ≤700px (pinned title column, `.cut`) |
-| 1548–1560 | pre-paint theme script (runs in `<head>`) |
-| 1561–1588 | markup (incl. Reset-order button, `#uiNotice`, `__SCOPE__` footer) |
-| 1647–1670 | `notice()` + `api()` POST helper — the page's only writes |
-| 1671–2242 | `renderAlert` `renderStats` `renderLive` `renderQueue`+`wireDrag` `renderLedger` |
-| 2243–2284 | `paint()` — repaint keys; MUST cover transfers on both tabs |
-| 2285–2405 | SSE wiring, Reset-order, theme toggle, seam-blanking + scrolling-class scripts |
+| 1288–1317 | `:root` dark design tokens — colours, radius, motion accents, `--band`. **Start here.** |
+| 1318–1345 | `:root[data-theme="light"]` — the light overrides, same token names |
+| 1346–1438 | base typography, header, stat cards, panels, live card, molten bar, tabs |
+| 1439–1470 | `.proj` size-projection strip — head, 0–100% scale, target zone, marker, legend |
+| 1471–1591 | tables, scroll-reveal scrollbar, pin/skip/NAS/transfer marks, `.minibar`, `th.unit`, grips |
+| 1592–1640 | `prefers-reduced-motion` + responsive ≤700px (pinned title column, `.cut`) |
+| 1642–1653 | pre-paint theme script (runs in `<head>`) |
+| 1655–1682 | markup (incl. Reset-order button, `#uiNotice`, `__SCOPE__` footer) |
+| 1741–1764 | `notice()` + `api()` POST helper — the page's only writes |
+| 1765–2407 | `renderAlert` `renderStats` `renderLive`+`projBand`/`projBlock`/`updateProj` `renderQueue`+`wireDrag` `renderLedger` |
+| 2408–2450 | `paint()` — repaint keys; MUST cover transfers on both tabs |
+| 2451–2681 | SSE wiring, Reset-order, theme toggle, seam-blanking + scrolling-class scripts |
+
+Line numbers drift on every edit. Re-derive them with a `grep -n` on the
+anchors above rather than trusting the table after a few changes.
+
+### The size-projection strip (2026-08-22)
+
+The live card carries a `.proj` block: projected final size, that size as a
+percentage of the source, and a 0–100%-of-source scale with the **30–80%
+target band** shaded and a marker where this encode is heading. `projBand()`
+classifies the ratio, `projBlock()` builds the DOM once, `updateProj()` writes
+into it in place with the rest of the live card.
+
+**The 30% floor is a target, not a defect threshold, and the wording must keep
+those apart.** 5 of the first 12 completed encodes landed under 30% and every
+one was a good encode — Flight at 9.4% carries a recorded SSIM of 0.9931/0.9945
+against the cropped original. The split is by *source type*, not by defect:
+grain-heavy 1989–2003 film lands 33–71%, clean digital and animated sources
+land 9–25%. So below-band renders in `--cool` and says "normal for a clean
+source"; only the implausible floor and the not-worth-doing ceiling render as
+warnings. A tired reader must never mistake "below target" for "broken" and
+kill a good encode.
+
+The band is judged on `ratio_pct` (raw bytes — what actually fills the drive);
+`norm_ratio_pct` is cited beside it whenever `crop_factor > 1.01`, because that
+is what explains a low number. Below 5% progress the server sends `null` and
+the strip says the estimate opens at 5% — it never substitutes a guess.
+`Projected` and `Of source` were removed from the `.kv` grid when this landed:
+one number, one place, one precision.
 
 Network scope (`server.py` config block, top of file):
 
@@ -359,10 +391,13 @@ and always has** — pre-existing, not yet addressed.
 
 ## Reviewing changes
 
-Two adversarial agents live in `agents/` and are symlinked into `~/.claude/agents/`:
-`smeltr-code-critic` (code) and `smeltr-data-critic` (the numbers a human reads
-before authorising a deletion). Use the data critic after changing anything the
-dashboard displays — it has caught mislabelled units, totals computed over
+Three adversarial agents live in `agents/` and are symlinked into
+`~/.claude/agents/`: `smeltr-code-critic` (code), `smeltr-data-critic` (the
+numbers a human reads before authorising a deletion), and
+`smeltr-encode-efficiency` (is the encode actually optimizing — projected
+output smaller than the original, and inside the 30–80% target band). A newly
+added agent is not selectable until the next session; the registry loads at
+startup. Use the data critic after changing anything the dashboard displays — it has caught mislabelled units, totals computed over
 mismatched row sets, a verdict that reassured on an implausible result, and a
 transfer bar frozen at 0% for the length of the entire push.
 
