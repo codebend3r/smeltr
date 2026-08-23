@@ -2013,6 +2013,10 @@ function gibApprox(b){ return b==null ? "—" : "~"+Math.round(b/GIB)+" GiB"; }
    quiet-warning bug the projection rules exist to prevent. */
 var projClosed=false;
 try{ projClosed=localStorage.getItem("smeltr.proj.closed")==="1"; }catch(e){}
+/* The ONE list of warning verdicts. Both consumers -- the collapse override
+   here and the verdict line's loud styling in renderLive -- read it: an
+   inline copy of this set once omitted "downscale" and the only true warning
+   on the card rendered unstyled. */
 var PROJ_LOUD={suspect:1,blowup:1,"no-saving":1,downscale:1};
 
 function projApply(p){
@@ -2126,8 +2130,10 @@ function updateProj(p, e){
    HandBrake's full precision, and only there -- one number, one precision. */
 var liveRefs={};
 /* One control for both cards. The switch never touches the running encode:
-   on means only that the NEXT one will not start. Click disables until the
-   POST's repaint rebuilds the card with the server's answer. */
+   on means only that the NEXT one will not start. Disabled while the POST is
+   in flight; success repaints the card with the server's answer, and the
+   .finally re-enable covers failure (a denied LAN write, a network blip),
+   where nothing repaints and the switch would otherwise stay dead. */
 function pauseSwitch(on, label){
   var row=el("div","pauserow");
   var sw=el("button","swt"+(on?" on":""));
@@ -2141,7 +2147,8 @@ function pauseSwitch(on, label){
   sw.appendChild(el("i"));
   sw.addEventListener("click",function(){
     sw.disabled=true;
-    api("/api/pause",{paused:!on});
+    api("/api/pause",{paused:!on})
+      .finally(function(){ sw.disabled=false; });
   });
   row.appendChild(sw);
   row.appendChild(el("span","swt-label"+(on?" on":""),label));
@@ -2240,10 +2247,7 @@ function renderLive(live, s, paused, driverAlive){
       var b=refs.kv[p[0]]; if(b) b.textContent=p[1];
     });
     refs.verdict.textContent=e.verdict_note;
-    refs.verdict.className=
-      (e.verdict==="suspect"||e.verdict==="blowup"||e.verdict==="no-saving"
-       ||e.verdict==="downscale")
-        ? "verdict loud" : "verdict";
+    refs.verdict.className=PROJ_LOUD[e.verdict] ? "verdict loud" : "verdict";
   });
 }
 
