@@ -305,6 +305,52 @@ control sit above it). Map as of the stage-on-demand change:
 Line numbers drift on every edit. Re-derive them with a `grep -n` on the
 anchors above rather than trusting the table after a few changes.
 
+### Verdict thresholds — recalibrated 2026-08-22
+
+Only `good` syncs and deletes (`verdict.py`: `good` → 0; everything else → 2 or
+3, and the driver halts on both). So every threshold below is the line between
+an unattended deletion and a human being asked to look.
+
+| | Before | After | Why |
+|---|---|---|---|
+| plausibility floor | `OUTLIER_FLOOR_RAW = 12.0`, tested on the **raw** ratio | `OUTLIER_FLOOR_NORM = 6.0`, tested on the **normalised** ratio | see below |
+| relative outlier | `OUTLIER_FACTOR = 0.45` → 15.8% | `0.40` → 14.0% | keeps the human check on the thinnest encodes |
+| not worth doing | `no-saving` at 85% | `no-saving` at 80% | matches the 30–80% band the dashboard draws |
+
+**The floor was applied to the wrong ratio.** It fired exactly once, on Flight
+(2012) at 9.4% — wrongly. That ledger row carries `VERIFIED by SSIM against the
+cropped original: 0.9931 @45:00 and 0.9945 @10:00`. Flight auto-crops
+3840x2160 → 3840x1600 and so discards 26% of its rows; per pixel *actually
+encoded* it keeps 12.6%, not 9.4%. A plausibility floor asks a question about
+the pixels that were encoded, so it belongs on the normalised ratio — which is
+what the relative check beside it already compares. 12% also sat above what
+this library legitimately produces: Flight is the thinnest output ever made
+here, 8.35 Mb/s for 4K from a 2K DI upscale with no true 4K detail to spend
+bits on. 6.0 normalised is a little under half of that.
+
+**Flight-class encodes still halt, deliberately.** 12.6% normalised is under
+the 14.0% relative line. That was a decision, not an oversight — it is the
+smallest output this job has ever produced, against a ~92 GB original, and the
+SSIM check that cleared it was worth having. Lowering `OUTLIER_FACTOR` to 0.30
+would auto-sync it.
+
+**Replaying all 12 measured ledger rows through the new rules changes no
+verdict** — `tests/test_verdict_calibration.py` pins that, plus every boundary
+and the fact that `OUTLIER_FLOOR_RAW` no longer exists.
+
+**The baseline is contaminated and now says so.** Most ledger rows predate
+geometry capture, so `history_ratios(normalised=True)` cannot crop-adjust them
+and returns their raw figure. Comparing an adjusted encode against a
+partly-unadjusted baseline flatters the outlier, so the `suspect` note
+discloses it rather than implying the two are like for like. The `caveat`
+variable that had been dead since it was written now carries this.
+
+**The distribution is bimodal, so treat a single median with suspicion.**
+Grain-heavy 1989–2003 film lands 33–71%; clean digital and animated sources
+land 9–25%. A flat percentage floor is partly a source-age proxy, not a defect
+test. The structural checks — duration, track parity, geometry, decoder errors
+— are the real net; size is a weak last signal.
+
 ### The size-projection strip (2026-08-22)
 
 The live card carries a `.proj` block: projected final size, that size as a

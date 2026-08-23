@@ -362,9 +362,27 @@ def is_downscale(src_geom: Optional[str], out_geom: Optional[str],
 # outlier permanently widens "normal": recording Flight at 9.4% dropped the
 # trigger from 14.8% to 5.6%, so the detector was disarmed by the very encode it
 # had correctly flagged.
-OUTLIER_FACTOR = 0.45    # this far under the median is not routine
-OUTLIER_FLOOR_RAW = 12.0 # raw bytes; 4K at CRF 16 does not credibly land here
-MIN_HISTORY = 3          # below this there is no distribution to speak of
+# Recalibrated 2026-08-22 against the first 12 measured encodes.
+#
+# The floor was 12.0 applied to the RAW ratio, and it fired exactly once, on
+# Flight (2012) at 9.4% -- wrongly. That encode is in the ledger carrying
+# "VERIFIED by SSIM against the cropped original: 0.9931 @45:00 and 0.9945
+# @10:00". Two things were wrong with it:
+#
+#   1. It tested the RAW ratio. Flight auto-crops 3840x2160 -> 3840x1600 and so
+#      discards 26% of its rows; per pixel actually encoded it keeps 12.6%, not
+#      9.4%. A plausibility floor is a question about the pixels that were
+#      encoded, so it belongs on the NORMALISED ratio. (The relative check
+#      below already compares normalised to normalised.)
+#   2. 12% sat above what this library legitimately produces. Flight is the
+#      thinnest output ever made here -- 8.35 Mb/s for 4K, from a 2K DI upscale
+#      with no true 4K detail to spend bits on.
+#
+# 6.0 normalised is a little under half of Flight's 12.6, i.e. "less than half
+# the bitrate of the thinnest encode this job has ever legitimately produced".
+OUTLIER_FACTOR = 0.40      # this far under the median is not routine
+OUTLIER_FLOOR_NORM = 6.0   # per retained pixel; below this, not physically credible
+MIN_HISTORY = 3            # below this there is no distribution to speak of
 
 
 def history_ratios(normalised: bool = False, hist: Optional[list] = None) -> list[float]:
@@ -404,30 +422,40 @@ def _verdict(ratio: Optional[float], hist: Optional[list[float]] = None,
         return "unknown", "Too early to project a final size."
     if ratio >= 100:
         return "blowup", "Projecting LARGER than the source - kill it and restart at CRF 20."
-    if ratio >= 85:
-        return "no-saving", "Barely smaller than the source - kill it and restart at CRF 18."
+    # 80, not 85: this is the top of the 30-80% target band the dashboard draws.
+    # Nothing in 12 titles has ever exceeded 71.3%, so this end has never fired --
+    # but when it does, the strip and the verdict must say the same thing.
+    if ratio >= 80:
+        return "no-saving", "Above the 30-80% target band - kill it and restart at CRF 18."
 
     hist = history_ratios(normalised=True) if hist is None else hist
     cmp_ratio = ratio if norm_ratio is None else norm_ratio
     base = statistics.median(hist) if len(hist) >= MIN_HISTORY else None
-    below_floor = ratio < OUTLIER_FLOOR_RAW          # RAW, deliberately
+    # Both tests are on the NORMALISED ratio now, so a heavily auto-cropped
+    # title is judged on the pixels it actually encoded rather than punished
+    # for the rows it correctly threw away.
+    below_floor = cmp_ratio < OUTLIER_FLOOR_NORM
     below_base = base is not None and cmp_ratio < base * OUTLIER_FACTOR
     if below_floor or below_base:
         detail = (f"the typical encode in this job keeps {base:.1f}% "
                   f"(median of {len(hist)})" if base is not None
                   else "implausibly small for 4K at CRF 16")
         if below_floor:
-            detail = (f"under the {OUTLIER_FLOOR_RAW:.0f}% floor below which a 4K "
-                      f"CRF-16 encode is not physically plausible; " + detail)
+            detail = (f"under the {OUTLIER_FLOOR_NORM:.0f}% floor below which a 4K "
+                      f"CRF-16 encode is not physically credible; " + detail)
         cropped = norm_ratio is not None and abs(norm_ratio - ratio) >= 0.05
         lead = f"keeps {ratio:.1f}% of source bytes"
         if cropped:
             lead += f" ({norm_ratio:.1f}% per retained pixel after auto-crop)"
-        # The baseline is a RAW ratio -- the ledger only began storing geometry
-        # recently, so older rows cannot be crop-adjusted. Comparing an adjusted
-        # figure against an unadjusted one flatters the outlier, so say so
-        # rather than implying the two are like for like.
+        # Most ledger rows predate geometry capture, so history_ratios() cannot
+        # crop-adjust them and returns their raw figure. Comparing an adjusted
+        # encode against a partly-unadjusted baseline flatters the outlier, so
+        # say so rather than implying the two are like for like.
         caveat = ""
+        if cropped and base is not None:
+            caveat = (" The baseline is only partly crop-adjusted — older ledger "
+                      "rows have no geometry — so it reads lower than it should "
+                      "for a cropped title.")
         return "suspect", (
             f"UNUSUAL: this encode {lead} — {detail}.{caveat} "
             "Frame width is unchanged, so no resolution was thrown away; "
