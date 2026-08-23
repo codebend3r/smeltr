@@ -2,31 +2,43 @@
  *
  *   node tests/test_projection_ui.js
  *
- * This is the band the user reads before authorising a ~70 GB deletion, so the
- * boundaries and the WORDING are both load-bearing. In particular: 30% is a
- * TARGET floor, not a defect threshold -- 5 of the first 12 completed encodes
- * landed under it and every one was a good encode. Anything that renders
- * "below target" as an error is a defect in this component.
+ * This strip is the largest thing on the live card, and the card carries an
+ * abort button. What it renders decides whether a human kills a good encode or
+ * green-lights deleting an irreplaceable original. Two rules are load-bearing:
+ *
+ *   1. Colour comes from `e.verdict` -- the server's verdict, the same one the
+ *      pipeline acts on. An earlier version re-derived it in the browser and
+ *      disagreed with the server in three ranges. Two were dangerous, and both
+ *      are pinned below.
+ *   2. The 30-80% band is the user's TARGET, not a defect threshold. 4 of the
+ *      first 12 completed encodes landed under it and every one was good.
  */
 'use strict';
 const fs = require('fs');
 const path = require('path');
 const src = fs.readFileSync(path.join(__dirname, '..', 'server.py'), 'utf8');
 
-/* Pull the functions out of _PAGE by name, so this tests SHIPPED code rather
-   than a copy that can drift. */
+/* Pull the functions and tables out of _PAGE by name, so this tests SHIPPED
+   code rather than a copy that can drift. */
+function block(startIdx) {
+  let depth = 0, started = false;
+  for (let i = startIdx; i < src.length; i++) {
+    if (src[i] === '{') { depth++; started = true; }
+    else if (src[i] === '}') { depth--; if (started && depth === 0) return src.slice(startIdx, i + 1); }
+  }
+  throw new Error('unbalanced block');
+}
 function fn(name) {
   const at = src.indexOf('function ' + name + '(');
   if (at < 0) throw new Error('not found in server.py: ' + name);
-  let depth = 0, started = false;
-  for (let i = at; i < src.length; i++) {
-    if (src[i] === '{') { depth++; started = true; }
-    else if (src[i] === '}') { depth--; if (started && depth === 0) return src.slice(at, i + 1); }
-  }
-  throw new Error('unbalanced: ' + name);
+  return block(at);
+}
+function tbl(name) {
+  const at = src.indexOf('var ' + name + '=');
+  if (at < 0) throw new Error('not found in server.py: ' + name);
+  return 'var ' + name + '=' + block(src.indexOf('{', at)) + ';';
 }
 
-// Minimal DOM. Only what el() and the component actually touch.
 const document = {
   createElement: () => ({
     className: '', textContent: '', hidden: false, style: {}, attrs: {}, kids: [],
@@ -35,11 +47,12 @@ const document = {
   }),
 };
 const GIB = 2 ** 30, TIB = 2 ** 40;
-const scope = { document, GIB, TIB, Math };
-const code = ['gib', 'pct', 'el', 'projBand', 'projBlock', 'updateProj'].map(fn).join('\n');
-const make = new Function('document', 'GIB', 'TIB',
-  code + '\nreturn {gib,pct,el,projBand,projBlock,updateProj};');
-const M = make(document, GIB, TIB);
+const code = [tbl('PROJ_CLASS'), tbl('PROJ_LEAD')]
+  .concat(['gib', 'pct', 'el', 'bandText', 'gibApprox', 'projBlock', 'updateProj'].map(fn))
+  .join('\n');
+const M = new Function('document', 'GIB', 'TIB', code +
+  '\nreturn {gib,pct,el,bandText,gibApprox,projBlock,updateProj,PROJ_CLASS,PROJ_LEAD};'
+)(document, GIB, TIB);
 
 let pass = 0, fail = 0;
 const ck = (what, got, want) => {
@@ -50,82 +63,124 @@ const ckHas = (what, hay, needle) => {
   if (String(hay).includes(needle)) { console.log('PASS ' + what); pass++; }
   else { console.log(`FAIL ${what}: '${hay}' lacks '${needle}'`); fail++; }
 };
+const ckNot = (what, hay, needle) => {
+  if (!String(hay).includes(needle)) { console.log('PASS ' + what); pass++; }
+  else { console.log(`FAIL ${what}: '${hay}' must not contain '${needle}'`); fail++; }
+};
+const build = () => M.projBlock().refs;
 
-// --- band boundaries ------------------------------------------------------
-const band = r => M.projBand(r).cls;
-ck('100% of source is bad',          band(100),  'bad');
-ck('just over 100 is bad',           band(140),  'bad');
-ck('85% is bad (not worth doing)',   band(85),   'bad');
-ck('84.9% is over-target',           band(84.9), 'over');
-ck('80.1% is over-target',           band(80.1), 'over');
-ck('80% is the top of the band',     band(80),   'on');
-ck('55% mid-band is on-target',      band(55),   'on');
-ck('30% is the bottom of the band',  band(30),   'on');
-ck('29.9% is under-target',          band(29.9), 'under');
-ck('12% is under-target',            band(12),   'under');
-ck('11.9% is implausible',           band(11.9), 'bad');
-ck('no ratio has no band',           band(null), '');
+// --- colour is the server's verdict, never a second opinion ---------------
+// Every code core._verdict() can return must map to a class, or the strip
+// silently renders unstyled for it.
+['good', 'thin', 'suspect', 'no-saving', 'blowup', 'downscale', 'unknown']
+  .forEach(v => ck('verdict "' + v + '" has a class', typeof M.PROJ_CLASS[v], 'string'));
+ck('good is the only positive class', M.PROJ_CLASS.good, 'on');
+ck('thin warns, never green',         M.PROJ_CLASS.thin, 'warn');
+ck('suspect warns',                   M.PROJ_CLASS.suspect, 'warn');
+ck('downscale is the worst class',    M.PROJ_CLASS.downscale, 'bad');
 
-// --- every real shipped ratio must classify sensibly ----------------------
-// From ledger.jsonl. All twelve are encodes the pipeline accepted as good.
-const shipped = [49.2, 40.0, 37.0, 33.2, 71.3, 25.1, 24.7, 58.0, 9.4, 22.8, 60.4, 17.8];
-ck('no shipped encode reads as over-target',
-   shipped.filter(r => band(r) === 'over').length, 0);
-ck('four shipped encodes read as under-target',
-   shipped.filter(r => band(r) === 'under').length, 4);
-ck('Flight at 9.4% is the only implausible one',
-   shipped.filter(r => band(r) === 'bad').length, 1);
-
-// --- wording: under-target must not read as a failure ---------------------
-ckHas('under-target says it is normal', M.projBand(24.7).label, 'normal');
-ck('under-target is informational, not a warning', M.projBand(24.7).cls, 'under');
-
-// --- updateProj against real encode shapes --------------------------------
-const build = () => projBlockRefs();
-const projBlockRefs = () => M.projBlock().refs;
-
-// too early: below 5% the server sends null and we must not invent a number
+// --- CRITICAL 1: a downscale must never render as on-target ---------------
+// Output frame narrower than source is the ONE state where the original must
+// survive. It scored 45% -- squarely mid-band -- and rendered green.
 let p = build();
-M.updateProj(p, { pct: 3.57, ratio_pct: null, projected_bytes: null,
-                  source_bytes: 75785844608, crop_factor: 1.347 });
-ck('too early shows no size',   p.size.textContent, '—');
-ck('too early shows no ratio',  p.ratio.textContent, '—');
+M.updateProj(p, { pct: 50, verdict: 'downscale', ratio_pct: 45.0,
+                  projected_bytes: 31 * GIB, source_bytes: 70 * GIB,
+                  crop_factor: 1.0, shrink_pct: 55.0 });
+ck('downscale marker is bad',        p.mark.className, 'proj-mark bad');
+ck('downscale greys the ratio',      p.ratioWrap.className, 'proj-ratio lost');
+ck('downscale greys the whole strip', p.root.className, 'proj lost');
+ck('downscale lead is bad',          p.lead.className, 'proj-lead bad');
+ckHas('downscale says do not delete', p.lead.textContent, 'DO NOT DELETE THE ORIGINAL');
+ckNot('downscale never claims the band', p.detail.textContent, 'target band');
+ckNot('downscale never advertises a saving', p.detail.textContent, 'freed');
+ckHas('downscale says why the ratio is void', p.detail.textContent, 'not comparable');
+
+// --- CRITICAL 2: a verified-good small encode must not read as broken -----
+// Flight (2012), ledger row: 8.08 GiB of 86.32 GiB, SSIM 0.9931/0.9945.
+// The server calls this `good`; the strip must agree with the server.
+p = build();
+M.updateProj(p, { pct: 100, verdict: 'good', ratio_pct: 9.4,
+                  projected_bytes: 8.08 * GIB, source_bytes: 86.32 * GIB,
+                  crop_factor: 1.35, norm_ratio_pct: 12.6, shrink_pct: 90.6 });
+ck('a good 9.4% encode is green',     p.ratioWrap.className, 'proj-ratio on');
+ck('its marker is green',             p.mark.className, 'proj-mark on');
+ckNot('nothing calls it implausible', p.lead.textContent + p.detail.textContent, 'IMPLAUSIB');
+ckHas('it is described as below target', p.detail.textContent, 'below the 30–80% target band');
+ckHas('and that is called normal',    p.detail.textContent, 'normal for a clean digital source');
+
+// --- the strip must not reassure where the server is suspicious -----------
+// core: OUTLIER_FACTOR 0.45 x median 35.1% = ~15.8%. The old browser table
+// used 12%, so 12-15.8% rendered a calm "normal" over an amber SUSPECT.
+p = build();
+M.updateProj(p, { pct: 40, verdict: 'suspect', ratio_pct: 14.0,
+                  projected_bytes: 10 * GIB, source_bytes: 70 * GIB,
+                  crop_factor: 1.0, shrink_pct: 86.0 });
+ck('server suspicion wins over the band', p.ratioWrap.className, 'proj-ratio warn');
+ckHas('and it says to verify first', p.lead.textContent, 'verify the picture before deleting');
+
+// thin: 70-80% is inside the user's band but the server wants a human call
+p = build();
+M.updateProj(p, { pct: 90, verdict: 'thin', ratio_pct: 71.3,
+                  projected_bytes: 52.71 * GIB, source_bytes: 73.91 * GIB,
+                  crop_factor: 1.0, shrink_pct: 28.7 });
+ck('a thin saving is not green even in band', p.ratioWrap.className, 'proj-ratio warn');
+ckHas('band position still stated', p.detail.textContent, 'in the 30–80% target band');
+
+// --- band text is positional only, never a severity ----------------------
+ckHas('above band',  M.bandText(84.9), 'above the 30–80% target band');
+ckHas('top of band', M.bandText(80),   'in the 30–80% target band');
+ckHas('bottom of band', M.bandText(30), 'in the 30–80% target band');
+ckHas('below band',  M.bandText(29.9), 'below the 30–80% target band');
+ck('no ratio, no band text', M.bandText(null), '');
+['above', 'in the', 'below'].forEach(() => {});
+[84.9, 80, 30, 29.9].forEach(r =>
+  ckNot('bandText(' + r + ') carries no severity word',
+        M.bandText(r), 'IMPLAUS'));
+
+// --- estimates are marked as estimates -----------------------------------
+ck('approx GiB is tilde-marked and coarse', M.gibApprox(78.24 * GIB), '~78 GiB');
+ck('approx GiB handles null',               M.gibApprox(null), '—');
+p = build();
+M.updateProj(p, { pct: 42, verdict: 'good', ratio_pct: 40.0,
+                  projected_bytes: 33.5 * GIB, source_bytes: 83.8 * GIB,
+                  crop_factor: 1.0, shrink_pct: 60.0 });
+ckHas('saving is marked approximate', p.detail.textContent, '~50 GiB freed when it finishes');
+ck('size keeps full precision',       p.size.textContent, '33.50 GiB');
+ck('marker is placed',                p.mark.style.left, '40%');
+
+// --- polarity: both percentages present so the tables cannot contradict ---
+ckHas('caption says which way the percent runs', p.srcCap.textContent, 'kept, of');
+ckHas('shrink is stated beside it', p.detail.textContent, '60.0% smaller');
+
+// --- unit casing survives (the caption is the one carrying GiB) ----------
+ckHas('source caption keeps GiB casing', p.srcCap.textContent, 'GiB');
+ckNot('never GIB', p.srcCap.textContent, 'GIB');
+
+// --- too-early and unknown-source states ---------------------------------
+p = build();
+M.updateProj(p, { pct: 3.57, verdict: 'unknown', ratio_pct: null,
+                  projected_bytes: null, source_bytes: 75785844608, crop_factor: 1.347 });
+ck('too early shows no size',    p.size.textContent, '—');
 ck('too early hides the marker', p.mark.hidden, true);
-ckHas('too early explains why',  p.note.textContent, 'opens at 5%');
+ckHas('too early explains why',  p.detail.textContent, 'opens at 5%');
+ck('too early has no lead',      p.lead.textContent, '');
 
-// a real mid-band encode
 p = build();
-M.updateProj(p, { pct: 42, ratio_pct: 40.0, projected_bytes: 33.5 * GIB,
-                  source_bytes: 83.8 * GIB, crop_factor: 1.0, norm_ratio_pct: 40.0 });
-ck('on-target size',    p.size.textContent, '33.50 GiB');
-ck('on-target ratio',   p.ratio.textContent, '40.0%');
-ck('on-target class',   p.ratioWrap.className, 'proj-ratio on');
-ck('marker is placed',  p.mark.style.left, '40%');
-ckHas('note names the band', p.note.textContent, 'IN THE 30-80% TARGET BAND');
-ckHas('note states what it frees', p.note.textContent, 'frees');
+M.updateProj(p, { pct: 60, verdict: 'unknown', ratio_pct: null,
+                  projected_bytes: 22 * GIB, source_bytes: null, crop_factor: 1.0 });
+ck('unknown source is said, not guessed', p.srcCap.textContent, 'source size unknown');
+ckHas('a known size is not called "no projection"',
+      p.detail.textContent, 'percentage cannot be computed');
+ckHas('aria agrees with the visible text',
+      p.scale.attrs['aria-label'], 'ratio to the source cannot be computed');
 
-// crop-adjusted: the raw ratio understates how hard the encoder is working,
-// so the per-retained-pixel figure has to be shown beside it.
+// --- a blowup is not quietly clamped out of view -------------------------
 p = build();
-M.updateProj(p, { pct: 50, ratio_pct: 24.3, projected_bytes: 18.4 * GIB,
-                  source_bytes: 75.8 * GIB, crop_factor: 1.347, norm_ratio_pct: 32.7 });
-ckHas('crop-adjusted figure is shown', p.note.textContent, '32.7% per retained pixel');
-ck('band uses the RAW ratio, not the adjusted one', p.mark.className, 'proj-mark under');
-
-// a blowup must not be quietly clamped out of view
-p = build();
-M.updateProj(p, { pct: 30, ratio_pct: 137.0, projected_bytes: 96 * GIB,
-                  source_bytes: 70 * GIB, crop_factor: 1.0 });
+M.updateProj(p, { pct: 30, verdict: 'blowup', ratio_pct: 137.0,
+                  projected_bytes: 96 * GIB, source_bytes: 70 * GIB, crop_factor: 1.0 });
 ck('over-100 marker clamps to the track end', p.mark.style.left, '100%');
 ck('over-100 is flagged bad', p.ratioWrap.className, 'proj-ratio bad');
-ckHas('over-100 says larger', p.note.textContent, 'LARGER THAN THE SOURCE');
-
-// missing source size: never back-solve it
-p = build();
-M.updateProj(p, { pct: 60, ratio_pct: null, projected_bytes: 22 * GIB,
-                  source_bytes: null, crop_factor: 1.0 });
-ck('unknown source is said, not guessed', p.srcCap.textContent, 'source size unknown');
-ck('unknown source yields no ratio', p.ratio.textContent, '—');
+ckHas('over-100 says larger', p.lead.textContent, 'LARGER THAN THE SOURCE');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

@@ -1312,8 +1312,9 @@ _PAGE = r"""<!doctype html>
      status-dot halo. Tokens in BOTH themes, like every other colour. */
   --sheen:rgba(255,255,255,.30); --tip:#ffe2c4; --glow:rgba(255,122,47,.40);
   --halo-good:rgba(61,220,151,.15); --halo-good-2:rgba(61,220,151,.04);
-  /* Size-projection band: the 30-80% target zone and its edges. */
-  --band:rgba(61,220,151,.13); --band-bd:rgba(61,220,151,.34);
+  /* Size-projection band. Ticks only, never a fill -- a filled zone on a
+     pill-shaped track reads as a value. 4.52:1 on --bar-bg (WCAG 1.4.11). */
+  --band-bd:#459473;
 }
 :root[data-theme="light"]{
   color-scheme:light;
@@ -1334,7 +1335,7 @@ _PAGE = r"""<!doctype html>
   --thumb:#c8cfda; --thumb-hover:#a8b2c1;
   --sheen:rgba(255,255,255,.60); --tip:#ffd9ae; --glow:rgba(194,84,15,.30);
   --halo-good:rgba(15,122,85,.18); --halo-good-2:rgba(15,122,85,.05);
-  --band:rgba(15,122,85,.11); --band-bd:rgba(15,122,85,.30);
+  --band-bd:#2f7357;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{-webkit-text-size-adjust:100%}
@@ -1441,6 +1442,9 @@ body:not(.booted) #liveWrap .card{animation-delay:.12s}
 .proj-head{display:flex;justify-content:space-between;align-items:baseline;gap:16px;flex-wrap:wrap}
 .proj-head span{display:block;font-size:11px;color:var(--ink-3);
       text-transform:uppercase;letter-spacing:.06em;margin-top:3px}
+/* Units survive CSS. uppercase renders GiB as GIB -- the same defect that once
+   turned Mb/s into MB/S on this page, one line under a correctly-cased GiB. */
+.proj-ratio span{text-transform:none;letter-spacing:0}
 .proj-size b,.proj-ratio b{font-size:22px;font-weight:680;letter-spacing:-.02em;line-height:1}
 .proj-ratio{text-align:right;margin-left:auto}
 .proj-ratio b{color:var(--ink-2)}
@@ -1448,8 +1452,13 @@ body:not(.booted) #liveWrap .card{animation-delay:.12s}
 .proj-ratio.over b{color:var(--warn)} .proj-ratio.bad b{color:var(--bad)}
 .proj-scale{position:relative;height:12px;margin:14px 0 6px;border-radius:99px;
       background:var(--bar-bg);box-shadow:inset 0 1px 2px var(--bar-inset)}
-.proj-zone{position:absolute;top:0;bottom:0;left:30%;width:50%;background:var(--band);
-      border-left:1px solid var(--band-bd);border-right:1px solid var(--band-bd)}
+/* Ticks and a hairline, NOT a fill. This track sits 40px under the progress
+   bar, which is the same shape and where filled MEANS value -- a shaded zone
+   here read as "we are about halfway", especially before a marker exists. */
+.proj-zone{position:absolute;top:-4px;bottom:-4px;left:30%;width:50%;
+      border-left:2px solid var(--band-bd);border-right:2px solid var(--band-bd)}
+.proj-zone::after{content:"";position:absolute;left:0;right:0;top:50%;
+      height:1px;background:var(--band-bd)}
 .proj-mark{position:absolute;top:-4px;bottom:-4px;width:3px;border-radius:2px;
       transform:translateX(-50%);background:var(--ink);
       transition:left .9s cubic-bezier(.4,0,.2,1)}
@@ -1457,7 +1466,14 @@ body:not(.booted) #liveWrap .card{animation-delay:.12s}
 .proj-mark.over{background:var(--warn)} .proj-mark.bad{background:var(--bad)}
 .proj-legend{display:flex;justify-content:space-between;gap:8px;font-size:10.5px;
       color:var(--ink-3);text-transform:uppercase;letter-spacing:.06em}
-.proj-note{margin-top:9px;font-size:12.5px;color:var(--ink-2);max-width:70ch}
+.proj-lead{margin-top:10px;font-size:12.5px;font-weight:600;letter-spacing:.03em;
+      color:var(--ink-2);max-width:70ch}
+.proj-lead.on{color:var(--good)} .proj-lead.warn{color:var(--warn)}
+.proj-lead.bad{color:var(--bad)}
+.proj-detail{margin-top:4px;font-size:12px;color:var(--ink-3);max-width:70ch}
+/* A downscale makes the ratio meaningless -- the pixel count changed, so the
+   bytes are not comparable. Grey the figures rather than colour them. */
+.proj-ratio.lost b,.proj.lost .proj-size b{color:var(--ink-3)}
 .kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px 18px;margin-top:12px}
 .kv div span{display:block;font-size:11px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.06em}
 .kv div b{font-weight:580;font-size:14px}
@@ -1871,29 +1887,53 @@ function liveFields(e){
   return [["ETA", dur(e.eta_s)],
     ["Speed", e.avg_fps==null?"—":e.avg_fps.toFixed(1)+" fps avg"],
     ["Written", gib(e.output_bytes)],
-    ["Source", gib(e.source_bytes)],
     ["Started", e.started_text||"—"],
     ["PID", String(e.pid)]];
 }
 
-/* Which side of the 30-80% target band a projection falls on. The band is the
-   user's target, NOT a defect threshold, and the wording has to keep those
-   apart: 5 of the first 12 completed encodes landed under 30% and every one of
-   them was a good encode on a clean digital source. So "below target band" is
-   informational (--cool), and only the physically implausible floor and the
-   not-worth-doing ceiling are warnings. */
-function projBand(r){
-  if(r==null)  return {cls:"",      label:""};
-  if(r>=100)   return {cls:"bad",   label:"LARGER THAN THE SOURCE"};
-  if(r>=85)    return {cls:"bad",   label:"BARELY SMALLER THAN THE SOURCE"};
-  if(r>80)     return {cls:"over",  label:"ABOVE THE 30-80% TARGET BAND"};
-  if(r>=30)    return {cls:"on",    label:"IN THE 30-80% TARGET BAND"};
-  if(r>=12)    return {cls:"under", label:"BELOW THE TARGET BAND — normal for a clean source"};
-  return {cls:"bad", label:"IMPLAUSIBLY SMALL FOR 4K AT THIS CRF"};
+/* The strip's colour and headline come from `e.verdict` -- the SAME verdict
+   `core._verdict()` computed and the pipeline acts on. An earlier version
+   classified the ratio again here, in the browser, against its own copy of the
+   thresholds. It disagreed with the server in three ranges, and two of those
+   were dangerous:
+     - a `downscale` (output frame narrower than source, the ONE state where the
+       original must survive) scored 45% and rendered GREEN, "IN THE TARGET
+       BAND", "frees 39 GiB" -- while the real warning sat below in grey prose.
+     - Flight (2012) at 9.4% rendered RED "IMPLAUSIBLY SMALL". That encode is in
+       the ledger with a recorded SSIM of 0.9931/0.9945 against the cropped
+       original. The abort button is a hover away on that row.
+   One threshold table, one verdict, one colour. Do not reintroduce a second.
+
+   The 30-80% band is the user's TARGET, so it stays -- but as an uncoloured
+   position on the scale and a plain sentence, never as a severity. */
+var PROJ_CLASS={good:"on", thin:"warn", suspect:"warn",
+                "no-saving":"bad", blowup:"bad", downscale:"bad", unknown:""};
+var PROJ_LEAD={
+  good:"SOLID REDUCTION",
+  thin:"THIN SAVING — worth a human call",
+  suspect:"UNUSUAL FOR THIS JOB — verify the picture before deleting the original",
+  "no-saving":"BARELY SMALLER THAN THE SOURCE",
+  blowup:"LARGER THAN THE SOURCE",
+  downscale:"RESOLUTION LOST — DO NOT DELETE THE ORIGINAL",
+  unknown:""};
+
+/* Where the ratio sits against the user's target. Plain words, no severity:
+   4 of the first 12 completed encodes landed under 30% and every one was a
+   good encode, so "below" must never read as "broken". */
+function bandText(r){
+  if(r==null) return "";
+  if(r>80)   return "above the 30–80% target band";
+  if(r>=30)  return "in the 30–80% target band";
+  return "below the 30–80% target band — normal for a clean digital source";
 }
 
+/* Estimates are marked. The stat cards and the History table already prefix
+   "~" on anything derived; this is a linear extrapolation off a part-finished
+   encode, so it gets the tilde and whole GiB rather than two decimals. */
+function gibApprox(b){ return b==null ? "—" : "~"+Math.round(b/GIB)+" GiB"; }
+
 function projBlock(){
-  var refs={}, n=el("div","proj");
+  var refs={}, n=el("div","proj"); refs.root=n;
   var head=el("div","proj-head");
   var lhs=el("div","proj-size");
   refs.size=el("b",null,"—"); lhs.appendChild(refs.size);
@@ -1911,42 +1951,65 @@ function projBlock(){
   n.appendChild(refs.scale);
 
   var lg=el("div","proj-legend");
-  lg.appendChild(el("span",null,"0"));
+  lg.appendChild(el("span",null,"0% = nothing kept"));
   lg.appendChild(el("span",null,"target 30–80%"));
   lg.appendChild(el("span",null,"100% = source"));
   n.appendChild(lg);
-  refs.note=el("div","proj-note",""); n.appendChild(refs.note);
+  refs.lead=el("div","proj-lead",""); n.appendChild(refs.lead);
+  refs.detail=el("div","proj-detail",""); n.appendChild(refs.detail);
   return {node:n, refs:refs};
 }
 
 function updateProj(p, e){
-  var r=e.ratio_pct, b=projBand(r);
+  var r=e.ratio_pct, v=e.verdict||"unknown";
+  var cls=PROJ_CLASS[v]==null ? "" : PROJ_CLASS[v];
+  var lost=(v==="downscale");
   p.size.textContent=gib(e.projected_bytes);
   p.ratio.textContent=pct(r);
-  p.ratioWrap.className="proj-ratio "+b.cls;
+  p.root.className=lost ? "proj lost" : "proj";
+  p.ratioWrap.className="proj-ratio "+(lost ? "lost" : cls);
   p.srcCap.textContent=e.source_bytes==null
-    ? "source size unknown" : "of "+gib(e.source_bytes)+" source";
+    ? "source size unknown" : "kept, of "+gib(e.source_bytes)+" source";
+  p.lead.className="proj-lead "+cls;
+  p.lead.textContent=PROJ_LEAD[v]||"";
+
   if(r==null){
     p.mark.hidden=true;
     /* Never fill the gap with a guess. Below 5% the projection is dominated by
-       studio logos and black frames, which encode to almost nothing. */
-    p.note.textContent=(e.pct!=null && e.pct<5)
-      ? "Estimate opens at 5% — logos and black frames flatter it before that."
-      : "No projection yet.";
-    p.scale.setAttribute("aria-label","Projected size not available yet");
+       studio logos and black frames, which encode to almost nothing. Say which
+       of the two gaps this is -- a size with no ratio is not "no projection". */
+    p.detail.textContent = e.projected_bytes!=null
+      ? "Source size unknown, so the percentage cannot be computed."
+      : (e.pct!=null && e.pct<5
+          ? "Estimate opens at 5% — logos and black frames flatter it before that."
+          : "No projection yet.");
+    p.scale.setAttribute("aria-label", e.projected_bytes!=null
+      ? "Projected size known, but the ratio to the source cannot be computed"
+      : "Projected size not available yet");
     return;
   }
   p.mark.hidden=false;
   p.mark.style.left=Math.max(0,Math.min(100,r))+"%";
-  p.mark.className="proj-mark "+b.cls;
-  var note=b.label;
-  if(e.crop_factor>1.01 && e.norm_ratio_pct!=null)
-    note+=" · "+pct(e.norm_ratio_pct)+" per retained pixel after auto-crop";
-  if(e.source_bytes!=null && e.projected_bytes!=null)
-    note+=" · frees "+gib(e.source_bytes-e.projected_bytes);
-  p.note.textContent=note;
-  p.scale.setAttribute("aria-label",
-    "Projected output is "+pct(r)+" of the source. Target band is 30 to 80 percent.");
+  p.mark.className="proj-mark "+(lost ? "bad" : cls);
+
+  var bits=[];
+  /* A downscale changed the pixel count, so output/source bytes are not
+     comparable -- offering a band position for it would dress up a number
+     that means nothing. */
+  if(lost){
+    bits.push("frame is narrower than the source; the size ratio is not comparable");
+  }else{
+    bits.push(bandText(r));
+    if(e.shrink_pct!=null) bits.push(pct(e.shrink_pct)+" smaller");
+    if(e.crop_factor>1.01 && e.norm_ratio_pct!=null)
+      bits.push(pct(e.norm_ratio_pct)+" per retained pixel after auto-crop");
+    if(e.source_bytes!=null && e.projected_bytes!=null)
+      bits.push(gibApprox(e.source_bytes-e.projected_bytes)+" freed when it finishes");
+  }
+  p.detail.textContent=bits.join(". ")+".";
+  p.scale.setAttribute("aria-label", lost
+    ? "Resolution was lost; the size ratio is not comparable"
+    : "Projected output keeps "+pct(r)+" of the source. Target band is 30 to 80 percent.");
 }
 
 /* The live card updates IN PLACE. Rebuilding it on every SSE frame silently
@@ -2005,7 +2068,8 @@ function renderLive(live, s){
     });
     refs.verdict.textContent=e.verdict_note;
     refs.verdict.className=
-      (e.verdict==="suspect"||e.verdict==="blowup"||e.verdict==="no-saving")
+      (e.verdict==="suspect"||e.verdict==="blowup"||e.verdict==="no-saving"
+       ||e.verdict==="downscale")
         ? "verdict loud" : "verdict";
   });
 }

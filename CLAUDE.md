@@ -309,26 +309,59 @@ anchors above rather than trusting the table after a few changes.
 
 The live card carries a `.proj` block: projected final size, that size as a
 percentage of the source, and a 0–100%-of-source scale with the **30–80%
-target band** shaded and a marker where this encode is heading. `projBand()`
-classifies the ratio, `projBlock()` builds the DOM once, `updateProj()` writes
-into it in place with the rest of the live card.
+target band** ticked and a marker where this encode is heading. `projBlock()`
+builds the DOM once, `updateProj()` writes into it in place with the rest of
+the live card.
 
-**The 30% floor is a target, not a defect threshold, and the wording must keep
-those apart.** 5 of the first 12 completed encodes landed under 30% and every
-one was a good encode — Flight at 9.4% carries a recorded SSIM of 0.9931/0.9945
-against the cropped original. The split is by *source type*, not by defect:
-grain-heavy 1989–2003 film lands 33–71%, clean digital and animated sources
-land 9–25%. So below-band renders in `--cool` and says "normal for a clean
-source"; only the implausible floor and the not-worth-doing ceiling render as
-warnings. A tired reader must never mistake "below target" for "broken" and
-kill a good encode.
+**Colour and headline come from `e.verdict` — the server's verdict, the same
+one the pipeline acts on. Never re-derive it in the browser.** The first
+version did exactly that, with its own copy of the thresholds, and disagreed
+with `core._verdict()` in three ranges. Two were dangerous:
 
-The band is judged on `ratio_pct` (raw bytes — what actually fills the drive);
-`norm_ratio_pct` is cited beside it whenever `crop_factor > 1.01`, because that
-is what explains a low number. Below 5% progress the server sends `null` and
-the strip says the estimate opens at 5% — it never substitutes a guess.
-`Projected` and `Of source` were removed from the `.kv` grid when this landed:
-one number, one place, one precision.
+- A `downscale` — output frame narrower than source, the ONE state where the
+  original must survive — scored 45%, landed mid-band, and rendered GREEN with
+  "IN THE TARGET BAND · frees 39 GiB", while the real warning sat below it in
+  grey prose. `renderLive`'s loud-class test had also omitted `downscale`, so
+  the only true warning on the card rendered unstyled. Both fixed.
+- Flight (2012) at 9.4% rendered RED "IMPLAUSIBLY SMALL". That row is in the
+  ledger with a recorded SSIM of 0.9931/0.9945 against the cropped original.
+  The abort button is one hover away on that row.
+
+One threshold table, one verdict, one colour. `PROJ_CLASS` maps every code
+`core._verdict()` can return (`good` `thin` `suspect` `no-saving` `blowup`
+`downscale` `unknown`); a code missing from it renders unstyled, so the test
+suite asserts the map is total.
+
+**The 30–80% band is the user's target, not a defect threshold**, so it renders
+as an uncoloured position on the scale and a plain sentence — never a severity.
+4 of the first 12 completed encodes landed under 30% and every one was good;
+the split is by *source type*, not defect: grain-heavy 1989–2003 film lands
+33–71%, clean digital and animated sources land 9–25%. Kubo (2016 stop-motion)
+projected 23.7% and the server called it `good`. Below-band therefore reads
+"normal for a clean digital source".
+
+Other rules the strip has to keep:
+
+- The band ticks are an **outline, never a fill**. A filled zone on a pill
+  track 40px under the progress bar — where filled *means* value — read as
+  "we're about halfway", especially before a marker exists.
+- Judged on `ratio_pct` (raw bytes, what fills the drive). `norm_ratio_pct` is
+  cited beside it when `crop_factor > 1.01`, because that is what explains a
+  low number. A `downscale` gets no band position at all: the pixel count
+  changed, so the byte ratio is not comparable.
+- Both polarities are shown — `23.7% kept, of source` and `76.3% smaller` —
+  because the History tab and `smeltr report` both column on SHRINK, and the
+  strip's headline is the complement.
+- Estimates carry `~` and whole GiB (`gibApprox`), matching the stat cards and
+  the History table. The projected *size* keeps two decimals; the extrapolated
+  *saving* does not.
+- `.proj-ratio span{text-transform:none}` — the caption carries GiB, and the
+  surrounding uppercase rendered it GIB, one line under a correct one.
+- Under 5% progress the server sends `null` and the strip says the estimate
+  opens at 5%. A known size with an unknown source size is a *different* gap
+  and says so; the `aria-label` must agree with the visible text.
+- `Projected`, `Of source` and `Source` were removed from the `.kv` grid when
+  this landed: one number, one place, one precision.
 
 Network scope (`server.py` config block, top of file):
 
