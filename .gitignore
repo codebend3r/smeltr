@@ -10,3 +10,8 @@ __pycache__/
 node_modules/
 queue_overrides.json
 pause
+
+# Git worktrees checked out inside the repo. Never committable: each is a full
+# second copy of the tree AND carries its own runtime `token` file, so staging
+# one would commit the live auth token the ignores above exist to keep out.
+.claude/worktrees/
