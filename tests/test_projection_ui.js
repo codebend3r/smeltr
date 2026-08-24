@@ -219,5 +219,19 @@ ck('open is the default', p.root.classList.contains('closed'), false);
 ['suspect', 'blowup', 'no-saving', 'downscale'].forEach(v =>
   ck('"' + v + '" is a loud verdict', !!M.PROJ_LOUD[v], true));
 
+// --- one loud set, everywhere --------------------------------------------
+// The verdict line in renderLive once carried its own inline copy of the
+// warning list and omitted "downscale" -- the only true warning on the card
+// rendered unstyled. Styling must come from PROJ_LOUD, never a re-listed
+// chain of codes that can drift from it: no verdict code may appear as a
+// quoted literal in renderLive at all, whatever the spelling around it.
+const renderLiveSrc = fn('renderLive');
+ck('renderLive styles the verdict from PROJ_LOUD',
+   renderLiveSrc.includes('PROJ_LOUD[e.verdict]'), true);
+Object.keys(M.PROJ_LOUD).forEach(v =>
+  ck('renderLive does not re-list "' + v + '"',
+     renderLiveSrc.includes('"' + v + '"') ||
+     renderLiveSrc.includes("'" + v + "'"), false));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
