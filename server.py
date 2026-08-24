@@ -455,6 +455,22 @@ def build_state() -> dict:
         q = [dict(r, src_dir=sd.get(r["title"].lower()),
                   **_arr_fields(arr.get(r["title"].lower()))) for r in q]
         _mark_ready(q, live)
+        # Pending dashboard pulls, annotated onto the rows they belong to. The
+        # rows are already private copies (see above), so this is safe.
+        with _stage_lock:
+            pending = list(_stage_queue)
+            staging_now = _stage_active["title"]
+            waiting = _stage_wait["why"]
+        at = {t.lower(): i + 1 for i, t in enumerate(pending)}
+        for r in q:
+            n = at.get(r["title"].lower())
+            if n is None:
+                continue
+            r["stage_queued"] = n
+            # Only the head can be the one being held up; saying it on every
+            # queued row would read as five separate problems.
+            if n == 1 and waiting:
+                r["stage_wait"] = waiting
         # Snapshot the note under the lock: a torn read could pair a failure
         # message with the previous note's "ok" kind.
         with _state_lock:
@@ -467,6 +483,8 @@ def build_state() -> dict:
             "transfers": _transfers(),
             "encode_note": note,
             "crf_choices": list(CRF_CHOICES),
+            "stage_queue": pending,
+            "stage_active": staging_now,
             "can_start": not live and not _driver_pids(),
             "paused": core.paused(),
             # The paused card asserts what the driver will do; it may only
@@ -723,6 +741,238 @@ def _abort_worker(pid: int, title: str, out) -> None:
 _stage_lock = threading.Lock()
 # One dashboard-initiated pull at a time; the title travelling right now.
 _stage_active: dict = {"title": None}
+# Titles waiting their turn on the wire, in click order. IN MEMORY ONLY: a
+# server restart drops the list and the rows simply offer "stage" again,
+# which is the honest failure. A persisted plan would outlive the code change
+# that prompted the restart and could dispatch against stale assumptions.
+_stage_queue: list = []
+# Why the head of the queue is not moving, in the row's own words, or None.
+# Set by the pump, rendered on the queued row -- a queue that silently sits
+# still is indistinguishable from one that is broken.
+_stage_wait: dict = {"why": None}
+_stage_pump: dict = {"on": False}
+# The pump only pgreps and statvfs's; it is cheap enough to tick often and
+# slow enough not to matter beside a multi-GiB transfer.
+STAGE_PUMP_SECONDS = 20.0
+
+
+def _drop_state_cache() -> None:
+    with _state_lock:
+        _state_cache["payload"] = None
+
+
+def _wire_busy_locked():
+    """Reason a pull cannot start RIGHT NOW, or None. Caller holds the lock.
+
+    All three conditions are transient by nature, so the queue holds against
+    them rather than dropping work. Liveness is pgrep, not the lock file: the
+    documented pause procedure kills orphans with -9 and leaves mkdir locks
+    behind, and a lock with no process starves the replenisher too -- so that
+    case is called out by name with the command to fix it.
+    """
+    if _stage_active["title"]:
+        return "waiting — %s is on the wire" % _stage_active["title"]
+    if _pgrep(r"ssh-xfer\.sh pull"):
+        return "waiting — another pull owns the wire"
+    if os.path.isdir(os.path.join(core.X9, ".replenish.lock")):
+        if _pgrep(r"replenish-queue\.sh"):
+            return "waiting — the replenisher is staging"
+        return "waiting — a STALE .replenish.lock is blocking the replenisher"
+    return None
+
+
+def _stage_candidate(title: str, rows: list):
+    """Resolve a title to (row, src, size). Returns (row, src, size, err, hold).
+
+    `hold` distinguishes "not yet" from "never": a hold keeps the title in the
+    queue and retries, an err without hold drops it. Used by BOTH the enqueue
+    POST and the pump, so a click is refused for the same reasons a dispatch
+    is -- one implementation, no drift between the two moments.
+    """
+    matches = [r for r in rows if r["title"].lower() == title.lower()]
+    if not matches:
+        return None, None, None, "it is no longer in the queue", False
+    if len(matches) > 1:
+        return None, None, None, ("two queue rows share this folder name; "
+                                  "refusing to act on both"), False
+    row = matches[0]
+    if row.get("skipped"):
+        return None, None, None, "it is skipped — restore it first", False
+    # Arriving before staged: "already there" is the wrong message for a file
+    # that is mostly missing.
+    if row.get("arriving_bytes") is not None:
+        pct = (" (%.0f%% pulled)"
+               % (row["arriving_bytes"] / row["bytes"] * 100)
+               if row.get("bytes") else "")
+        return None, None, None, ("it is already being copied to the staging "
+                                  "drive%s" % pct), False
+    if row.get("staged"):
+        return None, None, None, "it is already on the staging drive", False
+    srcs = set()
+    for rec in core.load_index():
+        p = rec.get("path", "")
+        if not p or "2160p hevc" in os.path.basename(p).lower():
+            continue
+        if os.path.basename(os.path.dirname(p)).lower() == row["title"].lower():
+            srcs.add(p)
+    if not srcs:
+        return None, None, None, "its file is not in the bitrate index", False
+    if len(srcs) > 1:
+        return None, None, None, ("the index lists more than one source file "
+                                  "for this title; refusing to pick one"), False
+    src = srcs.pop()
+    # An unreachable NAS is a HOLD, not a drop: the share remounts, and a
+    # queue that empties itself during a blip is worse than one that waits.
+    if not os.path.isfile(src):
+        return None, None, None, "waiting — the library file is unreachable", True
+    try:
+        size = os.path.getsize(src)
+    except OSError as e:
+        return None, None, None, "waiting — cannot stat the library file (%s)" % e, True
+    return row, src, size, None, False
+
+
+def _space_hold(size: int, rows: list):
+    """Free-space gate, same margin as .replenish-queue.sh, or None.
+
+    The message deliberately carries NO volatile number: `need` is stable for
+    a given title, but free space moves every second as the encode writes, and
+    a reason string that changes every frame would rebuild the table on every
+    frame. The measured figure goes to the banner note instead, once.
+    """
+    try:
+        st = os.statvfs(core.X9)
+        avail = st.f_bavail * st.f_frsize
+    except OSError:
+        return "waiting — cannot read free space on the staging drive", None
+    # PLUS the bytes other in-flight pulls have promised but not yet written:
+    # statvfs only counts what has already landed.
+    inbound = sum(max(0, (r.get("bytes") or 0) - r["arriving_bytes"])
+                  for r in rows if r.get("arriving_bytes") is not None)
+    need = size + inbound + 10 * 1024 ** 3
+    if avail < need:
+        return ("waiting for room — needs %.0f GiB free"
+                % (need / 1073741824.0)), avail
+    return None, avail
+
+
+def _begin_pull_locked(row: dict, src: str, size: int):
+    """Create the hidden folder and start the worker. Caller holds the lock."""
+    # The pull lands HIDDEN (dot-prefixed, so invisible to next_title.py,
+    # core.staged_folders(), and the replenisher's find) and is renamed into
+    # place only once the byte count checks out. A visible folder with no
+    # source file HALTS the driver.
+    hidden = os.path.join(core.X9, ".pull-" + row["title"])
+    try:
+        os.makedirs(hidden, exist_ok=True)
+    except OSError as e:
+        return "could not create the pull folder: %s" % e
+    _stage_active["title"] = row["title"]
+    try:
+        threading.Thread(target=_stage_worker,
+                         args=(row["title"], src, hidden),
+                         daemon=True).start()
+    except RuntimeError as e:
+        _stage_active["title"] = None
+        shutil.rmtree(hidden, ignore_errors=True)
+        return "could not start the pull thread: %s" % e
+    _set_note("Staging %s — pulling %.2f GiB from the library over SSH."
+              % (row["title"], size / 1073741824.0), kind="ok")
+    return None
+
+
+def _pump_once_locked(rows: list) -> None:
+    """Try to start the head of the queue. Caller holds _stage_lock.
+
+    `rows` is a queue snapshot the CALLER built outside the lock -- build_state
+    takes _stage_lock itself to report the queue, so building it in here would
+    deadlock the dispatcher against the page.
+
+    EVERY gate is re-applied here, at dispatch, because a check made when the
+    button was clicked can be hours stale by the time the wire frees up --
+    the replenisher may have staged the title meanwhile, the drive may have
+    filled, the NAS may have gone. A transient refusal holds the head and
+    says so on the row; a permanent one drops that ONE title and moves on, so
+    a single dead title cannot wedge the whole queue.
+    """
+    def hold(why):
+        if _stage_wait["why"] != why:
+            _stage_wait["why"] = why
+        return
+
+    def drop(title, why, kind):
+        _stage_queue.pop(0)
+        _stage_wait["why"] = None
+        _set_note("Dropped the queued pull of %s — %s." % (title, why),
+                  kind=kind)
+
+    title = _stage_queue[0]
+    busy = _wire_busy_locked()
+    if busy:
+        return hold(busy)
+    row, src, size, err, held = _stage_candidate(title, rows)
+    if err:
+        if held:
+            return hold(err)
+        # "already staged" is a success, not a failure: the replenisher got
+        # there first and the title is exactly where the click wanted it.
+        done = "already on the staging drive" in err or "already being copied" in err
+        return drop(title, err, "ok" if done else "bad")
+    why, avail = _space_hold(size, rows)
+    if why:
+        if _stage_wait["why"] != why and avail is not None:
+            _set_note("Pull queue is waiting for room on the staging drive: "
+                      "%s needs %.0f GiB free, %.0f GiB available."
+                      % (title, (size + 10 * 1024 ** 3) / 1073741824.0,
+                         avail / 1073741824.0), kind="warn")
+        return hold(why)
+    err = _begin_pull_locked(row, src, size)
+    if err:
+        return drop(title, err, "bad")
+    _stage_queue.pop(0)
+    _stage_wait["why"] = None
+
+
+def _stage_pump_loop() -> None:
+    """One dispatcher for the whole queue; exits when the queue drains."""
+    try:
+        while True:
+            with _stage_lock:
+                if not _stage_queue:
+                    _stage_wait["why"] = None
+                    return
+                idle = _stage_active["title"] is None
+            # OUTSIDE the lock: build_state() takes _stage_lock to report the
+            # queue, so holding it here would deadlock the pump against every
+            # open page. A slightly stale snapshot is fine -- it only chooses
+            # whether to try; _begin_pull_locked is what commits.
+            rows = build_state()["queue"] if idle else []
+            with _stage_lock:
+                before = (_stage_wait["why"], len(_stage_queue),
+                          _stage_active["title"])
+                if idle and _stage_queue and _stage_active["title"] is None:
+                    _pump_once_locked(rows)
+                changed = before != (_stage_wait["why"], len(_stage_queue),
+                                     _stage_active["title"])
+            if changed:
+                _drop_state_cache()
+            time.sleep(STAGE_PUMP_SECONDS)
+    finally:
+        with _stage_lock:
+            _stage_pump["on"] = False
+        _drop_state_cache()
+
+
+def _ensure_pump_locked() -> None:
+    """Start the dispatcher if it is not already running. Caller holds lock."""
+    if _stage_pump["on"]:
+        return
+    _stage_pump["on"] = True
+    try:
+        threading.Thread(target=_stage_pump_loop, daemon=True).start()
+    except RuntimeError:
+        _stage_pump["on"] = False
+        raise
 
 
 def _stage_worker(title: str, src: str, hidden: str) -> None:
@@ -965,6 +1215,8 @@ class Handler(BaseHTTPRequestHandler):
                 err = self._apply_encode_abort(body)
             elif parsed.path == "/api/stage/start":
                 err = self._apply_stage_start(body)
+            elif parsed.path == "/api/stage/cancel":
+                err = self._apply_stage_cancel(body)
             elif parsed.path == "/api/pause":
                 err = self._apply_pause(body)
             else:
@@ -1072,110 +1324,70 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def _apply_stage_start(self, body: dict):
+        """Enqueue a pull. The wire being busy means QUEUED, not refused.
+
+        Everything that can be decided at click time still is, so a bad click
+        gets an immediate 4xx instead of a silent drop twenty minutes later.
+        What is NOT decided here is anything that can change while the title
+        waits -- free space, the replenisher, the wire -- because a check made
+        now is worthless by the time this title's turn arrives. The pump
+        re-runs all of them at dispatch.
+        """
         title = body.get("title")
         if not isinstance(title, str):
             return "expected {title: str}"
         if not os.path.isdir(core.X9):
             return "the staging drive is not mounted"
+        rows = self._queue_rows()
         with _stage_lock:
-            if _stage_active["title"]:
-                return ("already pulling %s — one pull at a time"
-                        % _stage_active["title"])
-            # A pull orphaned by a server restart still owns the wire and the
-            # free space; the in-process flag cannot see it, pgrep can.
-            if _pgrep(r"ssh-xfer\.sh pull"):
-                return ("a pull is already running (it survived a server "
-                        "restart) — one at a time")
-            # The replenisher rebuilds its pick list from a live listdir; two
-            # pullers choosing at the same moment could pick the same title.
-            # Liveness by pgrep, not the lock alone: the pause procedure kills
-            # orphans with -9 and leaves mkdir locks behind.
-            if os.path.isdir(os.path.join(core.X9, ".replenish.lock")):
-                if _pgrep(r"replenish-queue\.sh"):
-                    return ("the replenisher is running — it may be staging "
-                            "this title already; try again in a minute")
-                return ("a STALE .replenish.lock is on the staging drive (no "
-                        "replenisher is running) — it blocks the replenisher "
-                        "too; remove it by hand: rmdir '%s'"
-                        % os.path.join(core.X9, ".replenish.lock"))
-            rows = self._queue_rows()
-            matches = [r for r in rows
-                       if r["title"].lower() == title.lower()]
-            if not matches:
-                return "title is not in the queue"
-            if len(matches) > 1:
-                return ("two queue rows share this folder name; refusing to "
-                        "act on both")
-            row = matches[0]
-            if row.get("skipped"):
-                return "this title is skipped — restore it first"
-            # Arriving before staged: "already there" is the wrong message
-            # for a file that is mostly missing.
-            if row.get("arriving_bytes") is not None:
-                pct = (" (%.0f%% pulled)"
-                       % (row["arriving_bytes"] / row["bytes"] * 100)
-                       if row.get("bytes") else "")
-                return ("this title is already being copied to the staging "
-                        "drive%s" % pct)
-            if row.get("staged"):
-                return "this title is already on the staging drive"
-            srcs = set()
-            for rec in core.load_index():
-                p = rec.get("path", "")
-                if not p or "2160p hevc" in os.path.basename(p).lower():
-                    continue
-                if os.path.basename(os.path.dirname(p)).lower() \
-                        == row["title"].lower():
-                    srcs.add(p)
-            if not srcs:
-                return "this title's file is not in the bitrate index"
-            if len(srcs) > 1:
-                return ("the index lists more than one source file for this "
-                        "title; refusing to pick one")
-            src = srcs.pop()
-            if not os.path.isfile(src):
-                return "the library file is unreachable — is the NAS mounted?"
+            if _stage_active["title"] \
+                    and _stage_active["title"].lower() == title.lower():
+                return "this title is being pulled right now"
+            if any(t.lower() == title.lower() for t in _stage_queue):
+                return ("this title is already in the pull queue at position "
+                        "%d" % (1 + [t.lower() for t in _stage_queue]
+                                .index(title.lower())))
+            row, src, size, err, held = _stage_candidate(title, rows)
+            if err:
+                return err if not held else err.replace("waiting — ", "")
+            _stage_queue.append(row["title"])
+            pos = len(_stage_queue)
             try:
-                size = os.path.getsize(src)
-            except OSError as e:
-                return "cannot stat the library file: %s" % e
-            # Free-space gate, same margin as .replenish-queue.sh (source +
-            # 10 GiB headroom for the encode written alongside), PLUS the
-            # bytes other in-flight pulls have promised but not yet written —
-            # statvfs only counts what has already landed.
-            try:
-                st = os.statvfs(core.X9)
-                avail = st.f_bavail * st.f_frsize
-            except OSError:
-                return "cannot read free space on the staging drive"
-            inbound = sum(max(0, (r.get("bytes") or 0) - r["arriving_bytes"])
-                          for r in rows
-                          if r.get("arriving_bytes") is not None)
-            need = size + inbound + 10 * 1024 ** 3
-            if avail < need:
-                return ("only %.0f GiB free on the staging drive — need "
-                        "%.0f GiB (source + in-flight pulls + 10 GiB margin)"
-                        % (avail / 1073741824.0, need / 1073741824.0))
-            # The pull lands HIDDEN (dot-prefixed, so invisible to
-            # next_title.py, core.staged_folders(), and the replenisher's
-            # find) and is renamed into place only once the byte count checks
-            # out. A visible folder with no source file HALTS the driver.
-            hidden = os.path.join(core.X9, ".pull-" + row["title"])
-            try:
-                os.makedirs(hidden, exist_ok=True)
-            except OSError as e:
-                return "could not create the pull folder: %s" % e
-            _stage_active["title"] = row["title"]
-            try:
-                threading.Thread(target=_stage_worker,
-                                 args=(row["title"], src, hidden),
-                                 daemon=True).start()
+                _ensure_pump_locked()
             except RuntimeError as e:
-                _stage_active["title"] = None
-                shutil.rmtree(hidden, ignore_errors=True)
-                return "could not start the pull thread: %s" % e
-            _set_note("Staging %s — pulling %.2f GiB from the library over "
-                      "SSH." % (row["title"], size / 1073741824.0), kind="ok")
+                _stage_queue.pop()
+                return "could not start the pull dispatcher: %s" % e
+            busy = _wire_busy_locked()
+        if busy or pos > 1:
+            _set_note("Queued %s (%.2f GiB) — position %d. One transfer runs "
+                      "at a time; the rest wait their turn."
+                      % (row["title"], size / 1073741824.0, pos), kind="ok")
+        # Position 1 with a free wire: the pump starts it on its next tick,
+        # and _begin_pull_locked writes the note that says so.
+        return None
+
+    def _apply_stage_cancel(self, body: dict):
+        """Take a PENDING title out of the queue.
+
+        It deliberately cannot touch the pull that is already running: there
+        is no abort path for a transfer, and pretending otherwise would leave
+        a half-written hidden folder that nothing owns.
+        """
+        title = body.get("title")
+        if not isinstance(title, str):
+            return "expected {title: str}"
+        with _stage_lock:
+            if _stage_active["title"] \
+                    and _stage_active["title"].lower() == title.lower():
+                return ("that pull is already running — it finishes or it "
+                        "fails; the dashboard does not abort a transfer")
+            keep = [t for t in _stage_queue if t.lower() != title.lower()]
+            if len(keep) == len(_stage_queue):
+                return "that title is not in the pull queue"
+            _stage_queue[:] = keep
+            if not _stage_queue:
+                _stage_wait["why"] = None
+        _set_note("Removed %s from the pull queue." % title, kind="ok")
         return None
 
     def _apply_pause(self, body: dict):
@@ -1582,6 +1794,10 @@ th.unit{text-transform:none}
 .mark.enc{color:var(--hot-soft);border-color:var(--hot-bd)}
 .mark.pin{color:var(--cool);border-color:var(--cool-bd)}
 .mark.skip{color:var(--ink-2);border-style:dashed}
+/* A pending pull is INTENT, not arrival: dashed, like "skipped", because
+   nothing about the title has changed on disk yet. Solid marks on this page
+   all assert a fact about the file. */
+.mark.queued{color:var(--cool);border-color:var(--cool-bd);border-style:dashed}
 /* Categorical tint per NAS, stable per name. Known roots get fixed hues;
    an unknown volume falls back to a name hash so it still colours stably. */
 .mark.nas-cool{color:var(--cool);border-color:var(--cool-bd)}
@@ -2331,18 +2547,40 @@ function rowActions(r,s){
     acts.appendChild(sel); acts.appendChild(go);
   }
   if(!r.skipped && !r.staged && r.arriving_bytes==null){
-    /* Library-only rows can be pulled onto the staging drive on demand. The
-       armed label states the cost up front — this is a multi-GiB transfer. */
-    var pull=el("button","act","stage");
-    pull.type="button"; pull.dataset.title=r.title;
-    pull.title="Copy this title's file from the library to the staging drive now";
-    pull.addEventListener("click",function(){
-      arm(pull,acts,(r.bytes==null?"pull this title (size unknown) to the X9?"
-                    :"pull "+gib(r.bytes)+" to the X9?"),function(){
-        api("/api/stage/start",{title:r.title});
+    if(r.stage_queued!=null){
+      /* Pending, not moving: nothing has been written yet, so this needs no
+         arming — there is nothing to throw away. */
+      var un=el("button","act","unqueue");
+      un.type="button"; un.dataset.title=r.title;
+      un.title="Take this title out of the pull queue";
+      un.addEventListener("click",function(){
+        un.disabled=true;
+        api("/api/stage/cancel",{title:r.title})
+          .finally(function(){ un.disabled=false; });
       });
-    });
-    acts.appendChild(pull);
+      acts.appendChild(un);
+    }else{
+      /* Library-only rows can be pulled onto the staging drive on demand. The
+         armed label states the cost up front — this is a multi-GiB transfer —
+         and, when the wire is busy, that the click BUYS A PLACE IN LINE
+         rather than starting anything. */
+      var busy=!!(s&&s.stage_busy);
+      var pull=el("button","act",busy?"queue pull":"stage");
+      pull.type="button"; pull.dataset.title=r.title;
+      pull.title=busy
+        ? "Add this title to the pull queue — one transfer runs at a time"
+        : "Copy this title's file from the library to the staging drive now";
+      pull.addEventListener("click",function(){
+        arm(pull,acts,(r.bytes==null
+              ?(busy?"queue this title (size unknown)?"
+                    :"pull this title (size unknown) to the X9?")
+              :(busy?"queue "+gib(r.bytes)+" behind the current pull?"
+                    :"pull "+gib(r.bytes)+" to the X9?")),function(){
+          api("/api/stage/start",{title:r.title});
+        });
+      });
+      acts.appendChild(pull);
+    }
   }
   var b=el("button","act"+(r.skipped?" restore":""),
            r.skipped?"restore":"skip");
@@ -2359,7 +2597,107 @@ function rowActions(r,s){
   return acts;
 }
 
+/* ---- live numbers, written IN PLACE ---------------------------------------
+   Three cells draw a growing transfer: an arriving queue row, the synthetic
+   "transferring" row above the queue, and the History tab's "Moved to" cell.
+   All three used to be redrawn by rebuilding the entire table once per SSE
+   frame, because paint()'s repaint key carried their byte counts and those
+   change on every frame. That rebuild replayed the pane's fade-in and reset
+   the scroll position, so the page visibly blinked every two seconds for the
+   whole length of a 45-minute transfer.
+
+   Same discipline as the live card: STRUCTURE rebuilds, NUMBERS write in
+   place. renderQueue/renderLedger drop an empty slot; updateProgress() fills
+   it on every frame and only rebuilds the slot's children when the SHAPE
+   changes (a bar becoming "stalled", a pull that started or landed). The old
+   frozen-bar bug stays fixed -- the numbers are still painted every frame,
+   they are just no longer painted by a teardown. */
+var progRefs={};
+function progSlot(key,host){
+  var slot=el("span","progslot"); host.appendChild(slot);
+  progRefs[key]={slot:slot,shape:null,fill:null,txt:null,mark:null};
+}
+function progWrite(key,st){
+  var ref=progRefs[key]; if(!ref) return;
+  if(ref.shape!==st.shape){
+    ref.shape=st.shape; ref.slot.replaceChildren();
+    ref.mark=el("span","mark "+(st.shape==="stall"?"stall":"xfer"),st.label);
+    ref.slot.appendChild(ref.mark);
+    ref.fill=null;
+    if(st.shape==="bar"){
+      var bar=el("span","minibar"+(st.pull?" pull":"")); ref.fill=el("i");
+      bar.appendChild(ref.fill); ref.slot.appendChild(bar);
+    }
+    ref.txt=el("span","xfer-pct"); ref.slot.appendChild(ref.txt);
+  }
+  if(ref.mark.textContent!==st.label) ref.mark.textContent=st.label;
+  if(ref.fill&&st.pct!=null)
+    ref.fill.style.width=Math.max(0,Math.min(100,st.pct))+"%";
+  var t=st.text||"";
+  if(ref.txt.textContent!==t) ref.txt.textContent=t;
+  ref.txt.hidden=!t;
+}
+/* A pull still landing — replenisher or dashboard, same thing. Denominator is
+   the row's own library original. A partial that is not moving is "stalled",
+   never a progress bar; one LARGER than the source is a stale leftover. */
+function arrState(r){
+  if(r.arriving_stalled||(r.bytes&&r.arriving_bytes>r.bytes))
+    return {shape:"stall",label:"stalled",
+            text:gib(r.arriving_bytes)+" of "+gib(r.bytes)+" pulled — not moving"};
+  if(!r.bytes) return {shape:"plain",label:"arriving"};
+  var p=Math.max(0,Math.min(100,r.arriving_bytes/r.bytes*100));
+  var t=p.toFixed(1)+"% · "+gib(r.arriving_bytes)+" of "+gib(r.bytes)+" pulled";
+  if(r.arriving_rate_bps>0)
+    t+=" · "+(r.arriving_rate_bps/1e6).toFixed(0)+" MB/s · "+
+       dur((r.bytes-r.arriving_bytes)/r.arriving_rate_bps)+" left";
+  return {shape:"bar",pull:true,label:"arriving",pct:p,text:t};
+}
+/* Both operands carry their unit and the queue-tab sentence names the file
+   being moved — three sizes share that row and only labels keep them apart.
+   The History tab's cell already sits under a "Moved to" column, so it does
+   not repeat the destination. */
+function xferState(t,ledger){
+  var stall=!!t.stalled;
+  var moved=gib(t.done_bytes)+" of "+gib(t.total_bytes)+
+            (ledger?" copied":" copied to "+t.nas);
+  var txt = stall ? "no progress — "+moved
+          : t.pct!=null ? pct(t.pct)+" · "+moved : moved;
+  if(!ledger && !stall && t.rate_bps>0)
+    txt+=" · "+(t.rate_bps/1e6).toFixed(0)+" MB/s · "+
+         dur((t.total_bytes-t.done_bytes)/t.rate_bps)+" left";
+  return {shape:stall?"stall":(t.pct!=null?"bar":"plain"),
+          label:stall?"stalled":"transferring",pct:t.pct,text:txt};
+}
+function updateProgress(s){
+  if(tab==="queue"){
+    (s.queue||[]).forEach(function(r){
+      if(r.skipped||r.encoding||r.arriving_bytes==null) return;
+      progWrite("arr|"+r.title.toLowerCase(), arrState(r));
+    });
+    (s.transfers||[]).forEach(function(t){
+      progWrite("xfer|"+t.title, xferState(t,false)); });
+  }else{
+    (s.transfers||[]).forEach(function(t){
+      progWrite("led|"+t.title, xferState(t,true)); });
+  }
+}
+
+/* The row shape renderQueue draws. Deliberately NOT arriving_bytes or
+   arriving_rate_bps: those change every frame and are painted by
+   updateProgress. The BOOLEANS derived from them are here, because they
+   decide which nodes exist. */
+function qShape(r){
+  return [r.title,r.mbps,r.bytes,r.location,r.src_dir,
+          !!r.skipped,!!r.pinned,!!r.encoding,!!r.ready,!!r.staged,!!r.next_up,
+          r.arriving_bytes!=null,!!r.arriving_stalled,
+          r.stage_queued==null?null:r.stage_queued,r.stage_wait||null];
+}
+function xShape(t){
+  return [t.title,t.nas,t.src_dir,!!t.stalled,t.total_bytes,t.pct!=null];
+}
+
 function renderQueue(q, s, live, xfers, hist){
+  progRefs={};
   var liveCrf={};
   (live||[]).forEach(function(e){
     if(e.crf!=null) liveCrf[(e.folder||e.title).toLowerCase()]=e.crf;
@@ -2433,29 +2771,8 @@ function renderQueue(q, s, live, xfers, hist){
         if(r.pinned) td.appendChild(el("span","mark pin","pinned"));
         if(r.encoding) td.appendChild(el("span","mark enc","encoding"));
         else if(r.arriving_bytes!=null){
-          /* A pull still landing -- replenisher or dashboard, same thing.
-             Denominator is the row's own library original. A partial that is
-             not moving is "stalled", never a progress bar; one LARGER than
-             the source is a stale leftover, not progress. */
-          if(r.arriving_stalled||(r.bytes&&r.arriving_bytes>r.bytes)){
-            td.appendChild(el("span","mark stall","stalled"));
-            td.appendChild(el("span","xfer-pct",
-              gib(r.arriving_bytes)+" of "+gib(r.bytes)+" pulled — not moving"));
-          }else{
-            td.appendChild(el("span","mark xfer","arriving"));
-            if(r.bytes){
-              var apc=Math.max(0,Math.min(100,r.arriving_bytes/r.bytes*100));
-              var abar=el("span","minibar pull"), afill=el("i");
-              afill.style.width=apc+"%"; abar.appendChild(afill);
-              td.appendChild(abar);
-              var atxt=apc.toFixed(1)+"% · "+gib(r.arriving_bytes)+" of "+
-                       gib(r.bytes)+" pulled";
-              if(r.arriving_rate_bps>0)
-                atxt+=" · "+(r.arriving_rate_bps/1e6).toFixed(0)+" MB/s · "+
-                     dur((r.bytes-r.arriving_bytes)/r.arriving_rate_bps)+" left";
-              td.appendChild(el("span","xfer-pct",atxt));
-            }
-          }
+          /* Slot only — updateProgress() paints and repaints it. */
+          progSlot("arr|"+r.title.toLowerCase(), td);
         }
         else if(r.staged){
           td.appendChild(el("span","mark staged","staged"));
@@ -2475,7 +2792,19 @@ function renderQueue(q, s, live, xfers, hist){
               td.appendChild(el("span","mark next","next up"));
           }
         }
-        else td.appendChild(el("span","mark","library"));
+        else{
+          td.appendChild(el("span","mark","library"));
+          /* Queued is INTENT, and the position is the whole point of the
+             feature — a queue that does not say where you are in it is just
+             a button that did nothing. Only the head carries a reason,
+             because only the head can be the one being held up. */
+          if(r.stage_queued!=null){
+            td.appendChild(el("span","mark queued",
+                              "queued "+r.stage_queued));
+            if(r.stage_wait)
+              td.appendChild(el("span","xfer-pct",r.stage_wait));
+          }
+        }
       }
       tr.appendChild(td);
       if(r.pinned && !r.skipped && ranks[i]===pinned && pinned<active)
@@ -2507,24 +2836,7 @@ function renderQueue(q, s, live, xfers, hist){
     var nasTd=el("td"); nasTd.appendChild(nasMark(t.nas)); tr.appendChild(nasTd);
     tr.appendChild(srcDirTd(t.src_dir,t.title));
     var st=el("td");
-    var stall=!!t.stalled;
-    st.appendChild(el("span","mark "+(stall?"stall":"xfer"),
-                      stall?"stalled":"transferring"));
-    if(!stall && t.pct!=null){
-      var bar=el("span","minibar"), fill=el("i");
-      fill.style.width=Math.max(0,Math.min(100,t.pct))+"%";
-      bar.appendChild(fill); st.appendChild(bar);
-    }
-    /* Both operands carry their unit and the sentence names the file being
-       moved -- three sizes share this row and only labels keep them apart. */
-    var moved=gib(t.done_bytes)+" of "+gib(t.total_bytes)+" copied to "+t.nas;
-    var txt = stall ? "no progress — "+moved
-            : t.pct!=null ? pct(t.pct)+" · "+moved : moved;
-    if(!stall && t.rate_bps>0){
-      txt+=" · "+(t.rate_bps/1e6).toFixed(0)+" MB/s · "+
-           dur((t.total_bytes-t.done_bytes)/t.rate_bps)+" left";
-    }
-    st.appendChild(el("span","xfer-pct",txt));
+    progSlot("xfer|"+t.title, st);
     tr.appendChild(st);
     tbl.tBodies[0].insertBefore(tr, tbl.tBodies[0].rows[ix]||null);
   });
@@ -2602,6 +2914,7 @@ function wireDrag(tbl,q){
 }
 
 function renderLedger(rows, xfers){
+  progRefs={};
   var pane=document.getElementById("pane"); pane.replaceChildren();
   if(!rows.length){ pane.appendChild(el("div","empty","No encodes recorded yet.")); return; }
   /* "Moved to" is written at record time -- a promise, not an observation.
@@ -2634,20 +2947,7 @@ function renderLedger(rows, xfers){
         var rest=r.dest.slice(vol.length);
         if(rest) destTd.appendChild(el("span","muted",rest));
       }else destTd.appendChild(el("span","muted","—"));
-      var mv=moving[r.title];
-      if(mv){
-        var stall=!!mv.stalled;
-        destTd.appendChild(el("span","mark "+(stall?"stall":"xfer"),
-                              stall?"stalled":"transferring"));
-        if(!stall && mv.pct!=null){
-          var bar=el("span","minibar"), fill=el("i");
-          fill.style.width=Math.max(0,Math.min(100,mv.pct))+"%";
-          bar.appendChild(fill); destTd.appendChild(bar);
-        }
-        destTd.appendChild(el("span","xfer-pct",
-          (stall?"no progress — ":mv.pct!=null?pct(mv.pct)+" · ":"")+
-          gib(mv.done_bytes)+" of "+gib(mv.total_bytes)+" copied"));
-      }
+      if(moving[r.title]) progSlot("led|"+r.title, destTd);
       tr.appendChild(destTd);
       tr.appendChild(el("td","muted",RECORD[r.provenance]||r.provenance||"—"));
       tr.appendChild(el("td","muted",(r.finished_at||"—").slice(0,10)));
@@ -2669,15 +2969,20 @@ function paint(s){
   renderAlert(s.summary, s.encode_note);
   renderStats(s.summary);
   renderLive(s.live, s.summary, s.paused===true, s.driver_alive===true);
-  /* The key must cover EVERYTHING the pane draws — both tabs render live
-     transfer progress, so transfers belong in BOTH keys. They were once
-     omitted, and the transferring row painted a single still frame (at
-     ~0 bytes) that never advanced for the whole 45-minute push. */
-  var xk=(s.transfers||[]).map(function(t){ return [t.title,t.done_bytes,t.stalled]; });
+  /* The key must cover EVERYTHING the pane's STRUCTURE depends on — both tabs
+     draw live transfers, so transfers belong in BOTH keys. They were once
+     omitted entirely, and the transferring row painted a single still frame
+     (at ~0 bytes) that never advanced for the whole 45-minute push. The fix
+     for that put raw byte counts in the key, which swung the bug the other
+     way: the key then changed every frame and rebuilt the whole table twice a
+     second. Now the key carries only shape (qShape/xShape) and the byte
+     counts reach the DOM through updateProgress() below — a bar that moves
+     every frame, inside a table that is left alone. */
+  var xk=(s.transfers||[]).map(xShape);
   var key=tab+"|"+JSON.stringify(tab==="queue"
-    ? [s.queue, s.live.map(function(e){ return [e.folder, e.crf]; }),
+    ? [s.queue.map(qShape), s.live.map(function(e){ return [e.folder, e.crf]; }),
        xk, s.summary.library_complete, s.summary.roots_offline,
-       s.can_start, s.encode_note, s.paused]
+       s.can_start, s.encode_note, s.paused, s.stage_active]
     : [s.ledger, xk]);
   if(last.key!==key){
     /* An armed confirm or an active drag must survive the 2s SSE repaint. */
@@ -2686,10 +2991,18 @@ function paint(s){
       (tab==="queue"?renderQueue(s.queue,
           Object.assign({},s.summary,
             {can_start:s.can_start,crf_choices:s.crf_choices,
-             paused:s.paused===true}),
+             paused:s.paused===true,
+             /* A busy wire changes the button's PROMISE from "pull now" to
+                "wait in line"; saying "stage" while five titles queue ahead
+                would misstate what the click does. */
+             stage_busy:s.stage_active!=null||(s.stage_queue||[]).length>0}),
           s.live, s.transfers, s.ledger)
                     :renderLedger(s.ledger, s.transfers)); }
   }
+  /* EVERY frame, rebuilt or not: this is what keeps the bars moving now that
+     their numbers are out of the key. It runs after a skipped rebuild too —
+     an armed confirm or an active drag must not freeze a transfer. */
+  updateProgress(s);
   var nq=s.summary.queue_count!=null?s.summary.queue_count:s.queue.length;
   document.getElementById("tabQueue").textContent="Queue ("+nq+
     (s.summary.queue_skipped ? " · "+s.summary.queue_skipped+" skipped" : "")+")";

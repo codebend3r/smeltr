@@ -63,7 +63,7 @@ and the pipeline keeps running.
    the replenisher's `find`; a leftover from a crashed server can only ever
    render as a stalled arrival, never as an encodable folder. One pull at a
    time (in-process flag AND `pgrep ssh-xfer.sh pull`, so the guard survives
-   a server restart); refused while the replenisher is mid-run (its lock +
+   a server restart); held while the replenisher is mid-run (its lock +
    pgrep — a lock with no live process is reported as STALE, with the rmdir
    to run, since it silently starves the replenisher too). `_arrivals()`
    tracks growth like `_transfers()`: >120 s without growth renders
@@ -74,6 +74,41 @@ and the pipeline keeps running.
    `next_title.py` also passes over a visible folder with no source `.mkv`
    and exits 3 — a wait, not a halt — so the hidden folder is now
    defence-in-depth rather than the only thing preventing that halt.)
+
+   **The pull QUEUE (2026-08-23).** `POST /api/stage/start` no longer refuses
+   a busy wire — it ENQUEUES. `_stage_queue` is an in-memory FIFO of titles;
+   one `_stage_pump_loop` daemon thread is the only thing that starts a pull,
+   ticking every `STAGE_PUMP_SECONDS` (20 s). Still exactly one transfer at a
+   time. In memory ON PURPOSE: a restart drops the list and the rows offer
+   "stage" again, rather than carrying a plan across the code change that
+   prompted the restart. `POST /api/stage/cancel` removes a **pending**
+   title; the running pull cannot be cancelled (there is no abort path for a
+   transfer, and faking one strands a hidden folder).
+
+   **Every gate is re-run at DISPATCH, not at click time** — a check made
+   when the button was pressed is hours stale by the time the wire frees up.
+   `_stage_candidate()` is shared by the click and the pump so the two cannot
+   drift. The split that matters:
+   - **Transient → HOLD the head and say why on the row** (wire busy, another
+     puller, replenisher running, no room yet, NAS unreachable). Queued work
+     is never silently dropped: the drive frees up as encodes sync, and a
+     queue that empties itself during a mount blip is worse than one that
+     waits.
+   - **Permanent → drop exactly ONE title and continue** (left the queue,
+     hand-skipped, no/ambiguous index source, or already staged — that last
+     one is an `ok` note, not `bad`: the replenisher got there first, which
+     is the outcome the click wanted). One dead title must not wedge the
+     queue behind it.
+
+   `_stage_wait["why"]` renders on the head row only. It deliberately carries
+   **no volatile number** — free space moves every second as the encode
+   writes, and a reason string that changed every frame would put the row's
+   shape back in `paint()`'s repaint key and rebuild the table twice a
+   second. The measured figure goes to `encode_note` once per transition.
+   Lock order is `_stage_lock` → `_state_lock`; `_pump_once_locked()` takes a
+   queue snapshot built OUTSIDE the lock because `build_state()` takes
+   `_stage_lock` itself, and building it inside would deadlock the pump
+   against every open page. `tests/test_stage_queue.py` pins all of it.
 4. Pause-after-current (2026-08-23): `POST /api/pause` writes/removes a
    `pause` flag file beside the ledger (gitignored). While it exists
    `next_title.py` answers exit **3** — the driver's existing
@@ -164,9 +199,10 @@ muxer wrote its duration up front and so probes "fine" but runs short.
 `bash tests/run-all.sh`. The bash suites skip cleanly when the X9 is not
 mounted. They pin the log-matching and downscale gates, the concurrency
 markers, the watchdog's corpse/finished boundary, the projection band's
-boundaries and wording, and repo/live drift. The projection suite runs under
-`node` against the functions pulled straight out of `_PAGE`, and skips cleanly
-where `node` is absent.
+boundaries and wording, the stage pull queue's hold-vs-drop split, and
+repo/live drift. The projection and repaint-key suites run under `node`
+against the functions pulled straight out of `_PAGE`, and skip cleanly where
+`node` is absent.
 
 ### Pausing the driver — the exact procedure
 
@@ -307,9 +343,26 @@ second request.
   progress; `done > total` means a stale leftover from an older attempt.
 - `server._arrivals()` marks staged folders holding only a replenish
   `.partial` as *arriving* — present on disk but not yet encodable.
-- Both tabs render transfer bars, and `paint()`'s repaint key must cover them
-  (queue AND ledger variants). Transfers were once omitted from the key and
-  the row painted a single still frame at ~0 bytes for a whole 45-minute push.
+- Both tabs render transfer bars, and this has swung wrong in BOTH directions.
+  Transfers were once omitted from `paint()`'s repaint key entirely, and the
+  row painted a single still frame at ~0 bytes for a whole 45-minute push.
+  Putting the raw byte counts IN the key fixed that and broke the other edge:
+  the key then changed on every 2 s SSE frame, so the whole table was torn
+  down and rebuilt twice a second — `#pane>table{animation:fadein}` replayed,
+  scroll position reset, and the page visibly blinked for the length of every
+  transfer.
+- **The rule (2026-08-23): the key carries SHAPE, never a live number.**
+  `qShape()`/`xShape()` are the key's row projections and hold only what
+  decides which nodes exist — including the booleans derived from the byte
+  counts (`arriving_bytes!=null`, `stalled`), because those change the row's
+  structure. The counts themselves reach the DOM through `updateProgress()`,
+  which `paint()` runs on EVERY frame (rebuilt or not — an armed confirm or
+  an active drag must not freeze a transfer). `renderQueue`/`renderLedger`
+  drop an empty `progSlot()`; `progWrite()` fills it, rebuilding the slot's
+  children only when the shape changes, so the fill keeps its width
+  transition. Same in-place discipline as the live card, for the same reason.
+  `tests/test_repaint_key.js` pins both edges: growing bytes must NOT move
+  the key, shape changes MUST.
 
 ## Editing the look and feel
 
