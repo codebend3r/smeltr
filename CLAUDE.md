@@ -179,6 +179,26 @@ instance win, harmlessly, but a relaunch mid-script-edit would not be). Stop
 the watchdog BEFORE stopping the driver on purpose; step 1 of the pause
 procedure below.
 
+**A stale `.autopilot.lock` used to defeat every restart path** (fixed
+2026-08-25). The lock is a `mkdir` directory removed by the driver's
+`trap ... EXIT INT TERM` — and `kill -9`, the *documented* way to stop the
+driver, skips that trap. The leftover directory then makes every relaunch exit
+"autopilot already running", so the watchdog logged `RESTART FAILED` forever
+with nothing running. That cost six hours of downtime on 2026-08-25. The
+restart block now clears a lock it can prove is stale (no `autopilot.sh`
+process), serialised on `.watchdog-restart.claim` so two watchdogs — the
+LaunchAgent and a `--supervise` loop tick independently — can never each start
+a driver, which would double-record a finished encode against a ledger with no
+duplicate guard. `RESTART FAILED` now logs the driver's last line, because the
+bare message sent the investigation to the wrong place.
+
+**Both causes have to be fixed together.** The stale lock only stranded the job
+because the LaunchAgent watchdog was *also* blind (no Full Disk Access), so
+nothing ever reached the restart. Check both: `launchctl list | grep smeltr`
+proves it is loaded, which is NOT the same as it being able to see the drive —
+`~/Library/Logs/smeltr/watchdog.err.log` showing `Operation not permitted` is
+the tell.
+
 **It sweeps the staging drive before it restarts anything** (2026-08-22). A
 reboot mid-encode leaves an unfinalised `*2160p HEVC*.mkv`, which
 `finished_folder()` matches as FINISHED and `verdict.py` then halts on — so a

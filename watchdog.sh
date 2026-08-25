@@ -24,6 +24,10 @@ set -uo pipefail
 X9="${SMELTR_X9:-/Volumes/Crucial X9/4K Movies}"
 SMELTR="${SMELTR_BIN:-$HOME/Developer/git/smeltr/smeltr}"
 LOG="$X9/.autopilot.log"
+# The driver's own mkdir lock, and this watchdog's claim on clearing it when it
+# goes stale. See the restart block at the bottom for why the claim exists.
+LOCK="$X9/.autopilot.lock"
+CLAIM="$X9/.watchdog-restart.claim"
 # Logs live in ~/Library/Logs, NOT on the staging drive. A LaunchAgent may not
 # be able to read /Volumes at all (Full Disk Access), and a watchdog whose only
 # log is on the volume it cannot see fails completely silently -- which is the
@@ -144,7 +148,11 @@ triage_outputs() {
 # it just does not survive a reboot, which the LaunchAgent does.
 if [ "${1:-}" = "--supervise" ]; then
   wlog "supervise mode up (pid $$)"
-  while true; do "$0"; sleep 300; done
+  # 60s, not 300s: this interval IS the worst-case downtime after a driver
+  # death, and downtime is the thing this exists to prevent. A healthy tick is
+  # only pgrep + ls + wc -- it exits at the "driver is up" check long before the
+  # ffprobe triage, so the cost of ticking often is nil while an encode runs.
+  while true; do "$0"; sleep 60; done
 fi
 
 [ -f "$X9/.watchdog-off" ] && exit 0
@@ -225,6 +233,38 @@ case $nrc in
 esac
 
 wlog "driver absent with work queued — restarting"
+
+# Serialise the clear-and-launch below. Two watchdogs can reach this together
+# (the LaunchAgent and a --supervise loop both tick on their own schedule), and
+# two that each cleared the lock would each start a driver. Two live drivers
+# double-record a finished encode -- `core.record()` appends with no duplicate
+# guard -- so the ledger would carry a phantom reclaim and the queue would lose
+# the title. Whoever wins this mkdir does the restart; the loser stands down.
+if ! mkdir "$CLAIM" 2>/dev/null; then
+  wlog "another watchdog is already restarting; standing down"
+  exit 0
+fi
+trap 'rmdir "$CLAIM" 2>/dev/null' EXIT
+
+# Re-check UNDER the claim. The triage and `smeltr next` above take seconds, and
+# a driver may have come up in that window -- restarting into a live one is the
+# double-record this whole block exists to prevent.
+if pgrep -f 'autopilot\.sh' >/dev/null 2>&1; then
+  wlog "a driver came up while deciding; nothing to do"
+  exit 0
+fi
+
+# A lock with no process behind it is STALE, and it refuses every restart
+# forever. `kill -9` is the documented way to stop the driver (bash defers
+# SIGTERM while waiting on a child), and -9 skips the driver's
+# `trap 'rmdir $LOCK' EXIT INT TERM`, so the directory outlives it. On
+# 2026-08-25 that stranded the pipeline for six hours. We only get here with
+# the claim held and pgrep just proven empty, so nothing else can hold it.
+if [ -d "$LOCK" ]; then
+  wlog "clearing STALE lock $LOCK (no autopilot process holds it)"
+  rmdir "$LOCK" 2>/dev/null || rm -rf "$LOCK" 2>/dev/null
+fi
+
 notify "Autopilot was down. Restarting it."
 cd "$X9" || exit 0
 nohup ./.autopilot.sh >> "$LOG" 2>&1 &
@@ -232,6 +272,7 @@ sleep 3
 if pgrep -f 'autopilot\.sh' >/dev/null 2>&1; then
   wlog "restarted OK (pid $(pgrep -f 'autopilot\.sh' | head -1))"
 else
-  wlog "RESTART FAILED — see $LOG"
+  # Say WHY. "RESTART FAILED" alone sent me looking at the wrong thing.
+  wlog "RESTART FAILED — last driver output: $(tail -1 "$LOG" 2>/dev/null)"
   notify "Autopilot restart FAILED."
 fi
