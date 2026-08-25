@@ -787,6 +787,49 @@ def queue_cached(min_mbps: float = STOP_MBPS, live: Optional[list] = None,
     return rows
 
 
+def pick_next(rows: list) -> tuple[Optional[dict], set]:
+    """The ONE implementation of "which staged title encodes next".
+
+    Both consumers read it -- next_title.py (the driver's pick) and
+    server._mark_ready (the dashboard's next_up/ready row). These were two
+    deliberately-mirrored renditions of the same predicate, and every new
+    rule (the arriving check) had to land in both or the green row promised
+    an encode the driver would not start.
+
+    Returns (row, wait_reasons): the first row in queue order that is staged,
+    holds a source .mkv, has no 2160p HEVC output yet, and is not
+    hand-skipped -- or None. wait_reasons says why staged work was passed
+    over: "arriving" (a folder holding only a replenish .partial) and/or
+    "skipped". A row that is both counts as arriving: no source file exists
+    to encode regardless of the skip.
+
+    A LIVE encode's own folder is excluded by the output check -- its
+    in-progress file already matches *2160p HEVC*.mkv -- never by pgrep
+    (folder names contain "(YYYY)" and pgrep reads the parens as a group).
+    """
+    reasons: set = set()
+    for row in rows:
+        if not row.get("staged"):
+            continue
+        d = os.path.join(X9, row["title"])
+        try:
+            files = [f for f in os.listdir(d) if not f.startswith("._")]
+        except OSError:
+            continue
+        if any("2160p HEVC" in f and f.endswith(".mkv") for f in files):
+            continue          # already encoded (or encoding), awaiting sync
+        if not any(f.endswith(".mkv") for f in files):
+            # A replenish pull still landing: picking this title would make
+            # start_encode halt on "no source file" mid-pull.
+            reasons.add("arriving")
+            continue
+        if row.get("skipped"):
+            reasons.add("skipped")
+            continue
+        return row, reasons
+    return None, reasons
+
+
 def volume_name(path: str) -> str:
     """Volume a path lives on: /Volumes/Vhagar/Media/... -> Vhagar."""
     parts = path.strip("/").split("/")
@@ -874,7 +917,8 @@ def record(entry: Entry) -> None:
 
 # --------------------------------------------------------------------- totals
 
-def summary(hist: Optional[list] = None, q: Optional[list] = None) -> dict:
+def summary(hist: Optional[list] = None, q: Optional[list] = None,
+            live: Optional[list] = None) -> dict:
     hist = ledger() if hist is None else hist
     q = queue(hist=hist) if q is None else q
     # Only rows carrying BOTH sizes may contribute to a ratio. Mixing a row
@@ -887,7 +931,10 @@ def summary(hist: Optional[list] = None, q: Optional[list] = None) -> dict:
     unknown = len(hist) - len(paired)
     offline = offline_roots()
     complete = not offline
-    live = live_encodes()
+    # Injectable like hist and q: two ps(1) reads within one snapshot could
+    # disagree -- an encode starting between them yields a payload whose live
+    # card and stat cards describe different worlds.
+    live = live_encodes() if live is None else live
     # Hand-skipped rows are OUT of every queue total: a skipped title is work
     # the pipeline will not do, and counting it would overstate what is left.
     q_active = [r for r in q if not r.get("skipped")]

@@ -9,8 +9,8 @@ the driver would have concluded the job was finished and exited cleanly with 110
 titles still queued. Structured data, not table scraping.
 
 Exit codes: 0 a title was printed | 1 stop condition | 2 library incomplete
-            3 paused from the dashboard, or every staged candidate is
-              hand-skipped (driver should wait either way)
+            3 wait, don't exit: paused from the dashboard, staged candidates
+              hand-skipped, or a replenish pull still landing
 """
 from __future__ import annotations
 
@@ -39,38 +39,25 @@ def main() -> int:
         print("paused from the dashboard; waiting", file=sys.stderr)
         return 3
 
-    passed_skipped = False
-    passed_arriving = False
-    for row in core.queue_cached(min_mbps=threshold):
-        if not row["staged"]:
-            continue
-        d = os.path.join(core.X9, row["title"])
-        try:
-            files = [f for f in os.listdir(d) if not f.startswith("._")]
-        except OSError:
-            continue
-        if any("2160p HEVC" in f and f.endswith(".mkv") for f in files):
-            continue          # already encoded, awaiting sync
-        if not any(f.endswith(".mkv") for f in files):
-            # A replenish pull still landing: the folder holds only a
-            # .partial. The concurrent driver reaches this step while its
-            # backgrounded sync's pull is in flight, so this is a routine
-            # state -- and printing the title would make start_encode halt
-            # on "no source file" mid-pull.
-            passed_arriving = True
-            continue
-        if row.get("skipped"):
-            passed_skipped = True
-            continue          # hand-skipped from the dashboard
+    # The pick itself lives in core.pick_next -- ONE implementation, shared
+    # with the dashboard's next_up/ready row, so the two can never disagree.
+    row, waits = core.pick_next(core.queue_cached(min_mbps=threshold))
+    if row is not None:
         print(row["title"])
         return 0
 
-    if passed_skipped or passed_arriving:
-        # NOT the stop condition: work remains -- the user skipped it, or a
-        # pull is still landing. A distinct code lets the driver wait
-        # instead of exiting for good on a message that would be false.
-        print("every remaining staged title is hand-skipped or still "
-              "arriving; waiting", file=sys.stderr)
+    if waits:
+        # NOT the stop condition: work remains. Name WHICH wait it is -- the
+        # driver logs this line verbatim, and a guessed message here once
+        # sent the operator debugging overrides that were fine. .get(w, w):
+        # a reason core.pick_next learns later logs its own name and still
+        # waits -- a KeyError would exit non-zero, which the driver reads as
+        # the stop condition. No universal quantifiers: the reasons compose,
+        # and "every title is skipped" is false beside an arriving one.
+        msgs = {"arriving": "a replenish pull is still landing",
+                "skipped": "staged titles are hand-skipped"}
+        print("; ".join(msgs.get(w, w) for w in sorted(waits)) + " -- waiting",
+              file=sys.stderr)
         return 3
     print(f"stop condition: nothing staged above {threshold:.0f} Mb/s", file=sys.stderr)
     return 1

@@ -287,7 +287,16 @@ Who honours it:
   condition) now covers three wait states — every staged candidate
   hand-skipped, paused from the dashboard, or a staged folder holding only a
   still-landing `.partial` — and `.autopilot.sh` waits 300 s, logging the
-  actual reason via `next_reason()` instead of a hard-coded guess.
+  actual reason via `next_reason()` instead of a hard-coded guess. The
+  reason comes from the SAME invocation as the exit code: `next_title()`
+  writes stderr to a reason file (out of the `$(...)` capture) and
+  `next_reason()` just reads it — a second call re-ran the whole scan and
+  could race to a reason that was no longer true. The file lives under
+  `$TMPDIR`, never on the X9: a redirect that cannot open returns 1 without
+  running `smeltr next`, and 1 is the stop condition — a reason file on an
+  X9 gone read-only would have logged "job finished" on a drive that still
+  reads. If even the probe fails it degrades to `/dev/null`: reason lost,
+  exit code intact.
 - `.replenish-queue.sh` (staging drive) never stages a skipped title, stops
   counting skipped staged folders toward its 10-folder target (so skipping a
   staged title pulls the next library title in), and stages `priority`
@@ -302,7 +311,9 @@ Who honours it:
   (only on the encoding row) all live in the title cell as hover
   actions — revealed on `:hover`/`:focus-within`, always visible on coarse
   pointers, because the LAN phones have no hover. The `ready` row is computed
-  server-side by `_mark_ready()`, which mirrors `next_title.py`'s pick (NOT
+  server-side by `_mark_ready()`, which calls the same `core.pick_next()`
+  the driver's `next_title.py` calls — ONE pick, agreement by construction,
+  where two mirrored renditions once had to be edited in lockstep (NOT
   simply rank 1 — library-only rows outrank staged ones constantly).
 
 Failure modes are loud, not silent: `save_overrides` fsyncs before its atomic

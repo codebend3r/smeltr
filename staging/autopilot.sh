@@ -155,11 +155,22 @@ sync_async() {
 # Exit 1 = stop condition, 2 = library not fully mounted (never treat as done),
 # 3 = wait, don't exit: paused from the dashboard, every staged title
 #     hand-skipped, or a replenish pull still landing.
-next_title() { "$SMELTR" next "$STOP_MBPS" 2>/dev/null; }
-# The reason behind a non-zero code, for the log. Separate helper: next_title
-# must keep discarding stderr so it can never leak into the $(...) that
-# captures the title (the sync_in_flight lesson).
-next_reason() { "$SMELTR" next "$STOP_MBPS" 2>&1 >/dev/null; }
+# stderr lands in a FILE, never the $(...) that captures the title (the
+# sync_in_flight lesson) -- and the reason logged on a wait comes from the
+# SAME invocation as the exit code. A second call re-ran the whole queue
+# scan and raced the first: the state could change between them, logging a
+# reason that was no longer true, or nothing at all.
+# The file lives OFF the staging drive. A redirect that cannot open returns
+# 1 WITHOUT running smeltr -- and 1 is the stop condition, so a reason file
+# on an X9 gone read-only would have logged "job finished" on a drive that
+# still reads. The probe degrades to /dev/null: reason lost, exit code
+# intact -- the write must never be able to invent an exit code.
+NEXT_REASON="${TMPDIR:-/tmp}/smeltr-next-reason"
+next_title() {
+  : >"$NEXT_REASON" 2>/dev/null || NEXT_REASON=/dev/null
+  "$SMELTR" next "$STOP_MBPS" 2>"$NEXT_REASON"
+}
+next_reason() { tr '\n' ' ' 2>/dev/null <"$NEXT_REASON"; }
 
 # Resolve the library folder the same way .sync-to-library.sh does: exactly
 # one <root>/<bucket>/<title> match across all roots. Never guess the bucket

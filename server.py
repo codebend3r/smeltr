@@ -457,7 +457,7 @@ def build_state() -> dict:
         # summary() is the ONE carrier of paused -- the same field report.py
         # banners -- and it feeds _mark_ready so "ready" and the paused banner
         # can never come from two reads that disagree within one snapshot.
-        summary = core.summary(hist=hist, q=q)
+        summary = core.summary(hist=hist, q=q, live=live)
         _mark_ready(q, live, summary["paused"])
         # Pending dashboard pulls, annotated onto the rows they belong to. The
         # rows are already private copies (see above), so this is safe.
@@ -541,11 +541,11 @@ def _set_note(msg, kind="warn") -> None:
 def _mark_ready(rows: list, live: list, paused: bool) -> None:
     """Flag the ONE row the pipeline would actually encode next.
 
-    Deliberately mirrors next_title.py: staged, no 2160p HEVC output yet, not
-    skipped, not still arriving. It is NOT "row 1" -- the queue lists library
-    titles that are not on the staging drive, so the top row is frequently a
-    title next_title.py skips straight past, and painting that one green would
-    promise an encode that cannot start.
+    The pick IS core.pick_next -- the same call next_title.py makes -- so the
+    dashboard's green row and the driver's choice cannot disagree. It is NOT
+    "row 1": the queue lists library titles that are not on the staging
+    drive, so the top row is frequently a title the pick skips straight past,
+    and painting that one green would promise an encode that cannot start.
 
     Two flags from the one pick. "next_up" is set ALWAYS -- including while an
     encode runs (the live row's own output file excludes it from the pick) and
@@ -559,18 +559,17 @@ def _mark_ready(rows: list, live: list, paused: bool) -> None:
     for r in rows:
         r["ready"] = False
         r["next_up"] = False
-    for r in rows:
-        if r.get("skipped") or not r.get("staged"):
-            continue
-        if r.get("arriving_bytes") is not None:
-            continue
-        _, src, out = _staging_files(r["title"])
-        if out is not None or not src:
-            continue
-        r["next_up"] = True
+    # pick_next reads only the folder's own contents; a dashboard pull into a
+    # hidden .pull-<title> dir is invisible to it but keyed onto this row by
+    # _arrivals(). A row still arriving must never carry the green row or the
+    # start button -- /api/encode/start refuses it with a 409, and a promise
+    # the click cannot keep is the exact bug ready exists to prevent.
+    pick, _ = core.pick_next(
+        [r for r in rows if r.get("arriving_bytes") is None])
+    if pick is not None:
+        pick["next_up"] = True
         if not live and not paused:
-            r["ready"] = True
-        return
+            pick["ready"] = True
 
 
 def _slug_of(title: str) -> str:
