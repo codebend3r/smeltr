@@ -213,11 +213,64 @@ class ServerGates(unittest.TestCase):
             # USED to hold -- may not write.
             self.assertFalse(handler("192.0.2.99", "192.0.2.10")._writes_ok())
 
-    def test_state_payload_carries_paused(self):
-        # The UI's pause button and paused banner key off this field.
-        import inspect
-        src = inspect.getsource(self.server.build_state)
-        self.assertIn('"paused": core.paused()', src)
+    def test_summary_is_the_one_carrier_of_paused(self):
+        # report.py's banner and the page both read summary["paused"] -- one
+        # fact, one carrier. A second top-level copy in the payload once
+        # existed and could disagree with this one within a frame.
+        saved = (core.live_encodes, core.offline_roots, core.paused)
+        try:
+            core.live_encodes = lambda: []
+            core.offline_roots = lambda: []
+            core.paused = lambda: True
+            self.assertTrue(core.summary(hist=[], q=[])["paused"])
+            core.paused = lambda: False
+            self.assertFalse(core.summary(hist=[], q=[])["paused"])
+        finally:
+            core.live_encodes, core.offline_roots, core.paused = saved
+
+
+class MarkReady(unittest.TestCase):
+    """ready is server-computed WHOLE: paused gating lives in _mark_ready,
+    never re-derived in the page. next_up survives a pause -- the queue pill
+    says "next after resume" -- but the green row and the start button do
+    not, because green means "going now" and while paused nothing goes."""
+
+    def setUp(self):
+        import server
+        self.server = server
+        self._x9 = core.X9
+        self._tmp = tempfile.TemporaryDirectory()
+        core.X9 = self._tmp.name
+        d = os.path.join(self._tmp.name, "Ready (1999)")
+        os.makedirs(d)
+        with open(os.path.join(d, "Ready (1999) Remux-2160p.mkv"), "w"):
+            pass
+
+    def tearDown(self):
+        core.X9 = self._x9
+        self._tmp.cleanup()
+
+    def _rows(self):
+        return [{"title": "Ready (1999)", "staged": True}]
+
+    def test_idle_unpaused_row_is_ready(self):
+        rows = self._rows()
+        self.server._mark_ready(rows, live=[], paused=False)
+        self.assertTrue(rows[0]["ready"])
+        self.assertTrue(rows[0]["next_up"])
+
+    def test_paused_keeps_next_up_but_never_ready(self):
+        rows = self._rows()
+        self.server._mark_ready(rows, live=[], paused=True)
+        self.assertFalse(rows[0]["ready"])
+        self.assertTrue(rows[0]["next_up"])
+
+    def test_a_live_encode_keeps_next_up_but_never_ready(self):
+        rows = self._rows()
+        self.server._mark_ready(rows, live=[{"title": "Other (2000)"}],
+                                paused=False)
+        self.assertFalse(rows[0]["ready"])
+        self.assertTrue(rows[0]["next_up"])
 
 
 if __name__ == "__main__":
