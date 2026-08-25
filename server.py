@@ -1573,6 +1573,11 @@ _PAGE = r"""<!doctype html>
   /* Size-projection band. Ticks only, never a fill -- a filled zone on a
      pill-shaped track reads as a value. 4.52:1 on --bar-bg (WCAG 1.4.11). */
   --band-bd:#459473;
+  /* Boot skeleton. The page ships with #stats/#liveWrap/#pane empty and paints
+     nothing until the first SSE frame; a cold build_state() stats three NAS
+     roots and measures ~2 s, so that gap used to render as a black screen.
+     --skel is the ghost block, --skel-hi the shimmer crest that travels it. */
+  --skel:#161a21; --skel-hi:#222834;
 }
 :root[data-theme="light"]{
   color-scheme:light;
@@ -1594,6 +1599,7 @@ _PAGE = r"""<!doctype html>
   --sheen:rgba(255,255,255,.60); --tip:#ffd9ae; --glow:rgba(194,84,15,.30);
   --halo-good:rgba(15,122,85,.18); --halo-good-2:rgba(15,122,85,.05);
   --band-bd:#2f7357;
+  --skel:#e6eaf1; --skel-hi:#f4f7fb;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{-webkit-text-size-adjust:100%}
@@ -1643,7 +1649,7 @@ header{display:flex;align-items:baseline;gap:14px;margin-bottom:22px;flex-wrap:w
    replay it and the page would twitch every two seconds. */
 .stat.flash{animation:statflash .9s ease-out}
 @keyframes statflash{from{border-color:var(--hot);box-shadow:0 0 10px var(--glow)}}
-body:not(.booted) .stat,body:not(.booted) .card{
+body:not(.booted) .stat:not(.skel),body:not(.booted) .card:not(.skel){
   animation:rise .5s cubic-bezier(.2,.7,.3,1) both}
 body:not(.booted) .stats .stat:nth-child(2){animation-delay:.05s}
 body:not(.booted) .stats .stat:nth-child(3){animation-delay:.1s}
@@ -1652,6 +1658,62 @@ body:not(.booted) .stats .stat:nth-child(5){animation-delay:.2s}
 body:not(.booted) .stats .stat:nth-child(6){animation-delay:.25s}
 body:not(.booted) #liveWrap .card{animation-delay:.12s}
 @keyframes rise{from{opacity:0;transform:translateY(7px)}}
+
+/* ---- Boot skeleton -------------------------------------------------------
+   #stats, #liveWrap and #pane ship EMPTY -- nothing renders until the first
+   SSE frame, and a cold build_state() stats three NAS roots over SMB and
+   measures ~2 s. That gap rendered as a black page, and a stale token (which
+   permanently CLOSES the EventSource) rendered it forever.
+
+   These ghosts need NO teardown code: renderStats and renderQueue/renderLedger
+   call replaceChildren() outright, and renderLive's sig is never empty while a
+   fresh element has no data-sig, so the first real paint always removes them.
+
+   Held back 250 ms on purpose. State is cached, so a warm load paints almost
+   immediately; a skeleton visible at 0 ms would strobe on every reload. The
+   delay lives in the animation's own delay with `both` fill, so under
+   prefers-reduced-motion (where * animation:none wins) the ghosts simply
+   appear at once rather than being stranded at opacity 0 -- invisible. ---- */
+.skelwrap{animation:skelin .2s ease-out .25s both}
+@keyframes skelin{from{opacity:0}}
+.skel{background:var(--skel);border-radius:5px;position:relative;overflow:hidden}
+/* The crest travels the block. It is a sweep, never a fill that grows: a
+   growing fill on a ghost row would read as progress against a real number. */
+.skel::after{content:"";position:absolute;inset:0;
+  background:linear-gradient(90deg,transparent,var(--skel-hi),transparent);
+  animation:skelsweep 1.5s ease-in-out infinite}
+@keyframes skelsweep{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+.skel.card,.skel.stat{background:var(--panel)}
+.skel.card::after,.skel.stat::after{content:none}
+.sk-k{height:9px;width:52%}
+.sk-v{height:19px;width:70%;margin-top:9px}
+.sk-title{height:13px;width:38%}
+.sk-bar{height:12px;width:100%;margin-top:13px;border-radius:999px}
+.sk-row{display:flex;gap:14px;align-items:center;padding:9px 14px;
+        border-bottom:1px solid var(--td-line)}
+.sk-cell{height:10px}
+/* Ghost widths are CLASSES, not style attributes: CSP is style-src
+   'nonce-...' with no 'unsafe-inline', so an inline style attribute is
+   dropped silently and every ghost would collapse to zero width. Fixed
+   percentages, never random -- the page must paint identically each load. */
+.sk-w8{width:8%} .sk-w9{width:9%} .sk-w10{width:10%} .sk-w24{width:24%}
+.sk-w27{width:27%} .sk-w28{width:28%} .sk-w31{width:31%} .sk-w34{width:34%}
+.sk-w37{width:37%} .sk-w41{width:41%} .sk-w45{width:45%}
+/* #stats is the grid; the wrapper must not become a grid item itself or the
+   six ghosts stack in one column instead of spreading like real cards.
+   A display:contents box generates no box, so opacity cannot animate on
+   it -- the reveal moves to the children or the stats ghosts would skip
+   the delay and strobe on every warm load. */
+.skelgrid{display:contents;animation:none}
+.skelgrid>*{animation:skelin .2s ease-out .25s both}
+/* Boot messages. Both replace a guess with a fact: the first says the wait is
+   longer than normal, the second that there is nothing left to wait FOR. A
+   ghost that shimmers forever is the lie this project refuses everywhere else
+   ("stalled, never a progress bar"). */
+.boot-note{padding:13px 15px;color:var(--ink-3);font-size:12.5px;
+           border-top:1px solid var(--td-line)}
+.boot-fail{padding:26px 20px;text-align:center;color:var(--ink-2);font-size:13px}
+.boot-fail b{display:block;color:var(--bad);font-size:14px;margin-bottom:5px}
 
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
       padding:18px 20px;margin-bottom:18px}
@@ -1967,8 +2029,12 @@ footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3)
 </header>
 
 <section id="alert"></section>
-<section class="stats" id="stats"></section>
-<section id="liveWrap"></section>
+<section class="stats" id="stats">
+  <div class="skelwrap skelgrid" aria-hidden="true"><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div></div>
+</section>
+<section id="liveWrap">
+  <div class="skelwrap" aria-hidden="true"><div class="card skel"><div class="skel sk-title"></div><div class="skel sk-bar"></div></div></div>
+</section>
 
 <div class="tabs" role="tablist">
   <button class="tab" id="tabQueue"  role="tab" aria-selected="true"  aria-controls="paneQueue">Queue</button>
@@ -1976,7 +2042,9 @@ footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3)
   <button class="tab" id="resetOrder" type="button" hidden>Reset order</button>
 </div>
 <div class="uinote" id="uiNotice" hidden></div>
-<div class="wrap"><div class="scroll" id="pane"></div></div>
+<div class="wrap"><div class="scroll" id="pane">
+  <div class="skelwrap" aria-hidden="true" id="bootSkel"><div class="sk-row"><div class="skel sk-cell sk-w34"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w28"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w41"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w24"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w37"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w31"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w45"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w27"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div></div>
+</div></div>
 
 <footer>
   <span id="gen"></span><span id="stopnote"></span><span>__SCOPE__ &middot; writes: skip/reorder, encode start/abort, stage pulls, pause/resume &middot; never judges, syncs or deletes a library original</span>
@@ -3123,20 +3191,65 @@ function conn(state,text){
   document.getElementById("connText").textContent=text;
 }
 
+/* ---- Boot states --------------------------------------------------------
+   Nothing paints until the first frame arrives, so the skeleton is all the
+   user has until then. Two things can go wrong, and each gets a FACT rather
+   than a shimmer that continues forever:
+
+     * slow  -- a cold build_state() stats three NAS roots and normally takes
+                ~2 s. Past BOOT_SLOW_MS the wait is abnormal and says so.
+     * dead  -- a non-200 (typically a 403 from a stale token) permanently
+                CLOSES the EventSource. It will never reconnect, so the
+                skeleton would shimmer forever over a page that is never
+                coming. Replace it with the reason and the fix.
+
+   Both are gated on !booted. A MID-SESSION disconnect must leave the
+   last-known data on screen -- it is still the truth, just frozen -- and
+   change only the header dot. Only a boot that never produced a single frame
+   may put an error where the data would have been. ---- */
+var BOOT_SLOW_MS=8000;
+var booted=false;
+
+function bootSkel(){ return document.getElementById("bootSkel"); }
+
+function bootSlow(){
+  if(booted) return;
+  var sk=bootSkel(); if(!sk||sk.querySelector(".boot-note")) return;
+  sk.appendChild(el("div","boot-note",
+    "still waiting on the library — a NAS root may be slow to answer"));
+}
+
+function bootFail(why){
+  if(booted) return;   /* never replace real data with an error */
+  var host=document.getElementById("pane");
+  if(!host||!bootSkel()) return;
+  var box=el("div","boot-fail");
+  box.appendChild(el("b","","disconnected"));
+  box.appendChild(el("div","",why));
+  host.replaceChildren(box);
+  /* The ghost stats and live card are just as dead; drop them too rather than
+     leave three shimmering blocks above a message saying nothing is coming. */
+  document.querySelectorAll(".skelwrap").forEach(function(n){ n.remove(); });
+}
+
+var slowTimer=setTimeout(bootSlow,BOOT_SLOW_MS);
+
 var es=new EventSource("/api/stream?t="+encodeURIComponent(token));
 es.onopen=function(){ conn("on","live"); };
 es.onerror=function(){
   /* The spec permanently CLOSES an EventSource on a non-200 (e.g. a 403 from
      a stale token) -- it will never reconnect, so "reconnecting" would be a
      lie over frozen data. Say so plainly instead. */
-  conn("off", es.readyState===EventSource.CLOSED
-        ? "disconnected — reload the page" : "reconnecting");
+  var dead=es.readyState===EventSource.CLOSED;
+  conn("off", dead ? "disconnected — reload the page" : "reconnecting");
+  if(dead) bootFail("the live stream closed before any data arrived. "
+    + "Your link may carry a stale token — reload the page, or reopen it "
+    + "from ./smeltr url.");
 };
-var booted=false;
 es.onmessage=function(ev){
   try{ var s=JSON.parse(ev.data); }catch(_){ return; }
   last.state=s; conn("on","live"); paint(s);
-  if(!booted){ booted=true;
+  if(!booted){ booted=true; clearTimeout(slowTimer);
     setTimeout(function(){ document.body.classList.add("booted"); },900); }
 };
 })();
