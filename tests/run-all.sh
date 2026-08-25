@@ -12,6 +12,9 @@ else echo "SKIP: node not installed"; fi
 echo; echo "=== repaint key ==="
 if command -v node >/dev/null 2>&1; then node tests/test_repaint_key.js || rc=1
 else echo "SKIP: node not installed"; fi
+echo; echo "=== sysmon ui ==="
+if command -v node >/dev/null 2>&1; then node tests/test_sysmon_ui.js || rc=1
+else echo "SKIP: node not installed"; fi
 echo; echo "=== staging drift ==="; bash tests/test_staging_in_sync.sh || rc=1
 echo; [ $rc -eq 0 ] && echo "ALL SUITES PASSED" || echo "FAILURES ABOVE"
 exit $rc

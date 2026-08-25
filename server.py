@@ -43,6 +43,7 @@ from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import core
+import sysmon
 
 # Token persists across restarts in a 0600 file, so LAN devices survive the
 # `./smeltr restart` that every dashboard edit needs; a fresh mint would 403
@@ -1155,6 +1156,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, "application/json; charset=utf-8", body)
         if route == "/api/stream":
             return self._stream()
+        if route == "/api/sysmon/history":
+            # 24 h of samples as raw `<I7f` records (ts + 7 float32, NaN =
+            # missing); the page parses them with a DataView. Binary because
+            # the same day of samples as JSON is ~2x the bytes for no gain.
+            mon = sysmon.get()
+            body = mon.history_bytes() if mon else b""
+            return self._send(200, "application/octet-stream", body)
         return self._deny(404, "not found")
 
     def _stream(self) -> None:
@@ -1164,12 +1172,35 @@ class Handler(BaseHTTPRequestHandler):
         self._headers(200, "text/event-stream; charset=utf-8",
                       {"Connection": "close", "X-Accel-Buffering": "no"})
         self.end_headers()
+        # Two cadences on one connection: the full state every POLL_SECONDS
+        # (build_state stats NAS roots over SMB and must NOT run at 1 Hz),
+        # and `mon` frames for the resource charts. The state gate is
+        # ELAPSED TIME, not a tick counter -- sleep(1)+work drifts, and a
+        # counter both truncates a fractional POLL_SECONDS and speeds up as
+        # build_state slows down. The mon frame is a CURSOR: every sample
+        # after the last one sent, so a slow iteration ships the seconds it
+        # stepped over instead of silently dropping them -- a dropped second
+        # renders as a gap, and a gap means "the sampler could not read
+        # this", which would be a lie.
+        last_state = 0.0
+        last_mon_t = None
         try:
             while True:
-                chunk = f"data: {json.dumps(build_state())}\n\n".encode()
-                self.wfile.write(chunk)
-                self.wfile.flush()
-                time.sleep(POLL_SECONDS)
+                chunks = []
+                now = time.time()
+                if now - last_state >= POLL_SECONDS:
+                    last_state = now
+                    chunks.append(f"data: {json.dumps(build_state())}\n\n")
+                mon = sysmon.get()
+                samples = mon.since(last_mon_t) if mon else []
+                if samples:
+                    last_mon_t = samples[-1]["t"]
+                    chunks.append(f"event: mon\ndata: "
+                                  f"{json.dumps(samples)}\n\n")
+                if chunks:
+                    self.wfile.write("".join(chunks).encode())
+                    self.wfile.flush()
+                time.sleep(1.0)
         except (BrokenPipeError, ConnectionResetError, OSError):
             return
 
@@ -1585,6 +1616,12 @@ _PAGE = r"""<!doctype html>
      roots and measures ~2 s, so that gap used to render as a black screen.
      --skel is the ghost block, --skel-hi the shimmer crest that travels it. */
   --skel:#161a21; --skel-hi:#222834;
+  /* Resource-monitor chart series. Deliberately DIMMER than the page accents
+     (--hot/--cool/--good are tuned for text and badges): line charts want
+     OKLCH L 0.48-0.67 on this surface, and the trio is validated for
+     colour-vision separation. ch-1 = CPU / outbound / writes,
+     ch-2 = GPU / inbound / reads, ch-3 = RAM. */
+  --ch-1:#e05e12; --ch-2:#1f9ccf; --ch-3:#17a86b;
 }
 :root[data-theme="light"]{
   color-scheme:light;
@@ -1607,6 +1644,7 @@ _PAGE = r"""<!doctype html>
   --halo-good:rgba(15,122,85,.18); --halo-good-2:rgba(15,122,85,.05);
   --band-bd:#2f7357;
   --skel:#e6eaf1; --skel-hi:#f4f7fb;
+  --ch-1:#c2540f; --ch-2:#0567a0; --ch-3:#128a50;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{-webkit-text-size-adjust:100%}
@@ -1960,6 +1998,40 @@ tr.pin-end td{border-bottom:2px solid var(--cool-bd)}
 @keyframes fadein{from{opacity:0}}
 footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3);
        display:flex;gap:14px;flex-wrap:wrap}
+
+/* ---- Resource monitor. Three canvases fed off the 1 s `mon` SSE frames,
+   entirely OUTSIDE paint()'s repaint keys -- a chart redraw must never
+   rebuild a table, and a table rebuild never touches a chart. Series
+   colours are the --ch-* tokens (both themes); the canvas reads them via
+   getComputedStyle at draw time, so a theme flip corrects on the next
+   frame. Swatches are CLASSES because CSP blocks style attributes. ---- */
+#sysmon{position:relative;background:var(--panel);border:1px solid var(--line);
+  border-radius:var(--r);padding:14px 16px 10px;margin-bottom:18px}
+.monhead{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.montitle{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--ink-3)}
+.monnote{font-size:11px;color:var(--ink-3)}
+.monzoom{margin-left:auto;display:flex;align-items:center;gap:10px;
+  font-size:11.5px;color:var(--ink-3)}
+#monZoom{width:180px;accent-color:var(--hot)}
+#monZoom:focus-visible{outline:2px solid var(--cool);outline-offset:2px}
+.monchart{margin-top:10px}
+.monlab{display:flex;align-items:baseline;gap:8px;font-size:11px;color:var(--ink-3);
+  text-transform:uppercase;letter-spacing:.07em;margin-bottom:2px;flex-wrap:wrap}
+.monlab .unit{text-transform:none}
+.monleg{display:flex;gap:14px;margin-left:auto;letter-spacing:normal;
+  text-transform:none;font-size:11.5px;flex-wrap:wrap}
+.monleg .sw{display:inline-block;width:8px;height:8px;border-radius:2px;
+  margin-right:5px}
+.sw.ch1{background:var(--ch-1)} .sw.ch2{background:var(--ch-2)} .sw.ch3{background:var(--ch-3)}
+.monleg b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+.monchart canvas{display:block;width:100%;height:96px;touch-action:pan-y}
+.monchart.tall canvas{height:118px}
+.montip{position:absolute;z-index:5;background:var(--panel-2);
+  border:1px solid var(--line);border-radius:8px;padding:8px 10px;
+  font-size:11.5px;pointer-events:none;min-width:150px}
+.montip .t{color:var(--ink-3);margin-bottom:4px;font-variant-numeric:tabular-nums}
+.montip .row{display:flex;justify-content:space-between;gap:14px;color:var(--ink-2)}
+.montip .row b{color:var(--ink);font-variant-numeric:tabular-nums;font-weight:600}
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation:none!important;transition:none!important}
 }
@@ -1971,6 +2043,10 @@ footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3)
    Every colour here is an existing token, so both themes are covered. ---- */
 @media (max-width:700px){
   body{padding:16px 12px 48px}
+  #monZoom{width:110px}
+  .monleg{gap:9px}
+  .monchart canvas{height:80px}
+  .monchart.tall canvas{height:96px}
   .kv{grid-template-columns:repeat(auto-fit,minmax(104px,1fr))}
   /* 60vh, floored so portrait phones keep a useful table, capped so the
      floor cannot exceed a short landscape viewport. */
@@ -2041,6 +2117,33 @@ footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3)
 </section>
 <section id="liveWrap">
   <div class="skelwrap" aria-hidden="true"><div class="card skel"><div class="skel sk-title"></div><div class="skel sk-bar"></div></div></div>
+</section>
+
+<section id="sysmon" aria-label="System resource monitor">
+  <div class="monhead">
+    <span class="montitle">This Mac</span>
+    <span class="monnote">1 s samples · shade = min–max · line = mean</span>
+    <span class="monnote" id="monSince"></span>
+    <span class="monzoom"><span id="monSpanLbl" class="unit num">24 h</span>
+      <input type="range" id="monZoom" min="0" max="100" value="100" step="1"
+             aria-label="Chart window, 1 hour to 24 hours"></span>
+  </div>
+  <div class="monchart tall">
+    <div class="monlab"><span>Utilization</span><span class="unit">%</span>
+      <span class="monleg" id="legU"></span></div>
+    <canvas id="monU"></canvas>
+  </div>
+  <div class="monchart">
+    <div class="monlab"><span>Network</span><span class="unit">MiB/s</span>
+      <span class="monleg" id="legN"></span></div>
+    <canvas id="monN"></canvas>
+  </div>
+  <div class="monchart">
+    <div class="monlab"><span>Disk I/O · all volumes</span><span class="unit">MiB/s</span>
+      <span class="monleg" id="legD"></span></div>
+    <canvas id="monD"></canvas>
+  </div>
+  <div class="montip" id="monTip" hidden></div>
 </section>
 
 <div class="tabs" role="tablist">
@@ -3199,6 +3302,356 @@ function conn(state,text){
   document.getElementById("connText").textContent=text;
 }
 
+/* ---- Resource monitor ---------------------------------------------------
+   Charts are fed by two sources: one history fetch (24 h of raw 32-byte
+   records, parsed with a DataView into a client-side ring mirroring the
+   server's), then 1 s `mon` SSE frames appended on top. Everything renders
+   from the ring, decimated to one bucket per pixel column with a MIN/MAX
+   band plus the mean line -- a one-second spike must survive a 24 h window,
+   and averaging alone would erase it.
+
+   Honesty rules, same as the tables: a second with no sample is a GAP in
+   the line, never an interpolation; a metric the sampler could not read
+   (GPU on a box with no readable accelerator) is an absent line and an em
+   dash, never a flat zero. The whole strip lives OUTSIDE paint() and its
+   repaint keys: a chart frame never rebuilds a table.
+
+   The slider maps 0..100 -> 1 h..24 h on a log scale (equal slider travel
+   feels like equal zoom factor); the window is always anchored at now. ---- */
+var MON_SLOTS=86400, MIB=1048576;
+function monSpan(pos){ return Math.round(3600*Math.pow(24,pos/100)); }
+function spanLabel(sec){
+  var h=sec/3600;
+  return (h>=9.5?Math.round(h):Math.round(h*10)/10)+" h";
+}
+function niceMax(v){
+  if(!(v>0)) return 1;
+  var p=Math.pow(10,Math.floor(Math.log(v)/Math.LN10)), m=v/p;
+  return (m<=1?1:m<=2?2:m<=5?5:10)*p;
+}
+function monTicks(span){
+  return span<=7200?900:span<=14400?1800:span<=28800?3600:
+         span<=43200?7200:10800;
+}
+function monBuckets(tsArr,valArr,t0,t1,cols){
+  var lo=new Float64Array(cols),hi=new Float64Array(cols),
+      sum=new Float64Array(cols),n=new Int32Array(cols),c,s,i,v;
+  for(c=0;c<cols;c++){ lo[c]=Infinity; hi[c]=-Infinity; }
+  var span=t1-t0;
+  for(s=t0;s<t1;s++){
+    i=s%MON_SLOTS;
+    if(tsArr[i]!==s) continue;      /* empty or >24 h stale slot */
+    v=valArr[i];
+    if(v!==v) continue;             /* NaN: metric unreadable that second */
+    c=((s-t0)*cols/span)|0; if(c>=cols) c=cols-1;
+    if(v<lo[c]) lo[c]=v; if(v>hi[c]) hi[c]=v; sum[c]+=v; n[c]++;
+  }
+  var avg=new Float64Array(cols);
+  for(c=0;c<cols;c++){
+    if(n[c]) avg[c]=sum[c]/n[c];
+    else { avg[c]=NaN; lo[c]=NaN; hi[c]=NaN; }
+  }
+  return {lo:lo,hi:hi,avg:avg,n:n};
+}
+function monFmtPct(v){ return v==null||v!==v?"—":Math.round(v)+"%"; }
+function monFmtMibs(v){
+  if(v==null||v!==v) return "—";
+  var m=v/MIB;
+  if(m<1){                 /* a live 50 KiB/s trickle must not print as 0 */
+    var kb=v/1024;
+    return (kb>=10?Math.round(kb):Math.round(kb*10)/10)+" KiB/s";
+  }
+  return (m>=10?Math.round(m):Math.round(m*10)/10)+" MiB/s";
+}
+function axLab(v){ return v>=10?Math.round(v):Math.round(v*10)/10; }
+function hhmm(t){ var d=new Date(t*1000);
+  return String(d.getHours()).padStart(2,"0")+":"
+        +String(d.getMinutes()).padStart(2,"0"); }
+
+var monTs=new Float64Array(MON_SLOTS), monV=[], monLast=null,
+    monEarliest=null;   /* oldest sample held; before it the chart says NO DATA */
+(function(){ for(var k=0;k<7;k++){ var a=new Float32Array(MON_SLOTS);
+  a.fill(NaN); monV.push(a); } })();
+
+/* ch-1 = CPU / outbound / writes, ch-2 = GPU / inbound / reads, ch-3 = RAM
+   -- identity is carried by the legend and tooltip, never colour alone. */
+var MON_CHARTS=[
+  {cv:"monU",leg:"legU",pctAxis:true,fmt:monFmtPct,scale:1,series:[
+    {k:0,tok:"--ch-1",cls:"ch1",label:"CPU"},
+    {k:1,tok:"--ch-2",cls:"ch2",label:"GPU"},
+    {k:2,tok:"--ch-3",cls:"ch3",label:"RAM"}]},
+  {cv:"monN",leg:"legN",fmt:monFmtMibs,scale:MIB,series:[
+    {k:3,tok:"--ch-2",cls:"ch2",label:"in"},
+    {k:4,tok:"--ch-1",cls:"ch1",label:"out"}]},
+  {cv:"monD",leg:"legD",axis:true,fmt:monFmtMibs,scale:MIB,series:[
+    {k:5,tok:"--ch-2",cls:"ch2",label:"read"},
+    {k:6,tok:"--ch-1",cls:"ch1",label:"write"}]}];
+
+var monCard=document.getElementById("sysmon"),
+    monTipEl=document.getElementById("monTip"),
+    monZoomEl=document.getElementById("monZoom"),
+    monLblEl=document.getElementById("monSpanLbl"),
+    monSinceEl=document.getElementById("monSince"),
+    monHover=null, monPos=100, monFetching=false,
+    monHistBroken=false, monDataV=0, monRaf=0;
+
+MON_CHARTS.forEach(function(ch){
+  ch.canvas=document.getElementById(ch.cv);
+  var host=document.getElementById(ch.leg);
+  ch.legRefs=ch.series.map(function(se){
+    var item=el("span","");
+    item.appendChild(el("span","sw "+se.cls));
+    item.appendChild(document.createTextNode(se.label+" "));
+    var b=el("b","","—"); item.appendChild(b); host.appendChild(item);
+    return b;
+  });
+});
+
+try{ var _sv=localStorage.getItem("smeltr.monspan");
+  if(_sv!=null&&+_sv>=0&&+_sv<=100) monPos=+_sv; }catch(_){}
+monZoomEl.value=monPos;
+monLblEl.textContent=spanLabel(monSpan(monPos));
+monZoomEl.addEventListener("input",function(){
+  monPos=+monZoomEl.value;
+  monLblEl.textContent=spanLabel(monSpan(monPos));
+  try{ localStorage.setItem("smeltr.monspan",String(monPos)); }catch(_){}
+  monDrawSoon();
+});
+
+function monPush(t,vals){
+  var i=t%MON_SLOTS; monTs[i]=t;
+  for(var k=0;k<7;k++) monV[k][i]=(vals[k]==null?NaN:vals[k]);
+  if(monEarliest==null||t<monEarliest) monEarliest=t;
+  monLast={t:t,v:vals};
+  monDataV++;
+}
+
+function monLoad(){
+  if(monFetching) return;
+  monFetching=true;
+  fetch("/api/sysmon/history?t="+encodeURIComponent(token),{cache:"no-store"})
+    .then(function(r){ return r.ok?r.arrayBuffer():null; })
+    .then(function(buf){
+      monFetching=false;
+      if(!buf){ monHistFail(); return; }
+      monHistBroken=false;
+      var dv=new DataView(buf), t=0, i, k;
+      for(var o=0;o+32<=buf.byteLength;o+=32){
+        t=dv.getUint32(o,true); i=t%MON_SLOTS; monTs[i]=t;
+        if(monEarliest==null||t<monEarliest) monEarliest=t;
+        for(k=0;k<7;k++) monV[k][i]=dv.getFloat32(o+4+4*k,true);
+      }
+      monDataV++;
+      if(t&&(!monLast||t>monLast.t)){    /* records are oldest-first */
+        var vals=[]; i=t%MON_SLOTS;
+        for(k=0;k<7;k++){ var vv=monV[k][i]; vals.push(vv===vv?vv:null); }
+        monLast={t:t,v:vals};
+      }
+      monDrawSoon();
+    })
+    .catch(function(){ monFetching=false; monHistFail(); });
+}
+/* A FAILED history fetch is "history unavailable", never "no samples yet"
+   -- the server may hold a full 24 h we simply could not read. Retry. */
+function monHistFail(){
+  monHistBroken=true;
+  monDrawSoon();
+  setTimeout(monLoad,30000);
+}
+
+function monCss(name){
+  return getComputedStyle(document.documentElement)
+    .getPropertyValue(name).trim();
+}
+
+var MON_GUT=44, MON_PADT=6, MON_AXIS=16;
+function drawMon(ch,t0,t1,css){
+  var cv=ch.canvas, dpr=window.devicePixelRatio||1;
+  var w=cv.clientWidth, h=cv.clientHeight;
+  if(!w||!h) return;
+  var pw=Math.round(w*dpr), ph=Math.round(h*dpr);
+  if(cv.width!==pw||cv.height!==ph){ cv.width=pw; cv.height=ph; }
+  var ctx=cv.getContext("2d");
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+  var x0=MON_GUT, x1=w-6, y0=MON_PADT, y1=h-(ch.axis?MON_AXIS:6);
+  var cols=Math.max(1,Math.round(x1-x0));
+  /* Bucketing is O(window seconds) -- 86400 iterations per series at the
+     24 h zoom -- so it is cached per (window, width, data version): a
+     hover storm repaints from the cache instead of re-walking the day. */
+  var bkey=t0+"|"+t1+"|"+cols+"|"+monDataV, bks;
+  if(ch._bkey===bkey){ bks=ch._bks; }
+  else{
+    bks=ch.series.map(function(se){
+      return monBuckets(monTs,monV[se.k],t0,t1,cols); });
+    ch._bkey=bkey; ch._bks=bks;
+  }
+  var ymax;
+  if(ch.pctAxis) ymax=100;
+  else{
+    var m=0;
+    bks.forEach(function(b){ for(var c=0;c<cols;c++){
+      var v=b.hi[c]; if(v===v&&v>m) m=v; } });
+    ymax=niceMax(m/ch.scale)*ch.scale;
+    /* Hard 1 MiB/s floor: without it a quiet minute of background chatter
+       autoscales to a mountain range, and sub-1 axis labels round into
+       lies (0 / 0.1 / 0.1). */
+    if(!(ymax>=ch.scale)) ymax=ch.scale;
+  }
+  function X(sec){ return x0+(sec-t0)/(t1-t0)*(x1-x0); }
+  function Y(v){ return y1-(Math.min(v,ymax)/ymax)*(y1-y0); }
+  ctx.font="10px "+css.mono;
+  /* The stretch of the window BEFORE the oldest held sample is washed with
+     the skeleton token: no-data must never look like a machine at rest. */
+  if(css.histStart>t0){
+    ctx.fillStyle=css.skel;
+    ctx.fillRect(x0,y0,Math.min(x1,X(css.histStart))-x0,y1-y0);
+  }
+  ctx.strokeStyle=css.grid; ctx.fillStyle=css.ink; ctx.lineWidth=1;
+  [0,0.5,1].forEach(function(f){
+    var y=Math.round(Y(ymax*f))+0.5;
+    ctx.beginPath(); ctx.moveTo(x0,y); ctx.lineTo(x1,y); ctx.stroke();
+    ctx.textAlign="right"; ctx.textBaseline="middle";
+    ctx.fillText(String(ch.pctAxis?Math.round(100*f):axLab(ymax*f/ch.scale)),
+                 x0-6,Math.max(y0+4,Math.min(y1-4,y)));
+  });
+  var step=monTicks(t1-t0);
+  for(var tt=Math.ceil(t0/step)*step;tt<t1;tt+=step){
+    var gx=Math.round(X(tt))+0.5;
+    ctx.strokeStyle=css.grid;
+    ctx.beginPath(); ctx.moveTo(gx,y0); ctx.lineTo(gx,y1); ctx.stroke();
+    if(ch.axis){
+      ctx.fillStyle=css.ink; ctx.textAlign="center"; ctx.textBaseline="top";
+      ctx.fillText(hhmm(tt),gx,y1+4);
+    }
+  }
+  ch.series.forEach(function(se,si){
+    var b=bks[si], colr=monCss(se.tok);
+    ctx.globalAlpha=0.16; ctx.fillStyle=colr;
+    for(var c=0;c<cols;c++){
+      if(b.lo[c]!==b.lo[c]) continue;
+      var yh=Y(b.hi[c]), yl=Y(b.lo[c]);
+      ctx.fillRect(x0+c,yh,1,Math.max(1,yl-yh));
+    }
+    ctx.globalAlpha=1;
+    ctx.strokeStyle=colr; ctx.lineWidth=1.6; ctx.lineJoin="round";
+    ctx.beginPath();
+    var pen=false;
+    for(c=0;c<cols;c++){
+      var v=b.avg[c];
+      if(v!==v){ pen=false; continue; }   /* gap: break, never bridge */
+      var y=Y(v);
+      if(pen) ctx.lineTo(x0+c+0.5,y);
+      else { ctx.moveTo(x0+c+0.5,y); pen=true; }
+    }
+    ctx.stroke();
+  });
+  if(monHover&&monHover.t>=t0&&monHover.t<t1){
+    var hx=Math.round(X(monHover.t))+0.5;
+    ctx.strokeStyle=css.ink3; ctx.globalAlpha=0.7;
+    ctx.beginPath(); ctx.moveTo(hx,y0); ctx.lineTo(hx,y1); ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+  ch._geom={x0:x0,x1:x1,t0:t0,t1:t1};
+}
+
+/* All redraw triggers funnel through one rAF gate: N pointermove events in
+   a frame cost one draw, and a draw never runs on a hidden tab. */
+function monDrawSoon(){
+  if(monRaf||document.hidden) return;
+  monRaf=requestAnimationFrame(function(){ monRaf=0; monDraw(); });
+}
+function monDraw(){
+  if(document.hidden) return;
+  var now=Math.floor(Date.now()/1000);
+  var span=monSpan(monPos), t1=now+1, t0=t1-span;
+  /* Gridlines carry the scale, so they use --line (a data reference), not
+     the fainter --td-line row separator; numerals get --ink-2 for the same
+     reason -- the axis is the only thing separating a 0.2 MiB/s chart from
+     a 200 MiB/s one. */
+  var early=monEarliest;
+  if(early!=null&&early<t1-MON_SLOTS) early=t1-MON_SLOTS;
+  var css={ink:monCss("--ink-2"),ink3:monCss("--ink-3"),
+           grid:monCss("--line"),skel:monCss("--skel"),
+           mono:monCss("--mono")||"monospace",
+           histStart:(early==null?t1:Math.max(t0,early))};
+  MON_CHARTS.forEach(function(ch){ drawMon(ch,t0,t1,css); });
+  /* The legend is the LATEST sample, and says so; a sampler that has gone
+     quiet must show an em dash, not its last reading forever. */
+  var stale=!monLast||now-monLast.t>5;
+  monSinceEl.textContent=
+    monHistBroken?"history unavailable — live only":
+    early==null?"no samples yet":(early>t0?"history since "+hhmm(early):"");
+  MON_CHARTS.forEach(function(ch){
+    ch.series.forEach(function(se,si){
+      var v=stale?null:monLast.v[se.k];
+      ch.legRefs[si].textContent=ch.fmt(v==null?null:v);
+    });
+  });
+  monTipDraw(t0,t1);
+}
+
+function monSampleAt(t,tol){
+  for(var d=0;d<=tol;d++){
+    var a=t-d, i=a%MON_SLOTS;
+    if(a>0&&monTs[i]===a) return a;
+    var b=t+d; i=b%MON_SLOTS;
+    if(monTs[i]===b) return b;
+  }
+  return null;
+}
+var MON_NAMES=["CPU","GPU","RAM","net in","net out","disk read","disk write"];
+function monTipDraw(t0,t1){
+  if(!monHover){ monTipEl.hidden=true; return; }
+  var tol=Math.max(2,Math.round((t1-t0)/600));
+  var st=monSampleAt(monHover.t,tol);
+  monTipEl.replaceChildren();
+  /* The tooltip is ONE 1-second sample; the line under the cursor is a
+     bucket mean. Scope it explicitly so the two cannot be read as the
+     same number disagreeing. */
+  var when=st||monHover.t, d=new Date(when*1000);
+  monTipEl.appendChild(el("div","t",
+    "1 s sample · "+hhmm(when)+":"+String(d.getSeconds()).padStart(2,"0")));
+  for(var k=0;k<7;k++){
+    var row=el("div","row");
+    row.appendChild(el("span","",MON_NAMES[k]));
+    var v=null;
+    if(st!=null){ var raw=monV[k][st%MON_SLOTS]; if(raw===raw) v=raw; }
+    row.appendChild(el("b","",k<3?monFmtPct(v):monFmtMibs(v)));
+    monTipEl.appendChild(row);
+  }
+  var cr=monCard.getBoundingClientRect();
+  var lx=monHover.cx-cr.left+14, ly=monHover.cy-cr.top+10;
+  if(lx+180>cr.width) lx=Math.max(4,monHover.cx-cr.left-194);
+  monTipEl.style.left=lx+"px"; monTipEl.style.top=ly+"px";
+  monTipEl.hidden=false;
+}
+function monHoverEnd(){
+  if(!monHover) return;
+  monHover=null; monTipEl.hidden=true; monDrawSoon();
+}
+MON_CHARTS.forEach(function(ch){
+  ch.canvas.addEventListener("pointermove",function(ev){
+    var g=ch._geom; if(!g) return;
+    var r=ch.canvas.getBoundingClientRect(), x=ev.clientX-r.left;
+    if(x<g.x0||x>g.x1) return monHoverEnd();
+    monHover={t:Math.round(g.t0+(x-g.x0)/(g.x1-g.x0)*(g.t1-g.t0)),
+              cx:ev.clientX,cy:ev.clientY};
+    monDrawSoon();
+  });
+  ch.canvas.addEventListener("pointerleave",monHoverEnd);
+});
+
+if(window.ResizeObserver)
+  new ResizeObserver(monDrawSoon).observe(monCard);
+document.addEventListener("visibilitychange",function(){
+  if(!document.hidden) monDrawSoon(); });
+/* A theme flip swaps every token under the canvas; repaint from the new
+   ones. (System-mode OS flips re-resolve on the next 1 s frame anyway.) */
+new MutationObserver(monDrawSoon)
+  .observe(document.documentElement,{attributes:true,
+                                     attributeFilter:["data-theme"]});
+
 /* ---- Boot states --------------------------------------------------------
    Nothing paints until the first frame arrives, so the skeleton is all the
    user has until then. Two things can go wrong, and each gets a FACT rather
@@ -3243,7 +3696,12 @@ function bootFail(why){
 var slowTimer=setTimeout(bootSlow,BOOT_SLOW_MS);
 
 var es=new EventSource("/api/stream?t="+encodeURIComponent(token));
-es.onopen=function(){ conn("on","live"); };
+es.onopen=function(){ conn("on","live");
+  /* A reconnect means missed seconds (and possibly a restarted server whose
+     ring has samples this page never saw). Refetch history to fill the gap
+     rather than leave a hole that never heals. */
+  if(booted) monLoad();
+};
 es.onerror=function(){
   /* The spec permanently CLOSES an EventSource on a non-200 (e.g. a 403 from
      a stale token) -- it will never reconnect, so "reconnecting" would be a
@@ -3260,6 +3718,24 @@ es.onmessage=function(ev){
   if(!booted){ booted=true; clearTimeout(slowTimer);
     setTimeout(function(){ document.body.classList.add("booted"); },900); }
 };
+/* A `mon` frame is an ARRAY of samples -- the server's cursor ships every
+   second since the last frame, so a slow build_state() upstream cannot
+   punch fake gaps into the chart. */
+es.addEventListener("mon",function(ev){
+  try{ var arr=JSON.parse(ev.data); }catch(_){ return; }
+  if(!Array.isArray(arr)) return;
+  for(var j=0;j<arr.length;j++){
+    var m=arr[j];
+    if(!m||typeof m.t!=="number"||!Array.isArray(m.v)||m.v.length!==7) continue;
+    if(monLast&&m.t<=monLast.t) continue;
+    monPush(m.t,m.v);
+  }
+});
+/* The redraw clock is a plain interval, not the SSE frames: the window is
+   anchored to now and must keep sliding -- and the legend must go stale --
+   even when the sampler or the stream stops feeding it. */
+setInterval(monDrawSoon,1000);
+monLoad();
 })();
 </script>
 </body></html>
@@ -3280,6 +3756,10 @@ PAGE = _PAGE.replace("__NONCE__", NONCE).replace("__SCOPE__", _SCOPE)
 
 
 def main() -> None:
+    # The resource sampler: one daemon thread, 1 Hz, history in sysmon.ring
+    # beside the ledger. Started before serving so the first page load
+    # already has whatever the previous run persisted.
+    sysmon.start(core.SMELTR_DIR)
     port = free_port()
     httpd = ThreadingHTTPServer((BIND, port), Handler)
     httpd.daemon_threads = True

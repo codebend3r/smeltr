@@ -362,6 +362,33 @@ second request.
 
 ## Live telemetry — how the dashboard observes without steering
 
+- **The resource monitor (2026-08-25)** is a "This Mac" card between the live
+  card and the tabs: three canvas charts (Utilization %, Network MiB/s, Disk
+  I/O · all volumes MiB/s), 1 Hz samples, 24 h of history, a log-scale
+  1 h–24 h zoom slider. `sysmon.py` (imported ONLY by `server.py` — the
+  decision path never loads it) samples on a daemon thread and persists to
+  `sysmon.ring` beside the ledger: 16-byte magic header + 86400 slots of
+  `<I7f` keyed `ts % 86400`, so a restart costs seconds of gap, not the
+  chart. History reaches the page as raw ring records
+  (`GET /api/sysmon/history`, DataView-parsed); live samples as 1 s
+  `event: mon` SSE frames interleaved with the 2 s state frames on the same
+  connection — `build_state()` still runs at 2 s, never 1 Hz. The charts
+  live entirely OUTSIDE `paint()` and its repaint keys; the redraw clock is
+  a client interval, so the window keeps sliding and the legend goes to em
+  dashes when the sampler dies (the server never re-sends an unadvanced
+  sample). Honesty rules, pinned in `tests/test_sysmon.py` +
+  `tests/test_sysmon_ui.js`: a missing second is a line GAP, never an
+  interpolation; unreadable metrics are NaN → absent line and `—`, never 0;
+  decimation is min/max band + mean line so a 1 s spike survives a 24 h
+  window (the header says "shade = min–max · line = mean"); the window
+  before the oldest held sample is washed with `--skel` and captioned
+  "history since HH:MM" so an empty ring cannot read as an idle machine;
+  throughput axes have a hard 1 MiB/s floor (background chatter must not
+  autoscale into a mountain range) and sub-MiB values print as KiB/s so a
+  live trickle never rounds to 0. Chart series colours are the `--ch-*`
+  tokens (both themes, CVD-validated); the canvas resolves them at draw
+  time via getComputedStyle.
+
 - `core.live_encodes()` keys HandBrake logs and staging lookups by
   **basename** — the autopilot passes full `-i`/`-o` paths, and raw paths once
   nulled the live sizes and `folder`, hiding the encoding badge and defeating
