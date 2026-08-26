@@ -1761,8 +1761,30 @@ body:not(.booted) #liveWrap .card{animation-delay:.12s}
 .boot-fail b{display:block;color:var(--bad);font-size:14px;margin-bottom:5px}
 
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
-      padding:18px 20px;margin-bottom:18px}
+      padding:18px 20px;margin-bottom:18px;position:relative}
 .card.live{border-color:var(--live-bd);background:linear-gradient(180deg,var(--live-bg),var(--panel))}
+/* Collapsible cards. Collapse is a max-height CROP that leaves the card's
+   first strip (its title row) visible — one rule fits every card shape, and
+   the hidden content keeps receiving its in-place updates so expanding never
+   shows stale numbers. State lives in localStorage["smeltr.collapse"], keyed
+   per card, and is re-applied on every SSE rebuild. */
+.clps{position:absolute;top:10px;right:12px;border:1px solid transparent;
+      background:none;color:var(--ink-3);cursor:pointer;font-size:11px;
+      line-height:1;padding:3px 7px;border-radius:5px;z-index:2}
+.clps:hover{color:var(--ink-2);border-color:var(--line)}
+.clps.inhead{position:static;margin-left:8px}
+.card.collapsed,#sysmon.collapsed{max-height:46px;overflow:hidden;padding-bottom:0}
+/* The header's progress beacon: glows while anything is actually moving —
+   an encode, a push to the NAS, or a staging pull. Hidden when idle. Uses
+   the --warn token in both themes; prefers-reduced-motion stills the glow
+   into a steady dot. */
+.pulse{display:none;width:10px;height:10px;border-radius:50%;flex:none;
+       align-self:center;background:var(--warn);
+       box-shadow:0 0 4px var(--warn);
+       animation:pulseglow 1.6s ease-in-out infinite}
+.pulse.on{display:inline-block}
+@keyframes pulseglow{0%,100%{opacity:.35;box-shadow:0 0 2px var(--warn)}
+  50%{opacity:1;box-shadow:0 0 12px var(--warn)}}
 .card.alert{border-color:var(--alert-bd);background:linear-gradient(180deg,var(--alert-bg),var(--panel))}
 .card.alert .live-title{color:var(--bad)}
 /* A start/abort note that reports success is framed calm, not alarming. */
@@ -2104,6 +2126,7 @@ footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3)
 </head>
 <body>
 <header>
+  <span class="pulse" id="pulse"></span>
   <div class="wordmark">SMELTR<b>.</b></div>
   <div class="tag">remuxes in &middot; ingots out</div>
   <div class="conn"><span class="dot" id="dot"></span><span id="connText">connecting</span></div>
@@ -2253,6 +2276,30 @@ function api(path,payload){
   .finally(function(){ posting=false; });
 }
 
+/* Collapsible cards: chevron injected top-right, state per card key in
+   localStorage so SSE rebuilds and reloads keep the fold. localStorage can
+   throw (private windows); a failed read is just "nothing collapsed". */
+function clpsState(){
+  try{ return JSON.parse(localStorage.getItem("smeltr.collapse")||"{}"); }
+  catch(e){ return {}; }
+}
+function makeCollapsible(card,key){
+  if(!card||card.querySelector(":scope>.clps, :scope>.monhead>.clps")) return;
+  var st=clpsState(), head=card.querySelector(":scope>.monhead");
+  if(st[key]) card.classList.add("collapsed");
+  var b=el("button","clps"+(head?" inhead":""),st[key]?"▸":"▾");
+  b.type="button"; b.title="Collapse or expand this card";
+  b.addEventListener("click",function(){
+    var c=card.classList.toggle("collapsed");
+    b.textContent=c?"▸":"▾";
+    var s2=clpsState();
+    if(c) s2[key]=1; else delete s2[key];
+    try{ localStorage.setItem("smeltr.collapse",JSON.stringify(s2)); }
+    catch(e){}
+  });
+  (head||card).appendChild(b);
+}
+
 function renderAlert(s, note){
   var host=document.getElementById("alert"); host.replaceChildren();
   /* Outcome of the last start/abort. The slow halves (track parity, the kill
@@ -2261,6 +2308,7 @@ function renderAlert(s, note){
   if(note && note.msg){
     var nc=el("div","card alert"+(note.kind==="ok"?" okline":""));
     nc.appendChild(el("div","verdict"+(note.kind==="bad"?" loud":""),note.msg));
+    makeCollapsible(nc,"alert-note");
     host.appendChild(nc);
   }
   if(s.overrides_corrupt){
@@ -2270,6 +2318,7 @@ function renderAlert(s, note){
       "Skips and hand-priorities are NOT being applied — the pipeline is "+
       "running in stock bitrate order. Fix or delete the file; any skip or "+
       "reorder here rewrites it cleanly."));
+    makeCollapsible(oc,"alert-ov");
     host.appendChild(oc);
   }
   if(s.library_complete!==false) return;
@@ -2280,6 +2329,7 @@ function renderAlert(s, note){
     "An unmounted NAS empties the queue, which looks identical to having "+
     "finished. Every queue figure below is PARTIAL — do not read it as "+
     "\u201cnothing left to encode\u201d."));
+  makeCollapsible(c,"alert-lib");
   host.appendChild(c);
 }
 
@@ -2596,12 +2646,14 @@ function renderLive(live, s, driverAlive){
         }
         c.appendChild(pauseSwitch(true,
           "paused — nothing starts until resumed"));
+        makeCollapsible(c,"live");
         host.appendChild(c); return;
       }
       c.appendChild(el("div","live-title","Nothing encoding"));
       c.appendChild(el("div","verdict", s.x9_online
         ? "The staging drive is mounted and idle."
         : "The staging drive is not mounted."));
+      makeCollapsible(c,"live");
       host.appendChild(c); return;
     }
     live.forEach(function(e){
@@ -2634,6 +2686,7 @@ function renderLive(live, s, driverAlive){
           "syncs, and replaces its "
           +(e.source_bytes!=null?gib(e.source_bytes)+" ":"")+"library original"
         : "pause after this encode"));
+      makeCollapsible(c,"live");
       host.appendChild(c);
       liveRefs[e.title]=refs;
     });
@@ -3190,6 +3243,18 @@ function paint(s){
      their numbers are out of the key. It runs after a skipped rebuild too —
      an armed confirm or an active drag must not freeze a transfer. */
   updateProgress(s);
+  /* The header beacon: on while anything is actually MOVING — an encode, a
+     push to the NAS, a staging pull, or an arriving replenish. Toggled every
+     frame like the bars, never part of the repaint key. */
+  var pd=document.getElementById("pulse");
+  if(pd){
+    var busy=(s.live&&s.live.length>0)
+      ||(s.transfers&&s.transfers.length>0)
+      ||s.stage_active!=null
+      ||(s.queue&&s.queue.some(function(r){ return r.arriving_bytes!=null; }));
+    pd.classList.toggle("on",!!busy);
+    pd.title=busy?"Work in progress: encode, transfer, or staging pull":"";
+  }
   var nq=s.summary.queue_count!=null?s.summary.queue_count:s.queue.length;
   document.getElementById("tabQueue").textContent="Queue ("+nq+
     (s.summary.queue_skipped ? " · "+s.summary.queue_skipped+" skipped" : "")+")";
@@ -3678,6 +3743,10 @@ new MutationObserver(monDrawSoon)
    may put an error where the data would have been. ---- */
 var BOOT_SLOW_MS=8000;
 var booted=false;
+
+/* Static card: fold control attached once at load. The chevron rides in
+   .monhead (flex, right edge) so it never overlaps the zoom slider. */
+makeCollapsible(document.getElementById("sysmon"),"mon");
 
 function bootSkel(){ return document.getElementById("bootSkel"); }
 
