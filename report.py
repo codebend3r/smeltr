@@ -293,7 +293,9 @@ def section_ledger(hist, limit) -> str:
             "—" if r.get("saved_pct") is None else f"{r['saved_pct']:.1f}%",
             "—" if r.get("crf") is None else f"{r['crf']:g}",
             "—" if r.get("audio") is None else f"{r['audio']}a/{r['subs']}s",
-            r.get("dest") or "—",
+            # Matches the dashboard's two-pill rendering: volume · bucket,
+            # one field, not a path claiming to be complete.
+            (r.get("dest") or "—").replace("/", " · "),
             RECORD_LABEL.get(r.get("provenance"), r.get("provenance") or "—"),
             (r.get("finished_at") or "—")[:10],
         ])

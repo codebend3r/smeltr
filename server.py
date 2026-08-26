@@ -328,6 +328,37 @@ def _transfers() -> list:
 _arr_track: dict = {}
 
 
+def _sync_in_flight() -> bool:
+    """True while any `.syncing-<slug>` marker names a LIVE pid.
+
+    Mirrors the driver's sync_in_flight(): the marker alone is not evidence
+    (a stale one survives a crash); only a marker whose pid still answers
+    signal 0 counts. Surfaced so the header beacon does not go dark during
+    the sync's verify-and-delete of a library original — the one stretch of
+    the cycle where "is anything happening?" matters most.
+    """
+    try:
+        names = os.listdir(core.X9)
+    except OSError:
+        return False
+    for n in names:
+        if not n.startswith(".syncing-"):
+            continue
+        try:
+            with open(os.path.join(core.X9, n), encoding="utf-8") as fh:
+                pid = int(fh.read().strip() or "0")
+        except (OSError, ValueError):
+            continue
+        if pid <= 0:
+            continue
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            continue
+        return True
+    return False
+
+
 def _arrivals() -> dict:
     """Pulls still landing on the staging drive, keyed by folder (lowercased).
 
@@ -489,6 +520,7 @@ def build_state() -> dict:
             "ledger": hist,
             "queue": q,
             "transfers": _transfers(),
+            "syncing": _sync_in_flight(),
             "encode_note": note,
             "crf_choices": list(CRF_CHOICES),
             "stage_queue": pending,
@@ -1593,6 +1625,10 @@ _PAGE = r"""<!doctype html>
   --ink:#e8ecf2; --ink-2:#98a2b3; --ink-3:#5f6a7d;
   --hot:#ff7a2f; --hot-soft:#ff9a5c; --cool:#4cc9f0; --good:#3ddc97;
   --warn:#ffc857; --bad:#ff5c5c;
+  /* Beacon halo: --warn is a TEXT token (the light theme darkens it for
+     contrast), so a blur of it vanishes on a light background. The halo is
+     its own per-theme pair, ring-style like the connection dot's. */
+  --halo-warn:rgba(255,200,87,.28); --halo-warn-2:rgba(255,200,87,.07);
   /* Derived surfaces. Every colour that used to be a hex literal further down
      is named here instead -- a theme cannot override what it cannot name, and
      the dozen inline hexes were exactly the things that stayed dark. */
@@ -1632,6 +1668,7 @@ _PAGE = r"""<!doctype html>
      4.5:1, and --ink-3 is the one doing most of the small-text work. */
   --hot:#c2540f; --hot-soft:#b04e0c; --cool:#0b6f9e; --good:#0f7a55;
   --warn:#8a5a00; --bad:#c22f2d;
+  --halo-warn:rgba(138,90,0,.22); --halo-warn-2:rgba(138,90,0,.06);
   --live-bd:#f0cbab; --live-bg:#fff6ee;
   --alert-bd:#f0bab8; --alert-bg:#fff4f3;
   --good-bd:#a9dcc6; --warn-bd:#e4cd97; --bad-bd:#f0bab8;
@@ -1763,31 +1800,46 @@ body:not(.booted) #liveWrap .card{animation-delay:.12s}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
       padding:18px 20px;margin-bottom:18px;position:relative}
 .card.live{border-color:var(--live-bd);background:linear-gradient(180deg,var(--live-bg),var(--panel))}
-/* Collapsible cards. Collapse is a max-height CROP that leaves the card's
-   first strip (its title row) visible — one rule fits every card shape, and
-   the hidden content keeps receiving its in-place updates so expanding never
+/* Collapsible cards. Collapse hides everything but the card's FIRST child
+   (its title strip), cropped by LINE with a real ellipsis — never by pixel
+   height, which sliced text mid-glyph and read as a rendering glitch. The
+   hidden content keeps receiving its in-place updates so expanding never
    shows stale numbers. State lives in localStorage["smeltr.collapse"], keyed
-   per card, and is re-applied on every SSE rebuild. */
+   per card CONTENT (a fold saved on a calm card must never be inherited by
+   an alarming card in the same slot), and is re-applied on SSE rebuilds. */
 .clps{position:absolute;top:10px;right:12px;border:1px solid transparent;
       background:none;color:var(--ink-3);cursor:pointer;font-size:11px;
       line-height:1;padding:3px 7px;border-radius:5px;z-index:2}
 .clps:hover{color:var(--ink-2);border-color:var(--line)}
 .clps.inhead{position:static;margin-left:8px}
-/* Collapsed: trim the vertical padding so the surviving title strip sits
-   centred in the 46px crop instead of hugging the bottom edge. */
-.card.collapsed,#sysmon.collapsed{max-height:46px;overflow:hidden;
-  padding-top:11px;padding-bottom:11px}
-/* The header's progress beacon: glows while anything is actually moving —
-   an encode, a push to the NAS, or a staging pull. Hidden when idle. Uses
-   the --warn token in both themes; prefers-reduced-motion stills the glow
-   into a steady dot. */
-.pulse{display:none;width:10px;height:10px;border-radius:50%;flex:none;
-       align-self:center;background:var(--warn);
-       box-shadow:0 0 4px var(--warn);
+.card.collapsed,#sysmon.collapsed{padding-top:11px;padding-bottom:11px}
+.card.collapsed>*{display:none}
+.card.collapsed>.clps{display:block}
+.card.collapsed>:first-child{display:block;margin:0;padding-right:34px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* The live card's first strip is the chip row: keep the title and the
+   VERDICT chip (always appended last), drop the informational chips — a
+   collapsed DOWNSCALE or TRACK LOSS must not render like a healthy encode,
+   least of all on the phones where the chips wrapped out of the crop. */
+.card.collapsed>.live-top:first-child{display:flex;flex-wrap:nowrap;
+  white-space:normal;overflow:hidden}
+.card.collapsed .live-top>.chip{display:none}
+.card.collapsed .live-top>.chip:last-child{display:inline-block}
+#sysmon.collapsed>*{display:none}
+#sysmon.collapsed>.monhead{display:flex}
+/* The header's progress beacon: glows while something is actually MOVING —
+   an encode, a growing transfer, a staging pull, an arriving replenish, or
+   a sync replacing a library original. Stalled transfers do NOT light it:
+   "a transfer that is not moving is stalled, never a progress bar". Space
+   is reserved so the header never jitters when work starts or stops;
+   prefers-reduced-motion stills the glow into a steady ring. */
+.pulse{visibility:hidden;display:inline-block;width:10px;height:10px;
+       border-radius:50%;flex:none;align-self:center;background:var(--warn);
+       box-shadow:0 0 0 3px var(--halo-warn);
        animation:pulseglow 1.6s ease-in-out infinite}
-.pulse.on{display:inline-block}
-@keyframes pulseglow{0%,100%{opacity:.35;box-shadow:0 0 2px var(--warn)}
-  50%{opacity:1;box-shadow:0 0 12px var(--warn)}}
+.pulse.on{visibility:visible}
+@keyframes pulseglow{0%,100%{box-shadow:0 0 0 3px var(--halo-warn)}
+  50%{box-shadow:0 0 0 7px var(--halo-warn-2)}}
 .card.alert{border-color:var(--alert-bd);background:linear-gradient(180deg,var(--alert-bg),var(--panel))}
 .card.alert .live-title{color:var(--bad)}
 /* A start/abort note that reports success is framed calm, not alarming. */
@@ -2286,15 +2338,23 @@ function clpsState(){
   try{ return JSON.parse(localStorage.getItem("smeltr.collapse")||"{}"); }
   catch(e){ return {}; }
 }
-function makeCollapsible(card,key){
+function makeCollapsible(card,key,loud){
   if(!card||card.querySelector(":scope>.clps, :scope>.monhead>.clps")) return;
   var st=clpsState(), head=card.querySelector(":scope>.monhead");
-  if(st[key]) card.classList.add("collapsed");
-  var b=el("button","clps"+(head?" inhead":""),st[key]?"▸":"▾");
+  /* A loud card NEVER honours a stored fold: a fold saved on the calm card
+     that used to occupy this slot must not pre-hide a bad note, a loud
+     verdict, an offline-NAS warning, or the pause switch. The chevron stays
+     so it can still be folded BY HAND, this session, eyes open. */
+  var open=loud===true||!st[key];
+  if(!open) card.classList.add("collapsed");
+  var b=el("button","clps"+(head?" inhead":""),open?"▾":"▸");
   b.type="button"; b.title="Collapse or expand this card";
+  b.setAttribute("aria-label","Collapse or expand this card");
+  b.setAttribute("aria-expanded",open?"true":"false");
   b.addEventListener("click",function(){
     var c=card.classList.toggle("collapsed");
     b.textContent=c?"▸":"▾";
+    b.setAttribute("aria-expanded",c?"false":"true");
     var s2=clpsState();
     if(c) s2[key]=1; else delete s2[key];
     try{ localStorage.setItem("smeltr.collapse",JSON.stringify(s2)); }
@@ -2311,7 +2371,7 @@ function renderAlert(s, note){
   if(note && note.msg){
     var nc=el("div","card alert"+(note.kind==="ok"?" okline":""));
     nc.appendChild(el("div","verdict"+(note.kind==="bad"?" loud":""),note.msg));
-    makeCollapsible(nc,"alert-note");
+    makeCollapsible(nc,"alert-note",note.kind==="bad");
     host.appendChild(nc);
   }
   if(s.overrides_corrupt){
@@ -2321,7 +2381,7 @@ function renderAlert(s, note){
       "Skips and hand-priorities are NOT being applied — the pipeline is "+
       "running in stock bitrate order. Fix or delete the file; any skip or "+
       "reorder here rewrites it cleanly."));
-    makeCollapsible(oc,"alert-ov");
+    makeCollapsible(oc,"alert-ov",true);
     host.appendChild(oc);
   }
   if(s.library_complete!==false) return;
@@ -2332,7 +2392,7 @@ function renderAlert(s, note){
     "An unmounted NAS empties the queue, which looks identical to having "+
     "finished. Every queue figure below is PARTIAL — do not read it as "+
     "\u201cnothing left to encode\u201d."));
-  makeCollapsible(c,"alert-lib");
+  makeCollapsible(c,"alert-lib",true);
   host.appendChild(c);
 }
 
@@ -2649,14 +2709,14 @@ function renderLive(live, s, driverAlive){
         }
         c.appendChild(pauseSwitch(true,
           "paused — nothing starts until resumed"));
-        makeCollapsible(c,"live");
+        makeCollapsible(c,"live-idle");
         host.appendChild(c); return;
       }
       c.appendChild(el("div","live-title","Nothing encoding"));
       c.appendChild(el("div","verdict", s.x9_online
         ? "The staging drive is mounted and idle."
         : "The staging drive is not mounted."));
-      makeCollapsible(c,"live");
+      makeCollapsible(c,"live-idle");
       host.appendChild(c); return;
     }
     live.forEach(function(e){
@@ -2689,7 +2749,9 @@ function renderLive(live, s, driverAlive){
           "syncs, and replaces its "
           +(e.source_bytes!=null?gib(e.source_bytes)+" ":"")+"library original"
         : "pause after this encode"));
-      makeCollapsible(c,"live");
+      /* Distinct key from the idle card — folding "Nothing encoding" must
+         not fold the next real encode — and loud verdicts always open. */
+      makeCollapsible(c,"live-run",!!PROJ_LOUD[e.verdict]);
       host.appendChild(c);
       liveRefs[e.title]=refs;
     });
@@ -3185,11 +3247,18 @@ function renderLedger(rows, xfers){
       var destTd=el("td");
       if(r.dest){
         /* The letter bucket wears the SAME pill as its NAS — one destination,
-           one styling — instead of a muted "/W" beside a pill. */
+           one styling — instead of a muted "/W" beside a pill. An unknown
+           volume ("?") gets no pill on either half. dest records volume and
+           bucket but NOT the library root, and Vermithor holds two roots —
+           the tooltip carries the full path where the ledger recorded it. */
         var vol=r.dest.split("/")[0];
         destTd.appendChild(nasMark(vol));
         var rest=r.dest.slice(vol.length).replace(/^\//,"");
-        if(rest) destTd.appendChild(el("span","mark bucket "+nasClass(vol),rest));
+        if(rest && vol && vol!=="?")
+          destTd.appendChild(el("span","mark bucket "+nasClass(vol),rest));
+        else if(rest) destTd.appendChild(el("span","muted","/"+rest));
+        if(r.source_path)
+          destTd.title=r.source_path.replace(/\/[^/]*$/,"");
       }else destTd.appendChild(el("span","muted","—"));
       if(moving[r.title]) progSlot("led|"+r.title, destTd);
       tr.appendChild(destTd);
@@ -3251,12 +3320,17 @@ function paint(s){
      frame like the bars, never part of the repaint key. */
   var pd=document.getElementById("pulse");
   if(pd){
-    var busy=(s.live&&s.live.length>0)
-      ||(s.transfers&&s.transfers.length>0)
-      ||s.stage_active!=null
-      ||(s.queue&&s.queue.some(function(r){ return r.arriving_bytes!=null; }));
+    /* MOVING only. A stalled transfer or arrival is by definition not
+       progress, and a stale leftover .partial would otherwise pin the
+       beacon on forever while the table below says "stalled". */
+    var mvX=(s.transfers||[]).some(function(t){ return !t.stalled; });
+    var mvA=(s.queue||[]).some(function(r){
+      return r.arriving_bytes!=null && !r.arriving_stalled; });
+    var busy=(s.live&&s.live.length>0)||mvX||s.stage_active!=null
+      ||s.syncing===true||mvA;
     pd.classList.toggle("on",!!busy);
-    pd.title=busy?"Work in progress: encode, transfer, or staging pull":"";
+    pd.title=busy?"Work in progress: encode, transfer, staging pull, "+
+      "arrival, or a sync replacing a library original":"";
   }
   var nq=s.summary.queue_count!=null?s.summary.queue_count:s.queue.length;
   document.getElementById("tabQueue").textContent="Queue ("+nq+
@@ -3788,6 +3862,10 @@ es.onerror=function(){
      lie over frozen data. Say so plainly instead. */
   var dead=es.readyState===EventSource.CLOSED;
   conn("off", dead ? "disconnected — reload the page" : "reconnecting");
+  /* A pulsing beacon over a dead stream is a false proof of life — the
+     exact "log tails are not proof of life" failure, in CSS form. */
+  var p=document.getElementById("pulse");
+  if(p){ p.classList.remove("on"); p.title=""; }
   if(dead) bootFail("the live stream closed before any data arrived. "
     + "Your link may carry a stale token — reload the page, or reopen it "
     + "from ./smeltr url.");

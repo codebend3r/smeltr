@@ -277,6 +277,14 @@ def _ps_handbrake() -> list[dict]:
             pid = int(pid_s)
         except ValueError:
             continue
+        # The EXECUTABLE must be HandBrakeCLI, not merely mentioned in the
+        # command line: a shell whose -c script quotes a HandBrakeCLI
+        # invocation (a test harness, a grep) otherwise renders as a ghost
+        # live card with unexpanded $variables for -i/-o, inflates the
+        # queue's encoding count, and pins the header beacon on. Same
+        # lesson as the driver's `pgrep -x`.
+        if os.path.basename(cmd.split(" ", 1)[0]) != "HandBrakeCLI":
+            continue
         io = PS_IO_RE.search(cmd)
         if not io:
             continue
