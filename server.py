@@ -1895,6 +1895,9 @@ th.unit{text-transform:none}
 .xfer-pct{margin-left:6px;font-family:var(--mono);font-size:10.5px;color:var(--ink-2)}
 .mark{font-family:var(--mono);font-size:10.5px;padding:1.5px 6px;border-radius:5px;
       border:1px solid var(--line);color:var(--ink-3)}
+/* The letter bucket beside a NAS pill in "Moved to": same pill, same colour
+   class, just a hair of air between the two. */
+.mark.bucket{margin-left:4px}
 .mark.staged{color:var(--cool);border-color:var(--cool-bd)}
 .mark.next{color:var(--good);border-color:var(--good-bd)}
 .mark.next.paused{color:var(--warn);border-color:var(--warn-bd)}
@@ -2192,15 +2195,18 @@ function statCard(k,v,s,cls){
    snapshot, painted immediately so the click lands without waiting for SSE. */
 var NAS_FIXED={vhagar:"nas-cool",vermithor:"nas-good"};
 var NAS_CLASSES=["nas-cool","nas-good","nas-warn","nas-hot"];
-function nasMark(name){
-  if(!name||name==="?") return el("span","muted",name||"—");
+function nasClass(name){
   var cls=NAS_FIXED[name.toLowerCase()];
   if(!cls){
     var h=0;
     for(var i=0;i<name.length;i++) h=(h*31+name.charCodeAt(i))>>>0;
     cls=NAS_CLASSES[h%NAS_CLASSES.length];
   }
-  return el("span","mark "+cls,name);
+  return cls;
+}
+function nasMark(name){
+  if(!name||name==="?") return el("span","muted",name||"—");
+  return el("span","mark "+nasClass(name),name);
 }
 
 /* Parent folder of the original, relative to the NAS volume; the title
@@ -3122,10 +3128,12 @@ function renderLedger(rows, xfers){
         (r.audio==null?"—":r.audio+"a / "+r.subs+"s")));
       var destTd=el("td");
       if(r.dest){
+        /* The letter bucket wears the SAME pill as its NAS — one destination,
+           one styling — instead of a muted "/W" beside a pill. */
         var vol=r.dest.split("/")[0];
         destTd.appendChild(nasMark(vol));
-        var rest=r.dest.slice(vol.length);
-        if(rest) destTd.appendChild(el("span","muted",rest));
+        var rest=r.dest.slice(vol.length).replace(/^\//,"");
+        if(rest) destTd.appendChild(el("span","mark bucket "+nasClass(vol),rest));
       }else destTd.appendChild(el("span","muted","—"));
       if(moving[r.title]) progSlot("led|"+r.title, destTd);
       tr.appendChild(destTd);
