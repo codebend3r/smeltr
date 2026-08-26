@@ -1773,7 +1773,10 @@ body:not(.booted) #liveWrap .card{animation-delay:.12s}
       line-height:1;padding:3px 7px;border-radius:5px;z-index:2}
 .clps:hover{color:var(--ink-2);border-color:var(--line)}
 .clps.inhead{position:static;margin-left:8px}
-.card.collapsed,#sysmon.collapsed{max-height:46px;overflow:hidden;padding-bottom:0}
+/* Collapsed: trim the vertical padding so the surviving title strip sits
+   centred in the 46px crop instead of hugging the bottom edge. */
+.card.collapsed,#sysmon.collapsed{max-height:46px;overflow:hidden;
+  padding-top:11px;padding-bottom:11px}
 /* The header's progress beacon: glows while anything is actually moving —
    an encode, a push to the NAS, or a staging pull. Hidden when idle. Uses
    the --warn token in both themes; prefers-reduced-motion stills the glow
