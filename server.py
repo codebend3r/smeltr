@@ -1965,6 +1965,20 @@ th.unit{text-transform:none}
 .mark.xfer{color:var(--warn);border-color:var(--warn-bd)}
 .mark.stall{color:var(--bad);border-color:var(--bad-bd)}
 .rowxfer td{background:var(--row-hover)}
+/* History tab: a title whose file is still moving is drawn as a PAIR of rows
+   -- the ledger row, then a full-width row carrying the transfer. They read as
+   one row: the top half drops its bottom border and both halves wear the hover
+   tint permanently (same convention as .rowxfer above), so a hover can never
+   light up one half of a pair. */
+tr.rowmoving td{border-bottom:0}
+/* Tinted on the tr, not the td: below 700px the pinned .title-cell takes
+   background:inherit, and a tint painted on the cells would leave that one
+   cell the plain panel colour. */
+tr.rowmoving,tr.xrow{background:var(--row-hover)}
+tr.xrow td{padding-top:0}
+tr.xrow .progslot{display:flex;align-items:center;width:100%}
+tr.xrow .mark,tr.xrow .xfer-pct{flex:0 0 auto}
+tr.xrow .minibar{flex:1 1 auto;width:auto;height:6px}
 .minibar{display:inline-block;vertical-align:middle;margin-left:8px;width:84px;height:4px;
          border-radius:99px;background:var(--bar-bg);overflow:hidden}
 .minibar i{display:block;height:100%;background:var(--warn)}
@@ -2778,7 +2792,13 @@ function table(cols, rows, build){
     tr.appendChild(th); });
   thead.appendChild(tr); t.appendChild(thead);
   var tb=el("tbody");
-  rows.forEach(function(r,i){ tb.appendChild(build(r,i)); });
+  /* build() may return one <tr> or an ARRAY of them -- the History tab gives a
+     title whose file is still travelling a second, full-width row. */
+  rows.forEach(function(r,i){
+    var out=build(r,i);
+    if(Array.isArray(out)) out.forEach(function(n){ tb.appendChild(n); });
+    else tb.appendChild(out);
+  });
   t.appendChild(tb); return t;
 }
 
@@ -2958,15 +2978,16 @@ function arrState(r){
 }
 /* Both operands carry their unit and the queue-tab sentence names the file
    being moved — three sizes share that row and only labels keep them apart.
-   The History tab's cell already sits under a "Moved to" column, so it does
-   not repeat the destination. */
+   The History tab's pair still carries the destination on the row above, so
+   it does not repeat it. Rate and ETA are on BOTH tabs: the History row that
+   once had to omit them for want of space now owns a full row of its own. */
 function xferState(t,ledger){
   var stall=!!t.stalled;
   var moved=gib(t.done_bytes)+" of "+gib(t.total_bytes)+
             (ledger?" copied":" copied to "+t.nas);
   var txt = stall ? "no progress — "+moved
           : t.pct!=null ? pct(t.pct)+" · "+moved : moved;
-  if(!ledger && !stall && t.rate_bps>0)
+  if(!stall && t.rate_bps>0)
     txt+=" · "+(t.rate_bps/1e6).toFixed(0)+" MB/s · "+
          dur((t.total_bytes-t.done_bytes)/t.rate_bps)+" left";
   return {shape:stall?"stall":(t.pct!=null?"bar":"plain"),
@@ -3260,12 +3281,23 @@ function renderLedger(rows, xfers){
         if(r.source_path)
           destTd.title=r.source_path.replace(/\/[^/]*$/,"");
       }else destTd.appendChild(el("span","muted","—"));
-      if(moving[r.title]) progSlot("led|"+r.title, destTd);
       tr.appendChild(destTd);
       tr.appendChild(el("td","muted",RECORD[r.provenance]||r.provenance||"—"));
       tr.appendChild(el("td","muted",(r.finished_at||"—").slice(0,10)));
       if(r.note){ tr.title=r.note; }
-      return tr;
+      if(!moving[r.title]) return tr;
+      /* A push still in flight gets a SECOND row of its own, spanning every
+         column. Squeezed into the "Moved to" cell it had an 84px bar and a
+         caption that ran off the right edge of the table -- the one row on
+         the page whose numbers move was the one with no room. The destination
+         stays on the ledger row above (the pills), so the caption still does
+         not repeat it. */
+      tr.classList.add("rowmoving");
+      var xtr=el("tr","xrow"), xtd=el("td");
+      xtd.colSpan=11;
+      progSlot("led|"+r.title, xtd);
+      xtr.appendChild(xtd);
+      return [tr,xtr];
     }));
   var noted=[];
   ordered.forEach(function(r,i){
@@ -3369,6 +3401,10 @@ document.getElementById("resetOrder").addEventListener("click",function(){
   var pane=document.getElementById("pane"), cuts=[], pend=false;
   function applyCut(tbl,i,on){
     for(var r=0;r<tbl.rows.length;r++){
+      /* A full-width transfer row has ONE cell spanning every column; cells[0]
+         there is the whole row, not column 0. Blanking it would erase the
+         transfer instead of a sliced number. */
+      if(tbl.rows[r].classList.contains("xrow")) continue;
       var c=tbl.rows[r].cells[i];
       if(c) c.classList.toggle("cut",on);
     }

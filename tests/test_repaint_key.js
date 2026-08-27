@@ -140,9 +140,16 @@ check('a stalled pull says it is not moving',
 console.log('captions keep their units and their destination');
 check('the queue tab names the NAS being copied to',
   api.xferState(xfer(9 * GIB), false).text.indexOf('copied to Vhagar') >= 0);
-check('the History tab does not repeat it under "Moved to"',
+check('the History tab does not repeat it (the pills are on the row above)',
   api.xferState(xfer(9 * GIB), true).text.indexOf('copied to') < 0 &&
   api.xferState(xfer(9 * GIB), true).text.indexOf('copied') >= 0);
+check('BOTH tabs carry rate and ETA — the History row has a full row now',
+  ['MB/s', 'left'].every(w =>
+    api.xferState(xfer(9 * GIB), true).text.indexOf(w) >= 0 &&
+    api.xferState(xfer(9 * GIB), false).text.indexOf(w) >= 0));
+check('a stalled push claims no rate and no ETA on either tab',
+  [true, false].every(t =>
+    api.xferState(xfer(9 * GIB, { stalled: true }), t).text.indexOf('MB/s') < 0));
 check('both operands carry GiB',
   (api.xferState(xfer(9 * GIB), false).text.match(/GiB/g) || []).length === 2);
 check('a stalled push is never given a percentage bar',
