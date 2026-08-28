@@ -1,9 +1,10 @@
 #!/bin/bash
 # Every test. Bash suites skip cleanly when the staging drive is not mounted.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 rc=0
-echo "=== python ==="; python3 -m unittest discover -s tests || rc=1
+echo "=== lint ==="; bash tests/lint.sh || rc=1
+echo; echo "=== python ==="; python3 -m unittest discover -s tests || rc=1
 # Prefer the LIVE script; fall back to the tracked copy so a clone with no
 # staging drive (and CI) still exercises the concurrency guards instead of
 # skipping the suite that keeps a folder from being recorded twice.
