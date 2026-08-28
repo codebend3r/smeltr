@@ -81,8 +81,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      # E9 + the whole F set: syntax errors, undefined names, unused imports,
-      # redefinitions, unreachable code. No style rules -- see ruff.toml.
+      # F, E9, B, PLE: undefined names, unused imports, syntax/IO errors,
+      # likely-bug patterns, genuine pylint errors. No style rules -- and
+      # ruff.toml is the ONLY ruff config in the repo. See tests/lint.sh for
+      # the same checks run locally.
       - name: ruff
         run: |
           pip install --quiet 'ruff==0.16.5'
@@ -113,9 +115,7 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: every module compiles
-        run: |
-          python -m compileall -q core.py verdict.py next_title.py record.py \
-                                  server.py report.py sysmon.py seed_ledger.py
+        run: python -m compileall -q pipeline dashboard tools
 
       # There is no ledger.jsonl on a fresh clone (it is gitignored -- the driver
       # appends to it every cycle, so a tracked copy conflicts constantly). The
@@ -126,7 +126,7 @@ jobs:
 
   # ------------------------------------------------------------------ node
   # The projection strip, the repaint key, and the sysmon charts are pulled
-  # straight out of _PAGE and executed. No package.json, no install step.
+  # straight out of web/app.js and executed. No package.json, no install step.
   browser-logic:
     name: browser logic (node)
     runs-on: ubuntu-24.04
@@ -137,6 +137,9 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
+
+      # web/*.js are real files now: a plain parse, no extraction needed.
+      - run: for f in web/*.js; do node --check "$f"; done
 
       - run: node tests/test_projection_ui.js
       - run: node tests/test_repaint_key.js
@@ -166,7 +169,7 @@ jobs:
         run: brew install ffmpeg
 
       - name: watchdog corpse/finished boundary
-        run: bash tests/test_watchdog_triage.sh watchdog.sh
+        run: bash tests/test_watchdog_triage.sh ops/watchdog.sh
 
       # Skips cleanly here (the staging drive is not mounted on a runner). Kept
       # in CI so the skip is visible rather than assumed: if it ever starts
@@ -196,7 +199,7 @@ jobs:
           SMELTR_DIR: ${{ runner.temp }}/smeltr
         run: |
           mkdir -p "$SMELTR_DIR"
-          out=$(python report.py)
+          out=$(python dashboard/report.py)
           printf '%s\n' "$out"
           # The whole point: it must say the library is incomplete, and must not
           # present an empty queue as a finished job.
@@ -209,7 +212,7 @@ jobs:
         run: |
           mkdir -p "$SMELTR_DIR"
           set +e
-          python next_title.py 70 >/dev/null 2>err.txt
+          python pipeline/next_title.py 70 >/dev/null 2>err.txt
           rc=$?
           set -e
           cat err.txt
@@ -228,10 +231,14 @@ jobs:
         run: |
           mkdir -p "$SMELTR_DIR"
           python - <<'PY'
-          import server
+          from dashboard import server
           # Never bind a socket in CI; just prove the page and the state payload
-          # can be built, which is where a template or renderer typo would show.
+          # can be built. _PAGE is assembled from web/index.html + app.css +
+          # theme.js + app.js at import, so this is also the check that every
+          # placeholder still resolves -- a missing asset would otherwise render
+          # as a blank screen behind a working HTTP 200.
           page = server._PAGE
+          assert "__APP_JS__" not in page and "__APP_CSS__" not in page, "asset left unsubstituted"
           assert page.count('nonce="__NONCE__"') == 3, "CSP nonces changed"
           state = server.build_state()
           assert "summary" in state and "queue" in state, sorted(state)

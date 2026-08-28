@@ -13,9 +13,13 @@ import json
 import os
 import re
 import subprocess
+import sys
 import unittest
 
-import core
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from pipeline import core                                   # noqa: E402
+from dashboard import server                                # noqa: E402
 
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -70,7 +74,7 @@ TRACK_FLAGS = ("--all-audio", "--aencoder", "copy",
 class TrackPreservation(unittest.TestCase):
     """The flags that keep every audio and subtitle track."""
 
-    ENCODERS = ("staging/autopilot.sh", "server.py")
+    ENCODERS = ("staging/autopilot.sh", "dashboard/server.py")
 
     def test_every_encoder_passes_the_track_flags(self):
         for rel in self.ENCODERS:
@@ -96,7 +100,7 @@ class TrackPreservation(unittest.TestCase):
 
 
 class EncodeFlagParity(unittest.TestCase):
-    """server.py and autopilot.sh are two implementations of ONE procedure.
+    """dashboard/server.py and autopilot.sh are two implementations of ONE procedure.
 
     CLAUDE.md: "The encode-control block in server.py deliberately mirrors
     .autopilot.sh start_encode() -- same flags [...] a change to either must be
@@ -111,7 +115,7 @@ class EncodeFlagParity(unittest.TestCase):
     SHAPE = ("-f", "av_mkv", "-e", "x265_10bit", "--encoder-preset", "medium") + TRACK_FLAGS
 
     def test_both_build_the_same_encode(self):
-        for rel in ("staging/autopilot.sh", "server.py"):
+        for rel in ("staging/autopilot.sh", "dashboard/server.py"):
             src = read(rel)
             for flag in self.SHAPE:
                 self.assertTrue(flag in src, f"{rel} is missing {flag}")
@@ -123,7 +127,6 @@ class EncodeFlagParity(unittest.TestCase):
         auto-killed and never restarted. Widening this menu silently adds more
         of those dead ends.
         """
-        import server
         self.assertEqual(server.CRF_CHOICES, (16, 18, 20, 22, 24))
 
 
@@ -168,8 +171,11 @@ class DecisionPathIsolation(unittest.TestCase):
     port conflict able to halt an encode's verdict.
     """
 
-    DECISION_PATH = ("core.py", "verdict.py", "next_title.py", "record.py")
-    FORBIDDEN = ("server", "sysmon", "report")
+    DECISION_PATH = ("pipeline/core.py", "pipeline/verdict.py",
+                     "pipeline/next_title.py", "pipeline/record.py")
+    FORBIDDEN = ("server", "sysmon", "report",
+                 "dashboard", "dashboard.server", "dashboard.sysmon",
+                 "dashboard.report")
 
     def test_no_dashboard_import(self):
         for rel in self.DECISION_PATH:
@@ -233,7 +239,11 @@ class ShellScriptsParse(unittest.TestCase):
 
 # ---------------------------------------------------------------------- page
 
-PAGE = read("server.py")
+# The page used to be one r-string in server.py. It is now assembled from
+# web/index.html + app.css + theme.js + app.js at import. Assert against the
+# ASSEMBLED result, not the sources: that is what a browser receives, and it
+# fails loudly if a placeholder ever stops resolving.
+PAGE = server._PAGE
 
 
 class UnitsSurviveCSS(unittest.TestCase):
@@ -272,11 +282,9 @@ class ThemeTokens(unittest.TestCase):
     COLOUR = re.compile(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|color-mix\(|oklch\(")
 
     def blocks(self):
-        i = PAGE.index("_PAGE")
-        page = PAGE[i:]
         def one(sel):
-            j = page.index(sel)
-            return page[j:page.index("}", j)]
+            j = PAGE.index(sel)
+            return PAGE[j:PAGE.index("}", j)]
         return one(":root{"), one(':root[data-theme="light"]{')
 
     def test_every_token_used_is_defined(self):

@@ -31,7 +31,7 @@ select = ["F", "E9", "B", "PLE"]
 # `for prog in RE.finditer(...): pass` is the deliberate last-match idiom --
 # `prog` IS read after the loop. B007 reads the loop body only and cannot see
 # that. Intentional, not debt.
-"core.py" = ["B007"]
+"pipeline/core.py" = ["B007"]
 
 [format]
 # CONFIGURED BUT NOT YET ADOPTED. Running this today rewrites 862 lines across

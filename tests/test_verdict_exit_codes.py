@@ -22,7 +22,7 @@ import ast
 import os
 import unittest
 
-import verdict
+from pipeline import verdict
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -39,7 +39,7 @@ def verdict_words() -> set:
     Parsed rather than hand-listed so a word added to core.py fails this
     suite instead of silently inheriting the fallthrough.
     """
-    tree = ast.parse(source("core.py"))
+    tree = ast.parse(source("pipeline/core.py"))
     fn = next(n for n in ast.walk(tree)
               if isinstance(n, ast.FunctionDef) and n.name == "_verdict")
     words = set()
@@ -99,7 +99,7 @@ class NoDeadHaltSet(unittest.TestCase):
     """
 
     def test_halt_set_is_gone(self):
-        src = source("verdict.py")
+        src = source("pipeline/verdict.py")
         self.assertNotIn("HALT", src,
                          "HALT is back — make it total and read it in main(), "
                          "or drop it again")

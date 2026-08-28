@@ -28,8 +28,8 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import core
-import server
+from pipeline import core
+from dashboard import server
 
 
 GIB = 1024 ** 3

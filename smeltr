@@ -22,7 +22,7 @@ export SMELTR_BIND="${SMELTR_BIND:-lan}"
 # Match the FULL path. A bare "server.py" pattern matched any unrelated
 # server.py on the machine -- `stop` would have killed it, and `running` would
 # have adopted its pid and reported a stale URL as live.
-server_pids() { pgrep -f "$DIR/[s]erver\.py" 2>/dev/null; }
+server_pids() { pgrep -f "$DIR/[d]ashboard/server\.py" 2>/dev/null; }
 running() {
   if [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null; then return 0; fi
   local found; found=$(server_pids | head -1)
@@ -33,7 +33,7 @@ running() {
 start() {
   if running; then echo "already running: $(cat "$DIR/url" 2>/dev/null)"; return 0; fi
   rm -f "$DIR/url"
-  nohup "$PY" "$DIR/server.py" > "$DIR/server.log" 2>&1 &
+  nohup "$PY" "$DIR/dashboard/server.py" > "$DIR/server.log" 2>&1 &
   chmod 600 "$DIR/server.log" 2>/dev/null || true
   echo $! > "$PIDF"
   # Wait for the server to publish its URL rather than guessing a sleep length.
@@ -75,10 +75,10 @@ case "${1:-report}" in
   restart) stop >/dev/null; start ;;
   status) running && echo "running: $(cat "$DIR/url" 2>/dev/null)" || echo "not running" ;;
   url)    cat "$DIR/url" 2>/dev/null || { echo "not running" >&2; exit 1; } ;;
-  report) shift 2>/dev/null; running || start >/dev/null 2>&1; exec "$PY" "$DIR/report.py" "$@" ;;
-  record) shift; exec "$PY" "$DIR/record.py" "$@" ;;
-  verdict) shift; exec "$PY" "$DIR/verdict.py" "$@" ;;
-  next) shift; exec "$PY" "$DIR/next_title.py" "$@" ;;
+  report) shift 2>/dev/null; running || start >/dev/null 2>&1; exec "$PY" "$DIR/dashboard/report.py" "$@" ;;
+  record) shift; exec "$PY" "$DIR/pipeline/record.py" "$@" ;;
+  verdict) shift; exec "$PY" "$DIR/pipeline/verdict.py" "$@" ;;
+  next) shift; exec "$PY" "$DIR/pipeline/next_title.py" "$@" ;;
   open)   running || start >/dev/null 2>&1; exec open "$(cat "$DIR/url")" ;;
   *)      echo "usage: smeltr {start|stop|restart|status|url|open|report [...]|record <folder> [...]}" >&2; exit 2 ;;
 esac

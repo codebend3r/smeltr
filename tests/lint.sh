@@ -27,8 +27,7 @@ fi
 # path is parse-checked even where ruff is missing. This is the same command
 # `npm version` already runs as a preversion gate.
 echo "--- python syntax ---"
-if python3 -m compileall -q core.py verdict.py next_title.py record.py \
-     server.py report.py sysmon.py seed_ledger.py >/dev/null; then
+if python3 -m compileall -q pipeline dashboard tools >/dev/null; then
   echo "PASS all modules parse"
 else
   echo "FAIL a module does not parse"; rc=1
@@ -43,7 +42,7 @@ if command -v shellcheck >/dev/null 2>&1; then
   # staging/autopilot.sh is a MIRROR of the live X9 script (see
   # test_staging_in_sync.sh). It is checked, but a finding there must be fixed
   # on the X9 first and copied back -- never edited here alone.
-  if shellcheck -x -S warning smeltr watchdog.sh tests/*.sh; then
+  if shellcheck -x -S warning smeltr ops/*.sh tests/*.sh; then
     echo "PASS no shellcheck findings in repo-owned scripts"
   else
     rc=1
@@ -77,7 +76,8 @@ fi
 # behind a working HTTP 200, so `_asset()` raises -- prove it does not.
 echo "--- page assembles ---"
 if python3 -c "
-import server, sys
+from dashboard import server
+import sys
 missing = [m for m in ('__NONCE__','__SCOPE__','__APP_CSS__','__THEME_JS__','__APP_JS__')
            if m in server.PAGE]
 sys.exit('unsubstituted placeholder(s): ' + ', '.join(missing) if missing else 0)

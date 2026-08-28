@@ -13,8 +13,8 @@ Nothing here is interpolated to make the totals look tidier.
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import core
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pipeline import core
 from core import Entry, GIB
 
 # title, source GiB, output GiB, audio, subs, dest, note

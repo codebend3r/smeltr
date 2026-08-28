@@ -18,9 +18,9 @@ import subprocess
 import sys
 import time
 
-sys.path.insert(0, os.path.expanduser("~/.smeltr"))
-import core
-from core import Entry
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pipeline import core
+from pipeline.core import Entry
 
 
 def probe_tracks(path: str) -> tuple[int | None, int | None]:

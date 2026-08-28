@@ -41,9 +41,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import core
-import sysmon
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pipeline import core
+from dashboard import sysmon
 
 # Token persists across restarts in a 0600 file, so LAN devices survive the
 # `./smeltr restart` that every dashboard edit needs; a fresh mint would 403
@@ -1616,7 +1616,8 @@ def free_port(preferred: int = 8787) -> int:
 # carry, so the browser still receives ONE self-contained document. CSP stays
 # `default-src 'none'` -- nothing is fetched over the network, and there is
 # still no dependency to install.
-_WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+_WEB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    "web")
 
 
 def _asset(name: str) -> str:

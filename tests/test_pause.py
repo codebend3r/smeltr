@@ -19,8 +19,8 @@ import sys
 import tempfile
 import unittest
 
-import core
-import next_title
+from pipeline import core
+from pipeline import next_title
 
 
 class FlagFile(unittest.TestCase):
@@ -244,7 +244,7 @@ class PickNext(unittest.TestCase):
 
 class ServerGates(unittest.TestCase):
     def setUp(self):
-        import server
+        from dashboard import server
         self.server = server
         self._flag = core.PAUSE_FLAG
         self._tmp = tempfile.TemporaryDirectory()
@@ -320,7 +320,7 @@ class MarkReady(unittest.TestCase):
     not, because green means "going now" and while paused nothing goes."""
 
     def setUp(self):
-        import server
+        from dashboard import server
         self.server = server
         self._x9 = core.X9
         self._tmp = tempfile.TemporaryDirectory()
