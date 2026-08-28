@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Smeltr</title>
+<style nonce="__NONCE__">__APP_CSS__</style>
+<script nonce="__NONCE__">__THEME_JS__</script>
+</head>
+<body>
+<header>
+  <span class="pulse" id="pulse"></span>
+  <div class="wordmark">SMELTR<b>.</b></div>
+  <div class="tag">remuxes in &middot; ingots out</div>
+  <div class="conn"><span class="dot" id="dot"></span><span id="connText">connecting</span></div>
+  <div class="themeseg" role="group" aria-label="Theme">
+    <button class="themebtn" id="themeLight" type="button" title="Light theme" aria-label="Light theme" aria-pressed="false"><i></i></button>
+    <button class="themebtn" id="themeDark" type="button" title="Dark theme" aria-label="Dark theme" aria-pressed="false"><i class="full"></i></button>
+    <button class="themebtn" id="themeSystem" type="button" title="Follow system theme" aria-label="Follow system theme" aria-pressed="false"><i class="half"></i></button>
+  </div>
+</header>
+
+<section id="alert"></section>
+<section class="stats" id="stats" aria-label="Totals">
+  <div class="monhead">
+    <span class="montitle">Totals</span>
+    <span class="monnote" id="statsSum"></span>
+  </div>
+  <div class="statsgrid" id="statsGrid">
+  <div class="skelwrap skelgrid" aria-hidden="true"><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div></div>
+  </div>
+</section>
+<section id="liveWrap">
+  <div class="skelwrap" aria-hidden="true"><div class="card skel"><div class="skel sk-title"></div><div class="skel sk-bar"></div></div></div>
+</section>
+
+<section id="sysmon" aria-label="System resource monitor">
+  <div class="monhead">
+    <span class="montitle">This Mac</span>
+    <span class="monnote">1 s samples · shade = min–max · line = mean</span>
+    <span class="monnote" id="monSince"></span>
+    <span class="monzoom"><span id="monSpanLbl" class="unit num">24 h</span>
+      <input type="range" id="monZoom" min="0" max="100" value="100" step="1"
+             aria-label="Chart window, 1 hour to 24 hours"></span>
+  </div>
+  <div class="monchart tall">
+    <div class="monlab"><span>Utilization</span><span class="unit">%</span>
+      <span class="monleg" id="legU"></span></div>
+    <canvas id="monU"></canvas>
+  </div>
+  <div class="monchart">
+    <div class="monlab"><span>Network</span><span class="unit">MiB/s</span>
+      <span class="monleg" id="legN"></span></div>
+    <canvas id="monN"></canvas>
+  </div>
+  <div class="monchart">
+    <div class="monlab"><span>Disk I/O · all volumes</span><span class="unit">MiB/s</span>
+      <span class="monleg" id="legD"></span></div>
+    <canvas id="monD"></canvas>
+  </div>
+  <div class="montip" id="monTip" hidden></div>
+</section>
+
+<section id="tablewrap" aria-label="Queue and history">
+<div class="tabs clpshead" role="tablist">
+  <button class="tab" id="tabQueue"  role="tab" aria-selected="true"  aria-controls="paneQueue">Queue</button>
+  <button class="tab" id="tabLedger" role="tab" aria-selected="false" aria-controls="paneLedger">History</button>
+  <button class="tab" id="resetOrder" type="button" hidden>Reset order</button>
+</div>
+<div class="uinote" id="uiNotice" hidden></div>
+<div class="wrap"><div class="scroll" id="pane">
+  <div class="skelwrap" aria-hidden="true" id="bootSkel"><div class="sk-row"><div class="skel sk-cell sk-w34"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w28"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w41"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w24"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w37"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w31"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w45"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w27"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div></div>
+</div></div>
+</section>
+
+<footer>
+  <span id="gen"></span><span id="stopnote"></span><span>__SCOPE__ &middot; writes: skip/reorder, encode start/abort, stage pulls, pause/resume &middot; never judges, syncs or deletes a library original</span>
+</footer>
+
+<script nonce="__NONCE__">__APP_JS__</script>
+</body></html>

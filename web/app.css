@@ -1,0 +1,597 @@
+
+:root{
+  --r:10px;
+  /* Utility voice for machine-facing text: status chips, tagline, footer.
+     Data cells stay proportional + tabular-nums — tnum aligns digits without
+     monospace's width penalty, and reads better at 13px. Exception: the
+     queue's Src Mb/s / Src size / Src folder columns are mono by request. */
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  color-scheme:dark;
+  --bg:#08090b; --panel:#0f1116; --panel-2:#13161c; --line:#1e232c;
+  --ink:#e8ecf2; --ink-2:#98a2b3; --ink-3:#5f6a7d;
+  --hot:#ff7a2f; --hot-soft:#ff9a5c; --cool:#4cc9f0; --good:#3ddc97;
+  --warn:#ffc857; --bad:#ff5c5c;
+  /* Beacon halo: --warn is a TEXT token (the light theme darkens it for
+     contrast), so a blur of it vanishes on a light background. The halo is
+     its own per-theme pair, ring-style like the connection dot's. */
+  --halo-warn:rgba(255,200,87,.28); --halo-warn-2:rgba(255,200,87,.07);
+  /* Derived surfaces. Every colour that used to be a hex literal further down
+     is named here instead -- a theme cannot override what it cannot name, and
+     the dozen inline hexes were exactly the things that stayed dark. */
+  --live-bd:#3a2415; --live-bg:#16110d;
+  --alert-bd:#5a1d1d; --alert-bg:#1c0f0f;
+  --good-bd:#1d4435; --warn-bd:#4a3b18; --bad-bd:#4a1f1f;
+  --cool-bd:#1c3a47; --hot-bd:#4a3018;
+  --bar-bg:#1a1f27; --bar-inset:rgba(0,0,0,.5);
+  --tab-bd:#2c3543; --td-line:#14181f;
+  --row-hover:#12151b; --row-enc:#171208; --row-ready:#0b1712;
+  --thumb:#2a313d; --thumb-hover:#3b4553;
+  /* Motion accents: the molten bar's sheen, tip and heat glow, and the
+     status-dot halo. Tokens in BOTH themes, like every other colour. */
+  --sheen:rgba(255,255,255,.30); --tip:#ffe2c4; --glow:rgba(255,122,47,.40);
+  --halo-good:rgba(61,220,151,.15); --halo-good-2:rgba(61,220,151,.04);
+  /* Size-projection band. Ticks only, never a fill -- a filled zone on a
+     pill-shaped track reads as a value. 4.52:1 on --bar-bg (WCAG 1.4.11). */
+  --band-bd:#459473;
+  /* Boot skeleton. The page ships with #stats/#liveWrap/#pane empty and paints
+     nothing until the first SSE frame; a cold build_state() stats three NAS
+     roots and measures ~2 s, so that gap used to render as a black screen.
+     --skel is the ghost block, --skel-hi the shimmer crest that travels it. */
+  --skel:#161a21; --skel-hi:#222834;
+  /* Resource-monitor chart series. Deliberately DIMMER than the page accents
+     (--hot/--cool/--good are tuned for text and badges): line charts want
+     OKLCH L 0.48-0.67 on this surface, and the trio is validated for
+     colour-vision separation. ch-1 = CPU / outbound / writes,
+     ch-2 = GPU / inbound / reads, ch-3 = RAM. */
+  --ch-1:#e05e12; --ch-2:#1f9ccf; --ch-3:#17a86b;
+}
+:root[data-theme="light"]{
+  color-scheme:light;
+  --bg:#f5f7fa; --panel:#ffffff; --panel-2:#eef1f6; --line:#dde2ea;
+  --ink:#141922; --ink-2:#4d5768; --ink-3:#646d7e;
+  /* Accents darken rather than invert: the same hues, pulled down until they
+     carry on white. The 22px stat values only need 3:1, the 11px labels need
+     4.5:1, and --ink-3 is the one doing most of the small-text work. */
+  --hot:#c2540f; --hot-soft:#b04e0c; --cool:#0b6f9e; --good:#0f7a55;
+  --warn:#8a5a00; --bad:#c22f2d;
+  --halo-warn:rgba(138,90,0,.22); --halo-warn-2:rgba(138,90,0,.06);
+  --live-bd:#f0cbab; --live-bg:#fff6ee;
+  --alert-bd:#f0bab8; --alert-bg:#fff4f3;
+  --good-bd:#a9dcc6; --warn-bd:#e4cd97; --bad-bd:#f0bab8;
+  --cool-bd:#a6d3e6; --hot-bd:#f0cbab;
+  --bar-bg:#e3e7ee; --bar-inset:rgba(20,25,34,.12);
+  --tab-bd:#c6cedb; --td-line:#eff2f6;
+  --row-hover:#f4f7fa; --row-enc:#fff6ea; --row-ready:#edfaf3;
+  --thumb:#c8cfda; --thumb-hover:#a8b2c1;
+  --sheen:rgba(255,255,255,.60); --tip:#ffd9ae; --glow:rgba(194,84,15,.30);
+  --halo-good:rgba(15,122,85,.18); --halo-good-2:rgba(15,122,85,.05);
+  --band-bd:#2f7357;
+  --skel:#e6eaf1; --skel-hi:#f4f7fb;
+  --ch-1:#c2540f; --ch-2:#0567a0; --ch-3:#128a50;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--bg); color:var(--ink);
+  font:14px/1.5 ui-sans-serif,-apple-system,"SF Pro Text",Inter,system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
+  font-variant-numeric:tabular-nums; padding:28px 24px 64px; max-width:1680px; margin:0 auto;
+}
+.num,td.n,th.n{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+header{display:flex;align-items:baseline;gap:14px;margin-bottom:22px;flex-wrap:wrap}
+.wordmark{font-size:19px;font-weight:680;letter-spacing:-.02em}
+.wordmark b{color:var(--hot)}
+.tag{color:var(--ink-3);font-family:var(--mono);font-size:12px;letter-spacing:.01em}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ink-3);display:inline-block;
+     margin-right:6px;vertical-align:middle}
+.dot.on{background:var(--good);box-shadow:0 0 0 3px var(--halo-good);
+        animation:beat 2.4s ease-in-out infinite}
+@keyframes beat{0%,100%{box-shadow:0 0 0 3px var(--halo-good)}
+                50%{box-shadow:0 0 0 7px var(--halo-good-2)}}
+.dot.off{background:var(--bad);box-shadow:0 0 0 3px rgba(255,92,92,.15)}
+.conn{margin-left:auto;font-size:12px;color:var(--ink-3)}
+.themeseg{align-self:center;display:flex;background:var(--panel);
+  border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.themebtn{background:none;border:0;color:var(--ink-2);width:30px;height:28px;
+  padding:0;cursor:pointer;display:grid;place-items:center}
+.themebtn+.themebtn{border-left:1px solid var(--line)}
+.themebtn:hover{color:var(--ink)}
+.themebtn:focus-visible{outline:2px solid var(--cool);outline-offset:-2px}
+.themebtn[aria-pressed="true"]{background:var(--panel-2);color:var(--ink)}
+/* One glyph family, drawn from currentColor rather than emoji or font glyphs,
+   so it inverts with the theme and cannot render as a colour emoji:
+   hollow circle = light, filled = dark, half-filled = follow the system. */
+.themebtn i{display:block;width:13px;height:13px;border-radius:50%;
+  border:1.5px solid currentColor}
+.themebtn i.full{background:currentColor}
+.themebtn i.half{background:linear-gradient(90deg,currentColor 0 50%,transparent 50% 100%)}
+
+/* Every foldable region wears the SAME panel -- border, radius, padding,
+   margin -- so the chevrons land in one vertical column at the right
+   edge instead of three ragged offsets, and a fold reads as folding a
+   box rather than as content vanishing off a bare page. */
+#stats,#tablewrap{position:relative;background:var(--panel);
+  border:1px solid var(--line);border-radius:var(--r);
+  padding:14px 16px;margin-bottom:18px}
+.statsgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:10px}
+/* Cards inside a card: the inner tier steps to --panel-2 so six bordered
+   stats on a panel of the same colour do not read as one flat field. */
+#stats .stat{background:var(--panel-2)}
+/* The totals strip folds like the other cards. Its head carries a live
+   one-line digest that is REVEALED only while collapsed -- a fold that
+   hid every number would make a mounted library and an unmounted one
+   look identical, which is the failure this page refuses everywhere. */
+#stats>.monhead{margin-bottom:9px}
+#statsSum{display:none}
+#stats.collapsed #statsSum{display:inline}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:13px 15px}
+.stat .k{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--ink-3)}
+.stat .v{font-size:22px;font-weight:640;letter-spacing:-.02em;margin-top:5px;line-height:1.15}
+.stat .s{font-size:11.5px;color:var(--ink-3);margin-top:2px}
+.v.hot{color:var(--hot-soft)} .v.cool{color:var(--cool)}
+/* A stat that just changed flashes its frame once. The entrance runs only on
+   the first paint -- body.booted turns it off, or every SSE rebuild would
+   replay it and the page would twitch every two seconds. */
+.stat.flash{animation:statflash .9s ease-out}
+@keyframes statflash{from{border-color:var(--hot);box-shadow:0 0 10px var(--glow)}}
+body:not(.booted) .stat:not(.skel),body:not(.booted) .card:not(.skel){
+  animation:rise .5s cubic-bezier(.2,.7,.3,1) both}
+body:not(.booted) .stats .stat:nth-child(2){animation-delay:.05s}
+body:not(.booted) .stats .stat:nth-child(3){animation-delay:.1s}
+body:not(.booted) .stats .stat:nth-child(4){animation-delay:.15s}
+body:not(.booted) .stats .stat:nth-child(5){animation-delay:.2s}
+body:not(.booted) .stats .stat:nth-child(6){animation-delay:.25s}
+body:not(.booted) #liveWrap .card{animation-delay:.12s}
+@keyframes rise{from{opacity:0;transform:translateY(7px)}}
+
+/* ---- Boot skeleton -------------------------------------------------------
+   #stats, #liveWrap and #pane ship EMPTY -- nothing renders until the first
+   SSE frame, and a cold build_state() stats three NAS roots over SMB and
+   measures ~2 s. That gap rendered as a black page, and a stale token (which
+   permanently CLOSES the EventSource) rendered it forever.
+
+   These ghosts need NO teardown code: renderStats and renderQueue/renderLedger
+   call replaceChildren() outright, and renderLive's sig is never empty while a
+   fresh element has no data-sig, so the first real paint always removes them.
+
+   Held back 250 ms on purpose. State is cached, so a warm load paints almost
+   immediately; a skeleton visible at 0 ms would strobe on every reload. The
+   delay lives in the animation's own delay with `both` fill, so under
+   prefers-reduced-motion (where * animation:none wins) the ghosts simply
+   appear at once rather than being stranded at opacity 0 -- invisible. ---- */
+.skelwrap{animation:skelin .2s ease-out .25s both}
+@keyframes skelin{from{opacity:0}}
+.skel{background:var(--skel);border-radius:5px;position:relative;overflow:hidden}
+/* The crest travels the block. It is a sweep, never a fill that grows: a
+   growing fill on a ghost row would read as progress against a real number. */
+.skel::after{content:"";position:absolute;inset:0;
+  background:linear-gradient(90deg,transparent,var(--skel-hi),transparent);
+  animation:skelsweep 1.5s ease-in-out infinite}
+@keyframes skelsweep{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+.skel.card,.skel.stat{background:var(--panel)}
+.skel.card::after,.skel.stat::after{content:none}
+.sk-k{height:9px;width:52%}
+.sk-v{height:19px;width:70%;margin-top:9px}
+.sk-title{height:13px;width:38%}
+.sk-bar{height:12px;width:100%;margin-top:13px;border-radius:999px}
+.sk-row{display:flex;gap:14px;align-items:center;padding:9px 14px;
+        border-bottom:1px solid var(--td-line)}
+.sk-cell{height:10px}
+/* Ghost widths are CLASSES, not style attributes: CSP is style-src
+   'nonce-...' with no 'unsafe-inline', so an inline style attribute is
+   dropped silently and every ghost would collapse to zero width. Fixed
+   percentages, never random -- the page must paint identically each load. */
+.sk-w8{width:8%} .sk-w9{width:9%} .sk-w10{width:10%} .sk-w24{width:24%}
+.sk-w27{width:27%} .sk-w28{width:28%} .sk-w31{width:31%} .sk-w34{width:34%}
+.sk-w37{width:37%} .sk-w41{width:41%} .sk-w45{width:45%}
+/* #stats is the grid; the wrapper must not become a grid item itself or the
+   six ghosts stack in one column instead of spreading like real cards.
+   A display:contents box generates no box, so opacity cannot animate on
+   it -- the reveal moves to the children or the stats ghosts would skip
+   the delay and strobe on every warm load. */
+.skelgrid{display:contents;animation:none}
+.skelgrid>*{animation:skelin .2s ease-out .25s both}
+/* Boot messages. Both replace a guess with a fact: the first says the wait is
+   longer than normal, the second that there is nothing left to wait FOR. A
+   ghost that shimmers forever is the lie this project refuses everywhere else
+   ("stalled, never a progress bar"). */
+.boot-note{padding:13px 15px;color:var(--ink-3);font-size:12.5px;
+           border-top:1px solid var(--td-line)}
+.boot-fail{padding:26px 20px;text-align:center;color:var(--ink-2);font-size:13px}
+.boot-fail b{display:block;color:var(--bad);font-size:14px;margin-bottom:5px}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+      padding:18px 20px;margin-bottom:18px;position:relative}
+.card.live{border-color:var(--live-bd);background:linear-gradient(180deg,var(--live-bg),var(--panel))}
+/* Collapsible cards. Collapse hides everything but the card's FIRST child
+   (its title strip), cropped by LINE with a real ellipsis — never by pixel
+   height, which sliced text mid-glyph and read as a rendering glitch. The
+   hidden content keeps receiving its in-place updates so expanding never
+   shows stale numbers. State lives in localStorage["smeltr.collapse"], keyed
+   per card CONTENT (a fold saved on a calm card must never be inherited by
+   an alarming card in the same slot), and is re-applied on SSE rebuilds. */
+.clps{position:absolute;top:10px;right:12px;border:1px solid transparent;
+      background:none;color:var(--ink-3);cursor:pointer;font-size:11px;
+      line-height:1;padding:3px 7px;border-radius:5px;z-index:2}
+.clps:hover{color:var(--ink-2);border-color:var(--line)}
+/* Heads reserve the chevron's column rather than flowing around it --
+   the monitor's zoom slider used to run right up to where it sits. */
+.monhead,#tablewrap>.tabs{padding-right:26px}
+.card.collapsed,#sysmon.collapsed,#stats.collapsed,#tablewrap.collapsed{
+  padding-top:11px;padding-bottom:11px}
+.card.collapsed>*{display:none}
+.card.collapsed>.clps{display:block}
+.card.collapsed>:first-child{display:block;margin:0;padding-right:34px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* The live card's first strip is the chip row: keep the title and the
+   VERDICT chip (always appended last), drop the informational chips — a
+   collapsed DOWNSCALE or TRACK LOSS must not render like a healthy encode,
+   least of all on the phones where the chips wrapped out of the crop. */
+.card.collapsed>.live-top:first-child{display:flex;flex-wrap:nowrap;
+  white-space:normal;overflow:hidden}
+.card.collapsed .live-top>.chip{display:none}
+.card.collapsed .live-top>.chip:last-child{display:inline-block}
+#sysmon.collapsed>*{display:none}
+#sysmon.collapsed>.monhead{display:flex}
+#stats.collapsed>*{display:none}
+#stats.collapsed>.monhead{display:flex;margin-bottom:0}
+/* The queue/history table folds onto its own tab bar, which already
+   carries both row counts -- so the collapsed strip still says how much
+   work is queued and how much has landed. A live #uiNotice survives the
+   fold: it reports a REFUSED action and must never be folded away. */
+#tablewrap.collapsed>*{display:none}
+#tablewrap.collapsed>.tabs{display:flex;margin-bottom:0}
+#tablewrap.collapsed>#uiNotice:not([hidden]){display:block;margin:12px 0 0}
+#tablewrap>.wrap{border:0;border-radius:0;background:transparent}
+/* The header's progress beacon: glows while something is actually MOVING —
+   an encode, a growing transfer, a staging pull, an arriving replenish, or
+   a sync replacing a library original. Stalled transfers do NOT light it:
+   "a transfer that is not moving is stalled, never a progress bar". Space
+   is reserved so the header never jitters when work starts or stops;
+   prefers-reduced-motion stills the glow into a steady ring. */
+.pulse{visibility:hidden;display:inline-block;width:10px;height:10px;
+       border-radius:50%;flex:none;align-self:center;background:var(--warn);
+       box-shadow:0 0 0 3px var(--halo-warn);
+       animation:pulseglow 1.6s ease-in-out infinite}
+.pulse.on{visibility:visible}
+@keyframes pulseglow{0%,100%{box-shadow:0 0 0 3px var(--halo-warn)}
+  50%{box-shadow:0 0 0 7px var(--halo-warn-2)}}
+.card.alert{border-color:var(--alert-bd);background:linear-gradient(180deg,var(--alert-bg),var(--panel))}
+.card.alert .live-title{color:var(--bad)}
+/* A start/abort note that reports success is framed calm, not alarming. */
+.card.alert.okline{border-color:var(--good-bd);background:var(--panel)}
+.card.alert.okline .verdict{color:var(--good)}
+.live-top{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:4px}
+.live-title{font-size:17px;font-weight:640;letter-spacing:-.015em}
+.chip{font-size:11px;padding:2.5px 8px;border-radius:999px;border:1px solid var(--line);
+      color:var(--ink-2);background:var(--panel-2);white-space:nowrap}
+.chip.good{color:var(--good);border-color:var(--good-bd)} .chip.thin{color:var(--warn);border-color:var(--warn-bd)}
+.chip.bad{color:var(--bad);border-color:var(--bad-bd)}
+/* The molten pour. The one deliberately loud thing on the page: a heat glow,
+   a sheen flowing along the fill, a white-hot leading tip, and the exact
+   percentage beside it. The fill node is persistent across SSE frames (see
+   renderLive), so the width transition and the keyframes actually run. */
+.barrow{display:flex;align-items:center;gap:16px;margin:14px 0 10px}
+.bar{flex:1;height:10px;border-radius:99px;background:var(--bar-bg);
+     box-shadow:inset 0 1px 2px var(--bar-inset)}
+.bar>i{position:relative;display:block;height:100%;border-radius:99px;overflow:hidden;
+       background:linear-gradient(90deg,var(--hot),var(--hot-soft));
+       box-shadow:0 0 12px var(--glow);
+       transition:width .9s cubic-bezier(.4,0,.2,1)}
+.bar>i::before{content:"";position:absolute;top:0;bottom:0;left:0;width:45%;
+       background:linear-gradient(100deg,transparent 15%,var(--sheen) 50%,transparent 85%);
+       animation:sheen 2.1s ease-in-out infinite}
+.bar>i::after{content:"";position:absolute;right:0;top:0;bottom:0;width:7px;
+       border-radius:99px;background:var(--tip);
+       animation:tipglow 1.4s ease-in-out infinite alternate}
+@keyframes sheen{from{transform:translateX(-110%)}to{transform:translateX(340%)}}
+@keyframes tipglow{from{box-shadow:0 0 4px 1px var(--glow);opacity:.7}
+                   to{box-shadow:0 0 14px 4px var(--glow);opacity:1}}
+.pctbig{font-size:26px;font-weight:680;letter-spacing:-.02em;line-height:1;
+        color:var(--hot-soft);white-space:nowrap}
+/* Size projection -- the whole point of the job, in one strip. The scale is
+   0-100% OF THE SOURCE, so further left is always better, and the shaded zone
+   is the 30-80% target band. It renders before a projection exists: an empty
+   scale reads as "not known yet", where a missing component reads as "nothing
+   to say". No overflow:hidden -- the marker overhangs the track deliberately
+   so it stays visible at 0% and 100%. */
+.proj{margin:14px 0 2px;padding:12px 14px;border:1px solid var(--line);
+      border-radius:var(--r);background:var(--panel-2)}
+.proj-head{display:flex;justify-content:space-between;align-items:baseline;gap:16px;flex-wrap:wrap;cursor:pointer}
+.proj-disc{background:none;border:0;padding:2px 4px;margin-left:2px;
+  color:var(--ink-3);font-size:12px;line-height:1;cursor:pointer;align-self:center}
+.proj-disc:focus-visible{outline:2px solid var(--cool);outline-offset:2px}
+.proj.closed .proj-scale,.proj.closed .proj-legend,.proj.closed .proj-detail{display:none}
+.proj-head span{display:block;font-size:11px;color:var(--ink-3);
+      text-transform:uppercase;letter-spacing:.06em;margin-top:3px}
+/* Units survive CSS. uppercase renders GiB as GIB -- the same defect that once
+   turned Mb/s into MB/S on this page, one line under a correctly-cased GiB. */
+.proj-ratio span{text-transform:none;letter-spacing:0}
+.proj-size b,.proj-ratio b{font-size:22px;font-weight:680;letter-spacing:-.02em;line-height:1}
+.proj-ratio{text-align:right;margin-left:auto}
+.proj-ratio b{color:var(--ink-2)}
+.proj-ratio.on b{color:var(--good)}   .proj-ratio.under b{color:var(--cool)}
+.proj-ratio.over b{color:var(--warn)} .proj-ratio.bad b{color:var(--bad)}
+.proj-scale{position:relative;height:12px;margin:14px 0 6px;border-radius:99px;
+      background:var(--bar-bg);box-shadow:inset 0 1px 2px var(--bar-inset)}
+/* Ticks and a hairline, NOT a fill. This track sits 40px under the progress
+   bar, which is the same shape and where filled MEANS value -- a shaded zone
+   here read as "we are about halfway", especially before a marker exists. */
+.proj-zone{position:absolute;top:-4px;bottom:-4px;left:30%;width:50%;
+      border-left:2px solid var(--band-bd);border-right:2px solid var(--band-bd)}
+.proj-zone::after{content:"";position:absolute;left:0;right:0;top:50%;
+      height:1px;background:var(--band-bd)}
+.proj-mark{position:absolute;top:-4px;bottom:-4px;width:3px;border-radius:2px;
+      transform:translateX(-50%);background:var(--ink);
+      transition:left .9s cubic-bezier(.4,0,.2,1)}
+.proj-mark.on{background:var(--good)}   .proj-mark.under{background:var(--cool)}
+.proj-mark.over{background:var(--warn)} .proj-mark.bad{background:var(--bad)}
+.proj-legend{display:flex;justify-content:space-between;gap:8px;font-size:10.5px;
+      color:var(--ink-3);text-transform:uppercase;letter-spacing:.06em}
+.proj-lead{margin-top:10px;font-size:12.5px;font-weight:600;letter-spacing:.03em;
+      color:var(--ink-2);max-width:70ch}
+.proj-lead.on{color:var(--good)} .proj-lead.warn{color:var(--warn)}
+.proj-lead.bad{color:var(--bad)}
+.proj-detail{margin-top:4px;font-size:12px;color:var(--ink-3);max-width:70ch}
+/* A downscale makes the ratio meaningless -- the pixel count changed, so the
+   bytes are not comparable. Grey the figures rather than colour them. */
+.proj-ratio.lost b,.proj.lost .proj-size b{color:var(--ink-3)}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px 18px;margin-top:12px}
+.kv div span{display:block;font-size:11px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.06em}
+.kv div b{font-weight:580;font-size:14px}
+.verdict{margin-top:12px;font-size:12.5px;color:var(--ink-2);max-width:70ch}
+.verdict.loud{color:var(--warn);font-weight:560}
+.note{padding:10px 14px;font-size:11.5px;color:var(--ink-3);border-top:1px solid var(--line)}
+
+.tabs{display:flex;gap:6px;margin:0 0 12px}
+.tab{background:var(--panel);border:1px solid var(--line);color:var(--ink-2);
+     padding:6px 13px;border-radius:8px;font:inherit;font-size:12.5px;cursor:pointer;
+     transition:color .15s,border-color .15s,background .15s}
+.tab[aria-selected="true"]{background:var(--panel-2);color:var(--ink);border-color:var(--tab-bd)}
+.tab:focus-visible{outline:2px solid var(--cool);outline-offset:2px}
+
+.wrap{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:var(--panel)}
+/* NO scrollbar, and no space reserved for one. The pane still scrolls in both
+   axes -- only the bar is hidden.
+   Two properties are needed and BOTH are load-bearing. scrollbar-width:none is
+   the standard one; ::-webkit-scrollbar{display:none} is what actually removes
+   it in Safari/Chrome. Omitting the webkit rule and merely leaving the bar
+   unstyled does NOT work: macOS "Show scroll bars: Always" then paints a
+   permanent classic bar that also consumes layout width -- worse than the
+   11px gutter this replaced. Do not remove either line. */
+.scroll{max-height:60vh;overflow:auto;overflow-x:auto;scrollbar-width:none}
+.scroll::-webkit-scrollbar{display:none}
+table{border-collapse:separate;border-spacing:0;width:100%;font-size:13px;line-height:1.4}
+th,td{padding:8px 12px;text-align:left;white-space:nowrap}
+th{position:sticky;top:0;z-index:1;background:var(--panel-2);color:var(--ink-3);
+   font-weight:560;font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+   border-bottom:1px solid var(--line)}
+td{border-bottom:1px solid var(--td-line)}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover td{background:var(--row-hover)}
+td.n,th.n{text-align:right}
+.title-cell{white-space:normal;min-width:230px}
+.muted{color:var(--ink-3)}
+td.mono{font-family:var(--mono);font-size:12.5px}
+td.src-dir{font-family:var(--mono);font-size:11.5px;color:var(--ink-2)}
+/* th uppercases everything, which would turn Mb/s into MB/S -- an 8x unit
+   lie on the one column whose unit confusion already corrupted the old state
+   file. Headers carrying a unit keep their own case. */
+th.unit{text-transform:none}
+.mark.xfer{color:var(--warn);border-color:var(--warn-bd)}
+.mark.stall{color:var(--bad);border-color:var(--bad-bd)}
+.rowxfer td{background:var(--row-hover)}
+/* History tab: a title whose file is still moving is drawn as a PAIR of rows
+   -- the ledger row, then a full-width row carrying the transfer. They read as
+   one row: the top half drops its bottom border and both halves wear the hover
+   tint permanently (same convention as .rowxfer above), so a hover can never
+   light up one half of a pair. */
+tr.rowmoving td{border-bottom:0}
+/* Tinted on the tr, not the td: below 700px the pinned .title-cell takes
+   background:inherit, and a tint painted on the cells would leave that one
+   cell the plain panel colour. */
+tr.rowmoving,tr.xrow{background:var(--row-hover)}
+tr.xrow td{padding-top:0}
+tr.xrow .progslot{display:flex;align-items:center;width:100%}
+tr.xrow .mark,tr.xrow .xfer-pct{flex:0 0 auto}
+tr.xrow .minibar{flex:1 1 auto;width:auto;height:6px}
+.minibar{display:inline-block;vertical-align:middle;margin-left:8px;width:84px;height:4px;
+         border-radius:99px;background:var(--bar-bg);overflow:hidden}
+.minibar i{display:block;height:100%;background:var(--warn)}
+.minibar.pull i{background:var(--bad)}
+.xfer-pct{margin-left:6px;font-family:var(--mono);font-size:10.5px;color:var(--ink-2)}
+.mark{font-family:var(--mono);font-size:10.5px;padding:1.5px 6px;border-radius:5px;
+      border:1px solid var(--line);color:var(--ink-3)}
+/* The letter bucket beside a NAS pill in "Moved to": same pill, same colour
+   class, just a hair of air between the two. */
+.mark.bucket{margin-left:4px}
+.mark.staged{color:var(--cool);border-color:var(--cool-bd)}
+.mark.next{color:var(--good);border-color:var(--good-bd)}
+.mark.next.paused{color:var(--warn);border-color:var(--warn-bd)}
+.mark.enc{color:var(--hot-soft);border-color:var(--hot-bd)}
+.mark.pin{color:var(--cool);border-color:var(--cool-bd)}
+.mark.skip{color:var(--ink-2);border-style:dashed}
+/* A pending pull is INTENT, not arrival: dashed, like "skipped", because
+   nothing about the title has changed on disk yet. Solid marks on this page
+   all assert a fact about the file. */
+.mark.queued{color:var(--cool);border-color:var(--cool-bd);border-style:dashed}
+/* Categorical tint per NAS, stable per name. Known roots get fixed hues;
+   an unknown volume falls back to a name hash so it still colours stably. */
+.mark.nas-cool{color:var(--cool);border-color:var(--cool-bd)}
+.mark.nas-good{color:var(--good);border-color:var(--good-bd)}
+.mark.nas-warn{color:var(--warn);border-color:var(--warn-bd)}
+.mark.nas-hot{color:var(--hot-soft);border-color:var(--hot-bd)}
+.mark+.mark{margin-left:6px}
+.rowenc td{background:var(--row-enc)}
+.rowready td{background:var(--row-ready)}
+
+/* ---- Numeric queue columns. Colour here CARRIES INFORMATION, it is not
+   decoration: SRC Mb/s is the ranking key for the whole job, so it is banded
+   by value (>=90 hot, 80-89.9 warm, below that plain) and the eye can find the
+   fattest remaining sources without reading digits. Rank is quiet because it
+   is only a position; CRF is italic and muted because on an unstarted row it
+   is a PLAN, not a measurement. tabular-nums keeps the columns from dancing
+   as digits change. Every colour is a token so both themes reach it. ---- */
+td.q-rank{font-variant-numeric:tabular-nums;color:var(--ink-3);font-weight:560}
+td.q-mbps{font-variant-numeric:tabular-nums;font-weight:680}
+td.q-mbps.mbps-hi{color:var(--hot-soft)}
+td.q-mbps.mbps-mid{color:var(--warn)}
+td.q-mbps.mbps-lo{color:var(--ink-2)}
+td.q-size{font-variant-numeric:tabular-nums;font-weight:560;color:var(--cool)}
+td.q-crf{font-variant-numeric:tabular-nums;font-style:italic;color:var(--ink-3)}
+/* The live row shows the encoder's ACTUAL CRF -- a measurement, so it loses
+   the italic that marks a planned value. */
+.rowenc td.q-crf{font-style:normal;font-weight:640;color:var(--hot-soft)}
+.rowskip td.q-mbps,.rowskip td.q-size{color:var(--ink-3);font-weight:400}
+
+/* ---- Row actions live in the title cell and appear on hover. The reveal is
+   :hover OR :focus-within OR a coarse pointer -- a phone has no hover, and
+   this dashboard is bound to the LAN specifically so phones can reach it.
+   Hover-only here would mean the feature does not exist on the devices the
+   firewall was opened for. ---- */
+.title-cell{position:relative}
+.tcell{display:flex;align-items:center;gap:9px;justify-content:space-between}
+.tname{min-width:0}
+.rowacts{display:flex;align-items:center;gap:6px;flex:0 0 auto;
+         opacity:0;transition:opacity .12s}
+tr:hover .rowacts,tr:focus-within .rowacts,.rowacts.armed{opacity:1}
+.crfsel{background:var(--panel-2);border:1px solid var(--line);color:var(--ink-2);
+        font:inherit;font-size:11px;font-family:var(--mono);border-radius:6px;
+        padding:2px 4px;cursor:pointer}
+.crfsel:focus-visible{outline:2px solid var(--cool);outline-offset:2px}
+.act.go:hover{color:var(--good);border-color:var(--good-bd)}
+.act.armed{color:var(--bad);border-color:var(--bad-bd);font-weight:600}
+.rowskip td{opacity:.45}
+.rowskip td:last-child{opacity:1}
+.rowskip .title-cell{opacity:1}
+.rowskip .tname{color:var(--ink-3);text-decoration:line-through}
+/* Queue control. The grip drags, the button skips; both write only the
+   overrides file on the server, nothing else. */
+.grip{cursor:grab;color:var(--ink-3);user-select:none;-webkit-user-select:none;
+      letter-spacing:2px}
+th.gripcol,td.gripcol{width:30px;padding-right:2px}
+tr.dragsrc td{opacity:.35}
+tr.dropline td{box-shadow:inset 0 2px 0 0 var(--cool)}
+tr.dropline-after td{box-shadow:inset 0 -2px 0 0 var(--cool)}
+tr.pin-end td{border-bottom:2px solid var(--cool-bd)}
+.act{background:none;border:1px solid var(--line);color:var(--ink-3);border-radius:6px;
+     font:inherit;font-size:11px;padding:2.5px 9px;margin:-4px 0;cursor:pointer;
+     transition:color .15s,border-color .15s}
+.act:hover{color:var(--bad);border-color:var(--bad-bd)}
+.act.restore:hover{color:var(--good);border-color:var(--good-bd)}
+/* Pause-after-current: a switch, because it IS two-state ("let it run" /
+   "stop after this one"), unlike the one-shot row actions. Armed reads in
+   the warn amber -- a scheduled interruption, not a defect. Tokens only:
+   both themes inherit it. */
+.pauserow{margin-top:14px;display:flex;align-items:center;gap:10px}
+.swt{position:relative;width:36px;height:20px;flex:0 0 auto;padding:0;
+  border:1px solid var(--line);border-radius:999px;background:none;
+  cursor:pointer;transition:border-color .18s ease,background-color .18s ease}
+.swt i{position:absolute;top:3px;left:3px;width:12px;height:12px;
+  border-radius:50%;background:var(--ink-3);
+  transition:transform .18s ease,background-color .18s ease}
+.swt:hover{border-color:var(--warn-bd)}
+.swt:focus-visible{outline:2px solid var(--warn);outline-offset:2px}
+.swt.on{border-color:var(--warn-bd);background:var(--warn-bd)}
+.swt.on i{transform:translateX(16px);background:var(--warn)}
+.swt-label{font-family:var(--mono);font-size:11.5px;letter-spacing:.02em;
+  color:var(--ink-3)}
+.swt-label.on{color:var(--warn)}
+.act:focus-visible{outline:2px solid var(--cool);outline-offset:2px}
+.act:disabled{opacity:.5;cursor:default}
+.uinote{margin:0 0 12px;padding:10px 14px;border:1px solid var(--warn-bd);
+        border-radius:var(--r);background:var(--panel);color:var(--warn);font-size:12.5px}
+.empty{padding:28px;text-align:center;color:var(--ink-3);font-size:13px}
+.lnotes{padding:10px 14px;font-size:11.5px;color:var(--ink-2);
+        border-top:1px solid var(--line);display:grid;gap:6px}
+#pane>table,#pane>.empty{animation:fadein .22s ease-out}
+@keyframes fadein{from{opacity:0}}
+footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3);
+       display:flex;gap:14px;flex-wrap:wrap}
+
+/* ---- Resource monitor. Three canvases fed off the 1 s `mon` SSE frames,
+   entirely OUTSIDE paint()'s repaint keys -- a chart redraw must never
+   rebuild a table, and a table rebuild never touches a chart. Series
+   colours are the --ch-* tokens (both themes); the canvas reads them via
+   getComputedStyle at draw time, so a theme flip corrects on the next
+   frame. Swatches are CLASSES because CSP blocks style attributes. ---- */
+#sysmon{position:relative;background:var(--panel);border:1px solid var(--line);
+  border-radius:var(--r);padding:14px 16px 10px;margin-bottom:18px}
+.monhead{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.montitle{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--ink-3)}
+.monnote{font-size:11px;color:var(--ink-3)}
+.monzoom{margin-left:auto;display:flex;align-items:center;gap:10px;
+  font-size:11.5px;color:var(--ink-3)}
+#monZoom{width:180px;accent-color:var(--hot)}
+#monZoom:focus-visible{outline:2px solid var(--cool);outline-offset:2px}
+.monchart{margin-top:10px}
+.monlab{display:flex;align-items:baseline;gap:8px;font-size:11px;color:var(--ink-3);
+  text-transform:uppercase;letter-spacing:.07em;margin-bottom:2px;flex-wrap:wrap}
+.monlab .unit{text-transform:none}
+.monleg{display:flex;gap:14px;margin-left:auto;letter-spacing:normal;
+  text-transform:none;font-size:11.5px;flex-wrap:wrap}
+.monleg .sw{display:inline-block;width:8px;height:8px;border-radius:2px;
+  margin-right:5px}
+.sw.ch1{background:var(--ch-1)} .sw.ch2{background:var(--ch-2)} .sw.ch3{background:var(--ch-3)}
+.monleg b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+.monchart canvas{display:block;width:100%;height:96px;touch-action:pan-y}
+.monchart.tall canvas{height:118px}
+.montip{position:absolute;z-index:5;background:var(--panel-2);
+  border:1px solid var(--line);border-radius:8px;padding:8px 10px;
+  font-size:11.5px;pointer-events:none;min-width:150px}
+.montip .t{color:var(--ink-3);margin-bottom:4px;font-variant-numeric:tabular-nums}
+.montip .row{display:flex;justify-content:space-between;gap:14px;color:var(--ink-2)}
+.montip .row b{color:var(--ink);font-variant-numeric:tabular-nums;font-weight:600}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none!important;transition:none!important}
+}
+
+/* ---- Responsive. Below 700px the tables keep scrolling sideways: the
+   title column pins to the left edge (the title is the identity of a row --
+   an index column carries nothing the row order does not), and any column
+   sliced at a boundary is blanked by the seam script rather than clipped.
+   Every colour here is an existing token, so both themes are covered. ---- */
+@media (max-width:700px){
+  body{padding:16px 12px 48px}
+  #monZoom{width:110px}
+  .monleg{gap:9px}
+  .monchart canvas{height:80px}
+  .monchart.tall canvas{height:96px}
+  .kv{grid-template-columns:repeat(auto-fit,minmax(104px,1fr))}
+  /* 60vh, floored so portrait phones keep a useful table, capped so the
+     floor cannot exceed a short landscape viewport. */
+  .scroll{max-height:min(max(60vh,340px),72dvh)}
+  th,td{padding:7px 9px}
+  /* Row colour lives on the tr so the pinned title inherits it opaquely --
+     a transparent pinned cell shows the columns sliding through it. */
+  tr{background:var(--panel)}
+  thead tr{background:var(--panel-2)}
+  tbody tr:hover{background:var(--row-hover)}
+  .rowenc{background:var(--row-enc)}
+  /* Both tables mark the title th and td with .title-cell, so no per-table
+     column arithmetic is needed and left:0 is the only constant. Until the
+     scroll reaches it the title sits in its natural column; from then on it
+     docks at the left edge and the rest slides beneath it. */
+  .title-cell{min-width:190px;position:sticky;left:0;z-index:1;
+    background:inherit;border-right:1px solid var(--line)}
+  /* Headers float above the pinned title cells; the pinned corner above both. */
+  th{z-index:2}
+  th.title-cell{z-index:3}
+  /* A column sliced at a boundary renders EMPTY, not clipped. Clipped on its
+     left, a right-aligned "70.64 GiB" still parses -- as "0.64 GiB"; clipped
+     on its right it loses its unit and "78.24" bare could be Mb/s or GiB.
+     The .cut class is applied by the seam script at the bottom of the page. */
+  td.cut,th.cut{color:transparent}
+  td.cut *,th.cut *{visibility:hidden}
+}
+@media (pointer:coarse){
+  .themebtn{width:44px;height:44px}
+  .tab{padding:11px 16px}
+  /* HTML5 drag-and-drop does not exist on touch; hide the handles rather
+     than advertise a gesture that cannot work. Skip buttons stay. */
+  th.gripcol,td.gripcol{display:none}
+  .act{padding:9px 14px;margin:-10px 0}
+  /* No hover exists here, so the row actions are always shown. */
+  .rowacts{opacity:1}
+  .crfsel{padding:6px 6px;font-size:12px}
+}

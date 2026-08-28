@@ -62,31 +62,29 @@ else
 fi
 
 # -------------------------------------------------------------------- js lint
-# The dashboard's JS lives inside server.py's _PAGE string, so `node --check`
-# cannot see it directly -- extract it to a temp file and parse that. This is
-# the same coupling the three UI suites work around with brace-matching, and it
-# disappears the day _PAGE becomes a real file on disk.
+# web/*.js are real files now, so this is a plain parse -- no extracting
+# scripts out of a Python string first.
 if command -v node >/dev/null 2>&1; then
-  echo "--- js syntax (_PAGE) ---"
-  tmp="$(mktemp -t smeltr-page-XXXXXX).js"
-  if python3 - "$tmp" <<'PY'
-import re, sys
-src = open("server.py", encoding="utf-8").read()
-page = src[src.index('_PAGE = r"""'):]
-page = page[:page.index('\n"""')]
-blocks = re.findall(r'<script nonce="__NONCE__">(.*?)</script>', page, re.S)
-if not blocks:
-    print("no <script> blocks found in _PAGE", file=sys.stderr); raise SystemExit(1)
-open(sys.argv[1], "w", encoding="utf-8").write("\n;\n".join(blocks))
-PY
-  then
-    if node --check "$tmp"; then echo "PASS _PAGE scripts parse"; else rc=1; fi
-  else
-    echo "FAIL could not extract _PAGE scripts"; rc=1
-  fi
-  rm -f "$tmp"
+  echo "--- js syntax ---"
+  js_rc=0
+  for f in web/*.js; do node --check "$f" || js_rc=1; done
+  [ $js_rc -eq 0 ] && echo "PASS web/*.js parse" || rc=1
 else
   echo "SKIP: node not installed"
+fi
+
+# The page must still assemble. A missing or renamed asset is a blank screen
+# behind a working HTTP 200, so `_asset()` raises -- prove it does not.
+echo "--- page assembles ---"
+if python3 -c "
+import server, sys
+missing = [m for m in ('__NONCE__','__SCOPE__','__APP_CSS__','__THEME_JS__','__APP_JS__')
+           if m in server.PAGE]
+sys.exit('unsubstituted placeholder(s): ' + ', '.join(missing) if missing else 0)
+"; then
+  echo "PASS web/ assets inline with no placeholder left"
+else
+  echo "FAIL the page did not assemble"; rc=1
 fi
 
 echo
