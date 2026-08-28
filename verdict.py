@@ -22,7 +22,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import core
 
-HALT = {"suspect", "thin", "downscale"}
+# Auto-killed by `.watch-encode.sh` and retried one CRF rung lower. Every
+# OTHER non-good word falls through to 2 and stops the driver, including a
+# word this file has never heard of -- an unrecognised verdict must never
+# be able to authorise a deletion.
 LADDER = {"no-saving", "blowup"}
 
 

@@ -11,9 +11,12 @@ The two failures this pins:
     The fallthrough sends any unknown word to 2 (halt), which is the safe
     direction -- but "safe by accident of a fallthrough" is worth asserting
     rather than hoping for.
-  * `verdict.py`'s HALT set drifting from what actually halts. HALT is
-    currently DEAD -- defined, never read -- so a maintainer adding a word to
-    it gets no behaviour change while believing they configured one.
+  * `LADDER` drifting from what `core._verdict()` can actually return, which
+    would send a word meant for a CRF retry to the halt branch or the reverse.
+
+`HALT` used to sit beside `LADDER` here: defined, never read, and missing two
+of the words that do halt. It was deleted rather than completed -- the
+docstring already lists the codes, and `return 2` is the real fallthrough.
 """
 import ast
 import os
@@ -88,30 +91,26 @@ class Mapping(unittest.TestCase):
         self.assertEqual(exit_code_for("some-future-verdict"), 2)
 
 
-class HaltSetIsHonest(unittest.TestCase):
-    """HALT is declared but never read -- `return 2` is the real fallthrough.
+class NoDeadHaltSet(unittest.TestCase):
+    """`HALT` was dead code that read like the definition of "what halts".
 
-    That is not a bug today, but the constant reads like the definition of
-    'what halts' and is not. Either it is total, or it should be deleted.
+    If it comes back, it must be READ by main() and be total over the halting
+    words -- not a second, staler copy of the docstring.
     """
 
-    def test_halt_set_is_not_read_by_main(self):
+    def test_halt_set_is_gone(self):
         src = source("verdict.py")
-        body = src[src.index("def main("):]
-        self.assertNotIn("HALT", body,
-                         "HALT is now read by main(); update this suite to "
-                         "assert the mapping it drives")
+        self.assertNotIn("HALT", src,
+                         "HALT is back — make it total and read it in main(), "
+                         "or drop it again")
 
-    def test_halt_set_omits_words_that_do_halt(self):
-        """Documents the gap rather than asserting the constant is correct.
-
-        Delete HALT, or extend it to cover these, and change this test.
-        """
+    def test_halting_words_are_the_expected_set(self):
+        """The words that stop the driver, asserted directly instead of
+        through a constant that could drift from them."""
         halting = {w for w in verdict_words() | SYNTHETIC
                    if exit_code_for(w) == 2}
-        self.assertEqual(halting - verdict.HALT, {"unknown", "halt-decoder-errors"},
-                         "the set of words that halt but are missing from HALT "
-                         "has changed")
+        self.assertEqual(halting, {"suspect", "thin", "downscale", "unknown",
+                                   "halt-decoder-errors"})
 
 
 class Docstring(unittest.TestCase):

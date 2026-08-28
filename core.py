@@ -24,7 +24,7 @@ import re
 import statistics
 import subprocess
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from typing import Optional
 
 GIB = 1073741824
