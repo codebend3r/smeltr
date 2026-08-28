@@ -181,6 +181,19 @@ run — the title simply restarted at the CRF that had just blown up.
 `staging/autopilot.sh` in this repo tracks the live script for history.
 **The X9 copy is what runs.** `tests/test_staging_in_sync.sh` fails on drift.
 
+Deploy with **`ops/deploy-staging.sh`** (`--dry-run` first). It swaps each
+script by atomic `mv`, never `cp`: a rename replaces the directory entry while
+the running `bash` keeps reading its old inode, so the live driver finishes its
+cycle on the old code and the next launch picks up the new one. An in-place
+rewrite can garble the remaining commands of a running copy — including its
+deletion steps — which is why the "never edit a running staging script" rule
+exists and why a rename is the exception to it. Every swap leaves a
+timestamped `.bak-` beside the original.
+
+That drift is not hypothetical: the `next_reason()` fix committed in
+`11b1c15` sat undeployed for five days while `test_staging_in_sync.sh` stayed
+red, so the driver ran the racy version CLAUDE.md described as fixed.
+
 ### The watchdog, and why it may be blind
 
 `ops/watchdog.sh` relaunches the driver when it is merely absent. It NEVER restarts
