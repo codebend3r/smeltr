@@ -88,7 +88,9 @@ class Motion(unittest.TestCase):
 
 class Markup(unittest.TestCase):
     def test_ghosts_ship_inside_all_three_empty_containers(self):
-        for cid in ("stats", "liveWrap", "pane"):
+        # #stats is the collapsible section; its ghosts live one level in,
+        # inside the grid the head strip now sits above.
+        for cid in ("statsGrid", "liveWrap", "pane"):
             m = re.search(r'id="%s"[^>]*>(.*?)</(?:section|div)>' % cid,
                           server.PAGE, re.S)
             self.assertIsNotNone(m, f"#{cid} not found")

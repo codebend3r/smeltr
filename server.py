@@ -1720,7 +1720,24 @@ header{display:flex;align-items:baseline;gap:14px;margin-bottom:22px;flex-wrap:w
 .themebtn i.full{background:currentColor}
 .themebtn i.half{background:linear-gradient(90deg,currentColor 0 50%,transparent 50% 100%)}
 
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:10px;margin-bottom:18px}
+/* Every foldable region wears the SAME panel -- border, radius, padding,
+   margin -- so the chevrons land in one vertical column at the right
+   edge instead of three ragged offsets, and a fold reads as folding a
+   box rather than as content vanishing off a bare page. */
+#stats,#tablewrap{position:relative;background:var(--panel);
+  border:1px solid var(--line);border-radius:var(--r);
+  padding:14px 16px;margin-bottom:18px}
+.statsgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:10px}
+/* Cards inside a card: the inner tier steps to --panel-2 so six bordered
+   stats on a panel of the same colour do not read as one flat field. */
+#stats .stat{background:var(--panel-2)}
+/* The totals strip folds like the other cards. Its head carries a live
+   one-line digest that is REVEALED only while collapsed -- a fold that
+   hid every number would make a mounted library and an unmounted one
+   look identical, which is the failure this page refuses everywhere. */
+#stats>.monhead{margin-bottom:9px}
+#statsSum{display:none}
+#stats.collapsed #statsSum{display:inline}
 .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:13px 15px}
 .stat .k{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--ink-3)}
 .stat .v{font-size:22px;font-weight:640;letter-spacing:-.02em;margin-top:5px;line-height:1.15}
@@ -1811,8 +1828,11 @@ body:not(.booted) #liveWrap .card{animation-delay:.12s}
       background:none;color:var(--ink-3);cursor:pointer;font-size:11px;
       line-height:1;padding:3px 7px;border-radius:5px;z-index:2}
 .clps:hover{color:var(--ink-2);border-color:var(--line)}
-.clps.inhead{position:static;margin-left:8px}
-.card.collapsed,#sysmon.collapsed{padding-top:11px;padding-bottom:11px}
+/* Heads reserve the chevron's column rather than flowing around it --
+   the monitor's zoom slider used to run right up to where it sits. */
+.monhead,#tablewrap>.tabs{padding-right:26px}
+.card.collapsed,#sysmon.collapsed,#stats.collapsed,#tablewrap.collapsed{
+  padding-top:11px;padding-bottom:11px}
 .card.collapsed>*{display:none}
 .card.collapsed>.clps{display:block}
 .card.collapsed>:first-child{display:block;margin:0;padding-right:34px;
@@ -1827,6 +1847,16 @@ body:not(.booted) #liveWrap .card{animation-delay:.12s}
 .card.collapsed .live-top>.chip:last-child{display:inline-block}
 #sysmon.collapsed>*{display:none}
 #sysmon.collapsed>.monhead{display:flex}
+#stats.collapsed>*{display:none}
+#stats.collapsed>.monhead{display:flex;margin-bottom:0}
+/* The queue/history table folds onto its own tab bar, which already
+   carries both row counts -- so the collapsed strip still says how much
+   work is queued and how much has landed. A live #uiNotice survives the
+   fold: it reports a REFUSED action and must never be folded away. */
+#tablewrap.collapsed>*{display:none}
+#tablewrap.collapsed>.tabs{display:flex;margin-bottom:0}
+#tablewrap.collapsed>#uiNotice:not([hidden]){display:block;margin:12px 0 0}
+#tablewrap>.wrap{border:0;border-radius:0;background:transparent}
 /* The header's progress beacon: glows while something is actually MOVING —
    an encode, a growing transfer, a staging pull, an arriving replenish, or
    a sync replacing a library original. Stalled transfers do NOT light it:
@@ -2207,8 +2237,14 @@ footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3)
 </header>
 
 <section id="alert"></section>
-<section class="stats" id="stats">
+<section class="stats" id="stats" aria-label="Totals">
+  <div class="monhead">
+    <span class="montitle">Totals</span>
+    <span class="monnote" id="statsSum"></span>
+  </div>
+  <div class="statsgrid" id="statsGrid">
   <div class="skelwrap skelgrid" aria-hidden="true"><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div></div>
+  </div>
 </section>
 <section id="liveWrap">
   <div class="skelwrap" aria-hidden="true"><div class="card skel"><div class="skel sk-title"></div><div class="skel sk-bar"></div></div></div>
@@ -2241,7 +2277,8 @@ footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3)
   <div class="montip" id="monTip" hidden></div>
 </section>
 
-<div class="tabs" role="tablist">
+<section id="tablewrap" aria-label="Queue and history">
+<div class="tabs clpshead" role="tablist">
   <button class="tab" id="tabQueue"  role="tab" aria-selected="true"  aria-controls="paneQueue">Queue</button>
   <button class="tab" id="tabLedger" role="tab" aria-selected="false" aria-controls="paneLedger">History</button>
   <button class="tab" id="resetOrder" type="button" hidden>Reset order</button>
@@ -2250,6 +2287,7 @@ footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3)
 <div class="wrap"><div class="scroll" id="pane">
   <div class="skelwrap" aria-hidden="true" id="bootSkel"><div class="sk-row"><div class="skel sk-cell sk-w34"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w28"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w41"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w24"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w37"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w31"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w45"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w27"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div></div>
 </div></div>
+</section>
 
 <footer>
   <span id="gen"></span><span id="stopnote"></span><span>__SCOPE__ &middot; writes: skip/reorder, encode start/abort, stage pulls, pause/resume &middot; never judges, syncs or deletes a library original</span>
@@ -2353,8 +2391,8 @@ function clpsState(){
   catch(e){ return {}; }
 }
 function makeCollapsible(card,key,loud){
-  if(!card||card.querySelector(":scope>.clps, :scope>.monhead>.clps")) return;
-  var st=clpsState(), head=card.querySelector(":scope>.monhead");
+  if(!card||card.querySelector(":scope>.clps, :scope>.monhead>.clps, :scope>.clpshead>.clps")) return;
+  var st=clpsState(), head=card.querySelector(":scope>.monhead, :scope>.clpshead");
   /* A loud card NEVER honours a stored fold: a fold saved on the calm card
      that used to occupy this slot must not pre-hide a bad note, a loud
      verdict, an offline-NAS warning, or the pause switch. The chevron stays
@@ -2375,6 +2413,7 @@ function makeCollapsible(card,key,loud){
     catch(e){}
   });
   (head||card).appendChild(b);
+  return b;
 }
 
 function renderAlert(s, note){
@@ -2412,7 +2451,7 @@ function renderAlert(s, note){
 
 var prevStats=null;
 function renderStats(s){
-  var host=document.getElementById("stats"); host.replaceChildren();
+  var host=document.getElementById("statsGrid"); host.replaceChildren();
   var seen={};
   function add(k,v,sub,cls){
     var d=statCard(k,v,sub,cls);
@@ -2451,6 +2490,17 @@ function renderStats(s){
     gib(s.staged_bytes)+" of originals · "+s.queue_encoding+" encoding · "+
     s.staged_unencoded+" not yet encoded");
   prevStats=seen;
+  /* The collapsed digest. Same values as the cards above, same refusal
+     to print a queue number while a root is offline -- a folded "148
+     queued" read off a partial library is the most dangerous cell on
+     the page whether or not the grid is showing. */
+  var sum=document.getElementById("statsSum");
+  if(sum) sum.textContent=
+    gib(s.reclaimed_bytes)+" reclaimed · "+pct(s.avg_saved_pct)+" average shrink · "+
+    (complete
+      ? s.queue_waiting+" queued · "+
+        (s.job_progress_pct==null ? "progress —" : "~"+pct(s.job_progress_pct)+" done")
+      : "queue unknown — library not fully mounted");
 }
 
 function liveChips(e){
@@ -3377,6 +3427,8 @@ function paint(s){
 
 function setTab(name){
   tab=name; last.key=null;
+  var tw=document.getElementById("tablewrap");
+  if(tw&&tw.classList.contains("collapsed")&&tableFold) tableFold.click();
   document.getElementById("tabQueue").setAttribute("aria-selected", String(name==="queue"));
   document.getElementById("tabLedger").setAttribute("aria-selected", String(name==="ledger"));
   if(last.state) paint(last.state);
@@ -3860,6 +3912,8 @@ var booted=false;
 /* Static card: fold control attached once at load. The chevron rides in
    .monhead (flex, right edge) so it never overlaps the zoom slider. */
 makeCollapsible(document.getElementById("sysmon"),"mon");
+makeCollapsible(document.getElementById("stats"),"stats");
+var tableFold=makeCollapsible(document.getElementById("tablewrap"),"table");
 
 function bootSkel(){ return document.getElementById("bootSkel"); }
 

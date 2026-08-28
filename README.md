@@ -68,6 +68,16 @@ with rate and time left — a `.partial` that stops growing flips to **stalled**
 never fake progress). A staging pull still in flight shows as **arriving**, not
 "staged".
 
+Every top-level block folds — the totals strip, the live encode card, the
+"This Mac" monitor, and the queue/history table — each in its own outlined
+panel with the chevron in one column at the right edge. The fold is
+remembered per browser. Folding never hides a fact that block was the only
+one showing: the totals strip keeps a live one-line digest (and still
+refuses a queue number while a library root is offline), the tab bar keeps
+both row counts, the live card keeps its verdict chip, a refused action
+stays visible, and a loud card — a bad note, an offline NAS, an alarming
+verdict — always opens regardless of a stored fold.
+
 ## Layout
 
 | File | Role |
