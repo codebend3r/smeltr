@@ -13,7 +13,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import core
+from pipeline import core
 
 
 def fake_log(out_path, src_geom=(3840, 2160), out_geom=(3840, 2076),

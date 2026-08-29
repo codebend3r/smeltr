@@ -19,7 +19,7 @@ import os
 import statistics
 import unittest
 
-import core
+from pipeline import core
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))

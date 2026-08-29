@@ -13,6 +13,7 @@ AP="${1:-/Volumes/Crucial X9/4K Movies/.autopilot.sh}"
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 X9="$TMP/x9"; mkdir -p "$X9"
+# shellcheck disable=SC2034  # read by the autopilot helpers sourced below
 LOG=/dev/null
 log() { :; }
 

@@ -12,7 +12,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import sysmon  # noqa: E402
+from dashboard import sysmon  # noqa: E402
 
 
 IOREG_GPU = '''

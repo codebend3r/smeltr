@@ -9,7 +9,12 @@
     "url": "git+https://github.com/codebend3r/smeltr.git"
   },
   "scripts": {
-    "preversion": "python3 -m compileall -q core.py verdict.py next_title.py record.py server.py report.py",
+    "test": "bash tests/run-all.sh",
+    "test:py": "python3 -m unittest discover -s tests",
+    "lint": "bash tests/lint.sh",
+    "format": "uvx ruff format .",
+    "format:check": "uvx ruff format --check .",
+    "preversion": "bash tests/run-all.sh",
     "postversion": "git push --follow-tags origin HEAD"
   }
 }

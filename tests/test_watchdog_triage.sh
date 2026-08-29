@@ -9,7 +9,7 @@
 # deleting one throws away hours of encoding. These pin that boundary.
 set -uo pipefail
 
-WD="${1:-$(cd "$(dirname "$0")/.." && pwd)/watchdog.sh}"
+WD="${1:-$(cd "$(dirname "$0")/.." && pwd)/ops/watchdog.sh}"
 [ -f "$WD" ] || { echo "FAIL: $WD not found"; exit 1; }
 command -v ffprobe >/dev/null 2>&1 || { echo "SKIP: ffprobe not installed"; exit 0; }
 

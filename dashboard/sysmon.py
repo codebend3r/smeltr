@@ -126,6 +126,10 @@ def cpu_pct(prev_ticks, cur_ticks):
     """Busy % from two HOST_CPU_LOAD_INFO readings (USER SYS IDLE NICE)."""
     if prev_ticks is None or cur_ticks is None:
         return None
+    # Bare zip() on purpose: it truncates a short/long reading rather than
+    # raising, which is what this wants -- an exception on the sampler thread
+    # stops the charts for good. `strict=False` would say so explicitly, but
+    # it is 3.10+ and the supported floor is stock macOS 3.9 (see ruff.toml).
     d = [c - p for p, c in zip(prev_ticks, cur_ticks)]
     total = sum(d)
     if total <= 0 or any(x < 0 for x in d):   # counter reset / no time passed

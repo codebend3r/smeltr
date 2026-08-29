@@ -24,7 +24,7 @@ import re
 import statistics
 import subprocess
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from typing import Optional
 
 GIB = 1073741824
@@ -32,7 +32,12 @@ HOME = os.path.expanduser("~")
 # Data lives beside the code so the checkout is self-contained and relocatable.
 # Resolved from this file's own location rather than a hardcoded path, so moving
 # or cloning the repo does not strand the ledger. Override with SMELTR_DIR.
-SMELTR_DIR = os.environ.get("SMELTR_DIR") or os.path.dirname(os.path.abspath(__file__))
+# The repo root, NOT this package: the ledger, the auth token, the pause flag
+# and `queue_overrides.json` all live beside `smeltr`. Resolving this to
+# `dirname(__file__)` after the move to `pipeline/` would silently relocate
+# the ledger -- the one irreplaceable file here.
+SMELTR_DIR = (os.environ.get("SMELTR_DIR")
+              or os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LEDGER = os.path.join(SMELTR_DIR, "ledger.jsonl")
 
 X9 = os.environ.get("SMELTR_X9", "/Volumes/Crucial X9/4K Movies")

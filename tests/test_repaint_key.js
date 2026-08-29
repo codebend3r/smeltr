@@ -1,5 +1,5 @@
 /* The repaint key and the in-place progress writer, run against the real
- * functions in server.py.
+ * functions in web/app.js.
  *
  *   node tests/test_repaint_key.js
  *
@@ -22,7 +22,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const src = fs.readFileSync(path.join(__dirname, '..', 'server.py'), 'utf8');
+const src = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
 
 function block(startIdx) {
   let depth = 0, started = false;
@@ -34,7 +34,7 @@ function block(startIdx) {
 }
 function fn(name) {
   const at = src.indexOf('function ' + name + '(');
-  if (at < 0) throw new Error('not found in server.py: ' + name);
+  if (at < 0) throw new Error('not found in web/app.js: ' + name);
   return block(at);
 }
 

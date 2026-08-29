@@ -84,12 +84,13 @@ verdict — always opens regardless of a stored fold.
 
 | File | Role |
 |---|---|
-| `core.py` | Data layer: log parsing, `ps` liveness, queue ranking, ledger, verdict maths |
-| `verdict.py` | Judges one finished encode; its **exit code** is the driver's sync-or-halt |
-| `next_title.py` | Picks what encodes next; distinct exit codes for stop / offline / all-skipped |
-| `record.py` | Appends to the ledger, behind liveness, size, and readability refusal gates |
-| `server.py` | Stdlib HTTP + SSE server; the whole dashboard is one embedded page |
-| `report.py` | Terminal table renderer |
+| `pipeline/core.py` | Data layer: log parsing, `ps` liveness, queue ranking, ledger, verdict maths |
+| `pipeline/verdict.py` | Judges one finished encode; its **exit code** is the driver's sync-or-halt |
+| `pipeline/next_title.py` | Picks what encodes next; distinct exit codes for stop / offline / all-skipped |
+| `pipeline/record.py` | Appends to the ledger, behind liveness, size, and readability refusal gates |
+| `dashboard/server.py` | Stdlib HTTP + SSE server; inlines `web/` at import |
+| `web/` | `index.html`, `app.css`, `theme.js`, `app.js` — the page itself |
+| `dashboard/report.py` | Terminal table renderer |
 | `smeltr` | Launcher / subcommand dispatcher |
 | `ledger.jsonl` | **The durable history.** Append-only, one JSON object per encode |
 | `queue_overrides.json` | Dashboard skip + priority state, written atomically, read by the driver |
@@ -101,7 +102,7 @@ anywhere. `SMELTR_DIR` overrides where the ledger and runtime files live;
 
 The library spans three roots across two NAS volumes — `Vhagar/Media/4K
 Movies`, `Vermithor/Media/4K Movies`, `Vermithor/Media/4K Family Movies` —
-listed in `core.py` `LIBRARY_ROOTS` and mirrored by the driver scripts on the
+listed in `pipeline/core.py` `LIBRARY_ROOTS` and mirrored by the driver scripts on the
 staging drive.
 
 ## The safety model

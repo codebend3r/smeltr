@@ -1,4 +1,4 @@
-/* The size-projection component, run against the real functions in server.py.
+/* The size-projection component, run against the real functions in web/app.js.
  *
  *   node tests/test_projection_ui.js
  *
@@ -16,9 +16,9 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const src = fs.readFileSync(path.join(__dirname, '..', 'server.py'), 'utf8');
+const src = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
 
-/* Pull the functions and tables out of _PAGE by name, so this tests SHIPPED
+/* Pull the functions and tables out of web/app.js by name, so this tests SHIPPED
    code rather than a copy that can drift. */
 function block(startIdx) {
   let depth = 0, started = false;
@@ -30,12 +30,12 @@ function block(startIdx) {
 }
 function fn(name) {
   const at = src.indexOf('function ' + name + '(');
-  if (at < 0) throw new Error('not found in server.py: ' + name);
+  if (at < 0) throw new Error('not found in web/app.js: ' + name);
   return block(at);
 }
 function tbl(name) {
   const at = src.indexOf('var ' + name + '=');
-  if (at < 0) throw new Error('not found in server.py: ' + name);
+  if (at < 0) throw new Error('not found in web/app.js: ' + name);
   return 'var ' + name + '=' + block(src.indexOf('{', at)) + ';';
 }
 

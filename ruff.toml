@@ -2,20 +2,43 @@
 # no-dependencies rule in CLAUDE.md is about what `smeltr` needs to RUN, and
 # nothing here ships to the Mac that drives the encodes.
 #
-# Deliberately narrow: E9 (syntax and runtime errors) plus the whole F set
-# (pyflakes -- undefined names, unused imports, redefinitions, unreachable
-# code). No style rules. This repo's Python is hand-tuned and heavily
-# commented; a formatter's opinion about it is not worth a red build.
+# This is the ONLY ruff config in the repo. A `[tool.ruff]` table in
+# pyproject.toml would be silently ignored: ruff resolves `.ruff.toml` >
+# `ruff.toml` > `pyproject.toml` and stops at the first hit, so a second
+# config reads as configuration while having no effect.
+#
+# `smeltr` resolves ${SMELTR_PYTHON:-python3}, which on an unprepared Mac is
+# stock 3.9 -- so 3.9 is the floor, not 3.12. Nothing here may assume newer
+# syntax or newer stdlib signatures (`zip(strict=)` is 3.10+).
 target-version = "py39"
-exclude = ["tests/fixtures"]
+# Worktrees are full second copies of the tree (see .gitignore); linting them
+# double-reports every finding against a checkout nobody edits here.
+exclude = ["tests/fixtures", ".claude", "staging"]
 
 [lint]
-select = ["E9", "F"]
+# A TIGHT, high-signal set on purpose. The wide default (UP/RUF/PLW/...) flags
+# 123 mostly-stylistic issues across the decision path -- a gate that is red on
+# day one is a gate that gets ignored, which is exactly how the staging-drift
+# test went unnoticed. These four families catch things that are WRONG:
+#   F    pyflakes      -- undefined names, unused imports, f-string bugs
+#   E9   syntax/IO     -- won't parse, won't run
+#   B    bugbear       -- likely-bug patterns (mutable defaults, silent zip trunc)
+#   PLE  pylint errors -- genuine errors, not opinions
+# Widen this only in a commit that also fixes what it surfaces.
+select = ["F", "E9", "B", "PLE"]
 
 [lint.per-file-ignores]
-# `dataclasses.field` is imported and unused. core.py is on the decision path:
-# CLAUDE.md requires pausing the driver before editing it, and a live encode is
-# not worth interrupting to delete one import. Tracked here so the debt is
-# visible rather than silently unlinted -- drop this entry when core.py is next
-# touched behind a pause.
-"core.py" = ["F401"]
+# `for prog in RE.finditer(...): pass` is the deliberate last-match idiom --
+# `prog` IS read after the loop. B007 reads the loop body only and cannot see
+# that. Intentional, not debt.
+"pipeline/core.py" = ["B007"]
+
+[format]
+# CONFIGURED BUT NOT YET ADOPTED. Running this today rewrites 862 lines across
+# all 14 Python files, including every decision-path module, and it expands the
+# compact dict literals this codebase deliberately keeps dense (verdict.py's
+# json.dumps goes from 9 lines to 12). Adopting it is a single "format the
+# world" commit that must land during a driver pause window, never mixed into a
+# behaviour change. Until then CI gates on `lint`, not on `format --check`.
+quote-style = "double"
+indent-style = "space"

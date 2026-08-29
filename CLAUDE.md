@@ -14,17 +14,39 @@ A detached `autopilot.sh` on the staging drive is running unattended right now.
 It encodes, judges, syncs, and **permanently deletes ~70 GB library originals**
 on a `good` verdict. It calls this repo on every cycle.
 
+**The folder is the boundary.** Everything the driver executes lives in
+`pipeline/`; everything it does not lives in `dashboard/`, `web/` or `ops/`.
+
 | File | Autopilot depends on it | Safe to edit freely |
 |---|---|---|
-| `core.py` | **YES** — the verdict and queue logic | no |
-| `verdict.py` | **YES** — exit code decides sync-or-halt | no |
-| `next_title.py` | **YES** — picks what encodes next | no |
-| `record.py` | **YES** — writes the ledger | no |
-| `server.py` | no — never imported by the decision path (but see below: it now spawns/kills encodes) | mostly |
-| `report.py` | no | **yes** |
+| `pipeline/core.py` | **YES** — the verdict and queue logic | no |
+| `pipeline/verdict.py` | **YES** — exit code decides sync-or-halt | no |
+| `pipeline/next_title.py` | **YES** — picks what encodes next | no |
+| `pipeline/record.py` | **YES** — writes the ledger | no |
+| `dashboard/server.py` | no — never imported by the decision path (but see below: it now spawns/kills encodes) | mostly |
+| `dashboard/sysmon.py` | no — imported only by `server.py` | mostly |
+| `dashboard/report.py` | no | **yes** |
+| `web/*` | no — markup, CSS and JS for the page | **yes** |
+| `ops/watchdog.sh` | no — relaunches the driver | mostly |
 
-Verified: `verdict.py` does not load `server.py`. Worst case the page breaks
-and the pipeline keeps running.
+`pipeline/` must never import from `dashboard/`; the reverse is the allowed
+direction. This used to be a hand-verified sentence — it is now a TRANSITIVE
+import check in `tests/test_layering.py`. Worst case the page breaks and the
+pipeline keeps running.
+
+Repo layout:
+
+```
+smeltr              launcher — the only interface `.autopilot.sh` calls
+pipeline/           DECISION PATH. pause the driver before editing
+dashboard/          server, resource sampler, terminal report
+web/                index.html · app.css · theme.js · app.js
+ops/                watchdog.sh · com.smeltr.watchdog.plist
+staging/            byte-for-byte mirrors of the live X9 scripts
+tools/              one-off maintenance (`seed_ledger.py`)
+tests/              run-all.sh · lint.sh · suites
+ledger.jsonl        the irreplaceable record, beside the launcher
+```
 
 `server.py` is NOT a pure observer any more. Four escalations, in order:
 
@@ -159,9 +181,22 @@ run — the title simply restarted at the CRF that had just blown up.
 `staging/autopilot.sh` in this repo tracks the live script for history.
 **The X9 copy is what runs.** `tests/test_staging_in_sync.sh` fails on drift.
 
+Deploy with **`ops/deploy-staging.sh`** (`--dry-run` first). It swaps each
+script by atomic `mv`, never `cp`: a rename replaces the directory entry while
+the running `bash` keeps reading its old inode, so the live driver finishes its
+cycle on the old code and the next launch picks up the new one. An in-place
+rewrite can garble the remaining commands of a running copy — including its
+deletion steps — which is why the "never edit a running staging script" rule
+exists and why a rename is the exception to it. Every swap leaves a
+timestamped `.bak-` beside the original.
+
+That drift is not hypothetical: the `next_reason()` fix committed in
+`11b1c15` sat undeployed for five days while `test_staging_in_sync.sh` stayed
+red, so the driver ran the racy version CLAUDE.md described as fixed.
+
 ### The watchdog, and why it may be blind
 
-`watchdog.sh` relaunches the driver when it is merely absent. It NEVER restarts
+`ops/watchdog.sh` relaunches the driver when it is merely absent. It NEVER restarts
 past an unreviewed `HALTED:` line — a halt is the thing standing between a bad
 verdict and a deleted original.
 
@@ -170,7 +205,7 @@ is silent.** `[ -d ]` succeeds, `test -r` on a file inside returns true, and
 every read comes back empty. Blind, `smeltr next` reports STOP CONDITION — the
 job looks finished. The watchdog proves readability first and stands down
 loudly if it cannot. Grant `/bin/bash` Full Disk Access for the LaunchAgent to
-work, or run `watchdog.sh --supervise` from a shell that can already see the
+work, or run `ops/watchdog.sh --supervise` from a shell that can already see the
 drive (works immediately, does not survive a reboot).
 
 **A running `--supervise` races any intentional driver stop** — it relaunches
@@ -220,7 +255,7 @@ muxer wrote its duration up front and so probes "fine" but runs short.
 concurrency markers, the watchdog's corpse/finished boundary, the projection
 band's boundaries and wording, the stage pull queue's hold-vs-drop split, and
 repo/live drift. The projection and repaint-key suites run under `node`
-against the functions pulled straight out of `_PAGE`, and skip cleanly where
+against the functions pulled straight out of `web/app.js`, and skip cleanly where
 `node` is absent.
 
 Two suites used to need the X9 mounted and now do not, because a suite that
@@ -240,15 +275,71 @@ skips is a suite nobody notices has stopped running:
   frozen rows on EVERY machine, so the fixture cannot rot unnoticed on the one
   box that has a live ledger.
 
+Three suites were added 2026-08-28 to cover the highest-stakes gaps:
+
+- `test_verdict_exit_codes.py` — `verdict.py`'s word→exit-code mapping had NO
+  test at all, and exit 0 is what authorises deleting a ~90 GB original. It
+  reads the verdict words out of `core._verdict()` by AST, so a word added
+  there fails this suite instead of silently inheriting the `return 2`
+  fallthrough. It also pins that `HALT` is **dead** — defined, never read —
+  so nobody edits it believing it changes behaviour.
+- `test_layering.py` — turns "Verified: `verdict.py` does not load
+  `server.py`" from a hand-checked claim into a **transitive** import check
+  over the decision path. A two-hop `record → report → server` path is just
+  as fatal and no eyeball catches it.
+- `test_http_gates.py` — `_host_ok` / `_token_ok` / `_writes_ok` /
+  `_is_private` had no coverage despite guarding a LAN-bound server whose
+  POSTs spawn HandBrake and re-arm deletions. Includes the non-ASCII token
+  that used to raise `TypeError` out of `compare_digest`.
+
 `tests/test_repo_invariants.py` enforces the rules this file calls
 non-negotiable and nothing previously checked: every encode path passes
 `--all-audio`/`--all-subtitles` and nothing passes `--audio-lang-list`;
-`server.py` and `staging/autopilot.sh` build the same encode; `LIBRARY_ROOTS`
-agrees with the roots `autopilot.sh` resolves (2 of the 4 hand-synced copies
+`dashboard/server.py` and `staging/autopilot.sh` build the same encode;
+`LIBRARY_ROOTS` agrees with the roots `autopilot.sh` resolves (2 of the 4 hand-synced copies
 live in this repo); the decision path imports neither `server` nor `sysmon`;
 no runtime artifact carrying the auth token is in the index; unit-bearing
 table headers still carry `class="unit"`; every colour token exists in both
 themes; and the three CSP nonces are still there.
+
+### Linting and formatting
+
+`bash tests/lint.sh` (also `npm run lint`, and the first step of
+`run-all.sh`). Nothing is installed into the repo and there is still no build
+step: `ruff` is reached through `uvx`, `shellcheck` and `node` are system
+tools, and every one of them **skips loudly** when absent rather than passing
+silently. Config is `ruff.toml` + `.editorconfig`.
+
+- **ruff** runs a deliberately TIGHT set — `F, E9, B, PLE`. The wide default
+  flags 123 mostly-stylistic issues across the decision path, and a gate that
+  is red on day one is a gate that gets ignored (which is exactly what
+  happened to the staging-drift test). Widen it only in a commit that also
+  fixes what it surfaces.
+- **`target-version = "py39"`** is the floor, not a taste: `smeltr` resolves
+  `${SMELTR_PYTHON:-python3}`, which on an unprepared Mac is stock 3.9, and the
+  CI matrix runs it. `report.py` once put backslash escapes inside an f-string
+  replacement field (PEP 701) and was a `SyntaxError` there; it was fixed, not
+  declared away. Nothing may assume newer syntax or newer stdlib signatures —
+  `zip(strict=)` is 3.10+ and is spelled as a bare `zip()` in `sysmon.py`.
+- **shellcheck** gates `smeltr`, `ops/*.sh` and `tests/*.sh` at `-S
+  warning`. `staging/*.sh` is **advisory only** — those are byte-for-byte
+  mirrors of the live X9 scripts, so a finding must be fixed on the drive
+  during a pause window and copied back. Editing the mirror alone
+  manufactures the drift `test_staging_in_sync.sh` exists to catch.
+- **`node --check web/*.js`** — the dashboard's JS had never been
+  syntax-checked at all before this. `lint.sh` also asserts the page
+  assembles with no `__PLACEHOLDER__` left, because a missing asset would
+  otherwise render as a blank screen behind a working HTTP 200.
+- **The formatter is configured but NOT adopted.** `ruff format` rewrites 862
+  lines across all 14 Python files, including every decision-path module, and
+  it expands the compact dict literals this codebase deliberately keeps dense
+  (`verdict.py`'s `json.dumps` goes 9 lines → 12). Adopting it is a single
+  "format the world" commit that lands during a pause window, never mixed
+  into a behaviour change. CI gates on `lint`, never on `format --check`.
+
+`npm version` now runs the **full suite** as its `preversion` gate, not just
+`compileall`. A release therefore cannot be cut while the repo's
+`staging/autopilot.sh` differs from what the X9 is actually running.
 
 ### CI
 
@@ -257,9 +348,9 @@ behind one required `ci` check:
 
 | Job | Runner | What it proves |
 |---|---|---|
-| `lint` | ubuntu | actionlint, `shellcheck -S error`, ruff (`E9` + all of `F`) |
+| `lint` | ubuntu | actionlint, `shellcheck -S error`, ruff (`F, E9, B, PLE`) |
 | `python` | ubuntu 3.9/3.11/3.12/3.13 + macOS 3.13 | the whole `unittest` suite |
-| `browser-logic` | ubuntu | the three `node` suites out of `_PAGE` |
+| `browser-logic` | ubuntu | the three `node` suites out of `web/app.js` |
 | `shell` | **macOS** | the bash suites, with `ffmpeg` installed |
 | `smoke` | ubuntu | the entry points with NOTHING mounted |
 
@@ -285,12 +376,12 @@ No runner ever sees the NAS, the staging drive, or a secret.
 
 ### Pausing the driver — the exact procedure
 
-Before touching `core.py` / `verdict.py` / `next_title.py` / `record.py`, or
+Before touching anything in `pipeline/`, or
 any `.sh` on the staging drive, pause the driver. Learned the hard way on
 2026-08-21 (and extended 2026-08-23) — four traps in this, all confirmed live:
 
-1. **Stop the watchdog first.** A running `watchdog.sh --supervise` relaunches
-   an absent driver and will race the kill below. `pgrep -fl "watchdog.sh
+1. **Stop the watchdog first.** A running `ops/watchdog.sh --supervise`
+   relaunches an absent driver and will race the kill below. `pgrep -fl "watchdog.sh
    --supervise"`, plain `kill` it (it has no trap games), and relaunch it at
    the end — it lives in the REPO, not on the X9.
 2. **`pkill -f autopilot.sh` misses the detached process.** Find the pid with
@@ -319,11 +410,11 @@ any `.sh` on the staging drive, pause the driver. Learned the hard way on
      reclaim). Wait for `SYNCED:` in the log / the staging folder to vanish.
 
 Restart it afterwards, exactly as its header documents, then the watchdog
-(from the repo — `./watchdog.sh` does not exist on the X9):
+(from the repo — `ops/watchdog.sh` does not exist on the X9):
 
 ```bash
 cd "/Volumes/Crucial X9/4K Movies" && nohup ./.autopilot.sh >> .autopilot.log 2>&1 &
-nohup ~/Developer/git/smeltr/watchdog.sh --supervise >/dev/null 2>&1 &
+nohup ~/Developer/git/smeltr/ops/watchdog.sh --supervise >/dev/null 2>&1 &
 ```
 
 ## Library roots — kept in sync BY HAND in four places
@@ -334,7 +425,7 @@ The library spans three roots: `Vhagar/Media/4K Movies`,
 **four** places and nothing enforces agreement — a root added to three of four
 fails in whichever path was missed:
 
-1. `core.py` `LIBRARY_ROOTS` — queue, offline detection, transfer observation
+1. `pipeline/core.py` `LIBRARY_ROOTS` — queue, offline detection, transfer observation
 2. `.scan-bitrates.sh` (X9) — the `find` roots that feed the bitrate index
 3. `.autopilot.sh` `library_path_of()` (X9) — resolves the library original for
    `record --source-path`; uses the same exactly-one `find` match as sync.
@@ -424,7 +515,7 @@ second request.
 - **The resource monitor (2026-08-25)** is a "This Mac" card between the live
   card and the tabs: three canvas charts (Utilization %, Network MiB/s, Disk
   I/O · all volumes MiB/s), 1 Hz samples, 24 h of history, a log-scale
-  1 h–24 h zoom slider. `sysmon.py` (imported ONLY by `server.py` — the
+  1 h–24 h zoom slider. `dashboard/sysmon.py` (imported ONLY by `server.py` — the
   decision path never loads it) samples on a daemon thread and persists to
   `sysmon.ring` beside the ledger: 16-byte magic header + 86400 slots of
   `<I7f` keyed `ts % 86400`, so a restart costs seconds of gap, not the
@@ -483,27 +574,28 @@ second request.
 
 ## Editing the look and feel
 
-Everything visual is one string, `_PAGE`, in `server.py` (starts ~line 1217;
-the bind/token/allowlist config, GET/POST handlers, encode control, and stage
-control sit above it). Map as of the stage-on-demand change:
+The page is four real files in `web/`, read once at import by
+`dashboard/server.py` and inlined into nonce'd `<style>`/`<script>` blocks:
 
-| Lines | What |
+| File | What |
 |---|---|
-| 1288–1317 | `:root` dark design tokens — colours, radius, motion accents, `--band`. **Start here.** |
-| 1318–1345 | `:root[data-theme="light"]` — the light overrides, same token names |
-| 1346–1438 | base typography, header, stat cards, panels, live card, molten bar, tabs |
-| 1439–1470 | `.proj` size-projection strip — head, 0–100% scale, target zone, marker, legend |
-| 1471–1591 | tables, scroll-reveal scrollbar, pin/skip/NAS/transfer marks, `.minibar`, `th.unit`, grips |
-| 1592–1640 | `prefers-reduced-motion` + responsive ≤700px (pinned title column, `.cut`) |
-| 1642–1653 | pre-paint theme script (runs in `<head>`) |
-| 1655–1682 | markup (incl. Reset-order button, `#uiNotice`, `__SCOPE__` footer) |
-| 1741–1764 | `notice()` + `api()` POST helper — the page's only writes |
-| 1765–2407 | `renderAlert` `renderStats` `renderLive`+`projBand`/`projBlock`/`updateProj` `renderQueue`+`wireDrag` `renderLedger` |
-| 2408–2450 | `paint()` — repaint keys; MUST cover transfers on both tabs |
-| 2451–2681 | SSE wiring, Reset-order, theme toggle, seam-blanking + scrolling-class scripts |
+| `web/index.html` | markup — header, stat cards, live card, tabs, `#uiNotice`, `__SCOPE__` footer |
+| `web/app.css` | `:root` dark tokens **start here**, `:root[data-theme="light"]` overrides, typography, panels, `.proj` strip, tables, `prefers-reduced-motion`, ≤700px |
+| `web/theme.js` | the pre-paint theme block — must stay in `<head>` |
+| `web/app.js` | `renderAlert` `renderStats` `renderLive`+`projBlock`/`updateProj` `renderQueue`+`wireDrag` `renderLedger` `paint()` repaint keys, SSE wiring, the `mon` charts |
 
-Line numbers drift on every edit. Re-derive them with a `grep -n` on the
-anchors above rather than trusting the table after a few changes.
+Until 2026-08-28 all of this was one 2383-line `_PAGE` r-string inside
+`server.py`, which is why the UI suites still pull functions out by
+brace-matching. They now read `web/app.js` instead of a Python string, and
+`node --check` covers the files for the first time.
+
+**This is still not a build step.** The files are inlined at import, so the
+browser receives one self-contained document and CSP stays `default-src
+'none'`. Adding a `<link>` or `<script src>` would break it.
+
+`_asset()` raises `SystemExit` when a file is missing rather than serving a
+page with no stylesheet — a blank screen behind HTTP 200 is the failure the
+boot skeleton exists to prevent.
 
 ### Verdict thresholds — recalibrated 2026-08-22
 
@@ -609,7 +701,7 @@ Other rules the strip has to keep:
 - `Projected`, `Of source` and `Source` were removed from the `.kv` grid when
   this landed: one number, one place, one precision.
 
-Network scope (`server.py` config block, top of file):
+Network scope (`dashboard/server.py` config block, top of file):
 
 - The launcher exports `SMELTR_BIND=lan`, resolved at startup to this machine's
   **private** LAN IPv4 (`_is_private()` — RFC1918/RFC6598 only). A VPN/tunnel/
@@ -648,7 +740,7 @@ animations are gated on `body:not(.booted)` so SSE rebuilds don't replay them.
 2. **Never `innerHTML` with server data.** Everything goes through `textContent`
    via the `el()` helper. Movie titles are filesystem strings.
 3. **`./smeltr restart`** after editing, then hard-reload. The server process
-   holds `core` in memory — a `core.py` edit is invisible until restart.
+   holds `core` in memory — a `pipeline/core.py` edit is invisible until restart.
 
 **Colours are tokens, never hex literals.** Both themes are token sets with the
 same names; a hex written anywhere below `:root` is a colour the light theme

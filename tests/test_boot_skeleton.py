@@ -18,7 +18,7 @@ diagnosis.
 import re
 import unittest
 
-import server
+from dashboard import server
 
 
 def css_block(name: str) -> str:
