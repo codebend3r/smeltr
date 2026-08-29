@@ -1,5 +1,7 @@
 # Smeltr
 
+[![CI](https://github.com/codebend3r/smeltr/actions/workflows/ci.yml/badge.svg)](https://github.com/codebend3r/smeltr/actions/workflows/ci.yml)
+
 Remuxes in · ingots out.
 
 A local dashboard, terminal report, and append-only ledger for a long-running
@@ -200,6 +202,34 @@ agents/smeltr-data-critic.md   ruthless reviewer of the numbers a human reads
 ```bash
 ln -s "$PWD/agents/<name>.md" ~/.claude/agents/<name>.md
 ```
+
+## Tests and CI
+
+```bash
+bash tests/run-all.sh
+```
+
+145 Python tests plus three `node` suites executed against functions pulled
+straight out of the embedded page, and three bash suites against the shipped
+driver and watchdog scripts. Nothing in the suite touches the NAS, the staging
+drive, or the running pipeline.
+
+CI (`.github/workflows/ci.yml`) runs all of it on every push to `main` and
+every pull request, behind one required `ci` check: lint (actionlint,
+`shellcheck -S error`, ruff), the Python suite across 3.9/3.11/3.12/3.13 on
+Linux and 3.13 on macOS, the node suites, the bash suites **on macOS** (they
+test BSD-targeted scripts — `stat -f %m` returns nothing under GNU
+coreutils), and a smoke job that runs the entry points with nothing mounted.
+
+That last job is the one worth explaining. "An unmounted NAS must not look
+like a finished job" is a safety rule, and a runner with no `/Volumes` is the
+only place the offline path is actually reachable: the job asserts
+`report.py` prints LIBRARY INCOMPLETE and PARTIAL, and that `next_title.py`
+answers 2 (not mounted) or 3 (wait) — never 1, which is the stop condition and
+would tell a blind driver the job is done.
+
+Actions are pinned to commit SHAs rather than tags, the workflow's
+`permissions` are read-only, and no job has access to a secret.
 
 ## Releasing
 

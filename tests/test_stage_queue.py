@@ -68,6 +68,18 @@ class Fixture(unittest.TestCase):
         self.pgrep.start()
         self.index = mock.patch.object(core, "load_index", return_value=[])
         self.index.start()
+        # A staging drive with ROOM -- 500 GiB free, fixed. Without this the
+        # free-space gate reads the real filesystem under the tmpdir, so every
+        # dispatch test silently depended on how full the host happened to be:
+        # green on a dev Mac, red on a CI runner with under 20 GiB spare, and
+        # the failure looks like a queue bug rather than a disk reading.
+        # 500 GiB is chosen to sit between the two sizes the space tests use --
+        # a 10 GiB pull still fits, a 900 GiB one still does not -- so those
+        # keep testing the gate and not the host.
+        self.statvfs = mock.patch.object(
+            server.os, "statvfs",
+            return_value=mock.Mock(f_bavail=500 * GIB, f_frsize=1))
+        self.statvfs.start()
 
     def tearDown(self):
         mock.patch.stopall()

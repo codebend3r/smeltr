@@ -194,7 +194,9 @@ start_encode() {
   slug=$(slug_of "$title")
   src=$(find "$X9/$title" -maxdepth 1 -name '*.mkv' ! -name '._*' ! -name '*2160p HEVC*' | head -1)
   [ -z "$src" ] && halt "no source file in $title"
-  out="$X9/$title/$(basename "${src%.*}" | sed 's/ Remux-2160p//; s/ WEBDL-2160p//; s/ Bluray-2160p//') 2160p HEVC.mkv"
+  # Named after the FOLDER, not the source file. An earlier version derived it
+  # from the source basename with a sed strip and was overwritten on the very
+  # next line -- a dead store that read like it was doing the naming.
   out="$X9/$title/${title} 2160p HEVC.mkv"
   log "START $title at CRF $crf"
   $DRY && { log "(dry run) would encode: $src -> $out"; return 0; }

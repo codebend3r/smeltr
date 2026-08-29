@@ -216,13 +216,72 @@ muxer wrote its duration up front and so probes "fine" but runs short.
 
 ### Tests
 
-`bash tests/run-all.sh`. The bash suites skip cleanly when the X9 is not
-mounted. They pin the log-matching and downscale gates, the concurrency
-markers, the watchdog's corpse/finished boundary, the projection band's
-boundaries and wording, the stage pull queue's hold-vs-drop split, and
+`bash tests/run-all.sh`. They pin the log-matching and downscale gates, the
+concurrency markers, the watchdog's corpse/finished boundary, the projection
+band's boundaries and wording, the stage pull queue's hold-vs-drop split, and
 repo/live drift. The projection and repaint-key suites run under `node`
 against the functions pulled straight out of `_PAGE`, and skip cleanly where
 `node` is absent.
+
+Two suites used to need the X9 mounted and now do not, because a suite that
+skips is a suite nobody notices has stopped running:
+
+- the concurrency guards are tested against the LIVE `.autopilot.sh` when the
+  drive is there and against the tracked `staging/autopilot.sh` when it is
+  not. `test_staging_in_sync.sh` is what keeps those two the same file, and
+  it is still the one suite that genuinely cannot run off the drive.
+- `test_verdict_calibration.py` reads `ledger.jsonl` when it exists — that is
+  deliberate, and `test_flight_still_asks_for_a_human` is a DRIFT MONITOR: the
+  baseline moves as encodes land, and the test fails on purpose if it moves far
+  enough that a Flight-class result would auto-sync. `ledger.jsonl` is
+  gitignored, so on a fresh clone it falls back to
+  `tests/fixtures/ledger-calibration.jsonl` — the 22 rows the 2026-08-22
+  recalibration was reasoned about, frozen. `FixtureIntegrity` replays the
+  frozen rows on EVERY machine, so the fixture cannot rot unnoticed on the one
+  box that has a live ledger.
+
+`tests/test_repo_invariants.py` enforces the rules this file calls
+non-negotiable and nothing previously checked: every encode path passes
+`--all-audio`/`--all-subtitles` and nothing passes `--audio-lang-list`;
+`server.py` and `staging/autopilot.sh` build the same encode; `LIBRARY_ROOTS`
+agrees with the roots `autopilot.sh` resolves (2 of the 4 hand-synced copies
+live in this repo); the decision path imports neither `server` nor `sysmon`;
+no runtime artifact carrying the auth token is in the index; unit-bearing
+table headers still carry `class="unit"`; every colour token exists in both
+themes; and the three CSP nonces are still there.
+
+### CI
+
+`.github/workflows/ci.yml`, on every push to `main` and every PR. Five jobs
+behind one required `ci` check:
+
+| Job | Runner | What it proves |
+|---|---|---|
+| `lint` | ubuntu | actionlint, `shellcheck -S error`, ruff (`E9` + all of `F`) |
+| `python` | ubuntu 3.9/3.11/3.12/3.13 + macOS 3.13 | the whole `unittest` suite |
+| `browser-logic` | ubuntu | the three `node` suites out of `_PAGE` |
+| `shell` | **macOS** | the bash suites, with `ffmpeg` installed |
+| `smoke` | ubuntu | the entry points with NOTHING mounted |
+
+Three choices worth not undoing:
+
+- **The bash suites run on macOS, not ubuntu.** `watchdog.sh`'s `mtime_age()`
+  uses BSD `stat -f %m`, which returns nothing under GNU coreutils — the
+  corpse/finished boundary would be tested against behaviour that never runs
+  in production.
+- **The Python floor is 3.9**, which is stock macOS `python3`. `smeltr`
+  resolves `${SMELTR_PYTHON:-python3}`, so a clone on an unprepared Mac gets
+  it. A 3.12-only f-string in `report.py` had already made `smeltr report` a
+  `SyntaxError` there; the matrix is what caught it.
+- **`smoke` runs with no NAS and no staging drive**, which is the one
+  environment that reaches the offline paths: it asserts `report.py` says
+  LIBRARY INCOMPLETE and PARTIAL, and that `next_title.py` answers 2 or 3 —
+  never 0 or 1, because 1 is the stop condition and would tell a blind driver
+  the job is finished.
+
+Actions are pinned to commit SHAs, not tags; Dependabot proposes the bumps
+monthly. `permissions: contents: read` at the top level and nothing widens it.
+No runner ever sees the NAS, the staging drive, or a secret.
 
 ### Pausing the driver — the exact procedure
 

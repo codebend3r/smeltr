@@ -1,0 +1,21 @@
+# Lint config for CI only. Ruff is never imported by the app -- the
+# no-dependencies rule in CLAUDE.md is about what `smeltr` needs to RUN, and
+# nothing here ships to the Mac that drives the encodes.
+#
+# Deliberately narrow: E9 (syntax and runtime errors) plus the whole F set
+# (pyflakes -- undefined names, unused imports, redefinitions, unreachable
+# code). No style rules. This repo's Python is hand-tuned and heavily
+# commented; a formatter's opinion about it is not worth a red build.
+target-version = "py39"
+exclude = ["tests/fixtures"]
+
+[lint]
+select = ["E9", "F"]
+
+[lint.per-file-ignores]
+# `dataclasses.field` is imported and unused. core.py is on the decision path:
+# CLAUDE.md requires pausing the driver before editing it, and a live encode is
+# not worth interrupting to delete one import. Tracked here so the debt is
+# visible rather than silently unlinted -- drop this entry when core.py is next
+# touched behind a pause.
+"core.py" = ["F401"]

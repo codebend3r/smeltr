@@ -22,7 +22,29 @@ import unittest
 import core
 
 
-LEDGER = os.path.join(os.path.dirname(__file__), "..", "ledger.jsonl")
+HERE = os.path.dirname(os.path.abspath(__file__))
+LIVE = os.path.join(HERE, "..", "ledger.jsonl")
+# The 22 rows the 2026-08-22 recalibration was reasoned about, frozen. The live
+# ledger is gitignored (it is appended to on every driver cycle, so a tracked
+# copy conflicts constantly), which means a fresh clone -- CI, or this machine
+# after `git rm --cached` -- has no ledger at all and these tests used to ERROR
+# rather than run. They are the thresholds standing between a bad encode and a
+# deleted ~90 GB original, so they must not be the suite's first casualty.
+FIXTURE = os.path.join(HERE, "fixtures", "ledger-calibration.jsonl")
+
+# Prefer the LIVE ledger when it exists. That is deliberate and is what makes
+# test_flight_still_asks_for_a_human a drift monitor: the baseline moves as new
+# encodes land, and this suite is meant to fail when it moves far enough that a
+# Flight-class result would auto-sync. The fixture only stands in where there is
+# no live ledger to watch, so CI still exercises the replay instead of skipping.
+LEDGER = LIVE if os.path.exists(LIVE) else FIXTURE
+USING_FIXTURE = LEDGER is FIXTURE
+
+# core.history_ratios() reads core.LEDGER, not this module's. Point it at the
+# same file so the baseline and the replayed rows can never come from different
+# ledgers -- a mismatch there would silently compare each row against a history
+# it was not part of.
+core.LEDGER = os.path.abspath(LEDGER)
 
 
 def rows():
@@ -231,6 +253,59 @@ class LedgerRegression(unittest.TestCase):
         missing = [r for r in rows() if not r.get("source_bytes")]
         self.assertEqual(len(missing), 1)
         self.assertNotIn(missing[0]["title"], self.ANCHORS)
+
+
+class FixtureIntegrity(unittest.TestCase):
+    """Replay the FROZEN rows, always -- even on a machine with a live ledger.
+
+    Without this the fixture is dead weight on the only machine that runs the
+    driver: LEDGER resolves to the live file there, so a fixture that rotted
+    (an anchor deleted, a row corrupted, the file emptied by a bad merge) would
+    stay green here and fail only in CI, on a branch, hours later. Running both
+    keeps the two ledgers honest against the same thresholds.
+    """
+
+    def setUp(self):
+        self.saved = core.LEDGER
+        core.LEDGER = os.path.abspath(FIXTURE)
+        with open(FIXTURE) as fh:
+            self.rows = [json.loads(l) for l in fh if l.strip()]
+
+    def tearDown(self):
+        core.LEDGER = self.saved
+
+    def test_fixture_is_the_calibration_corpus(self):
+        """12+ measured rows, or the baseline it feeds means nothing."""
+        measured = [r for r in self.rows
+                    if r.get("source_bytes") and r.get("output_bytes")]
+        self.assertGreaterEqual(len(measured), 12,
+                                "the frozen corpus lost rows the calibration relied on")
+
+    def test_frozen_anchors_keep_their_verdict(self):
+        hist = core.history_ratios(normalised=True)
+        seen = {}
+        for r in self.rows:
+            sb, ob = r.get("source_bytes"), r.get("output_bytes")
+            if not sb or not ob or r["title"] not in LedgerRegression.ANCHORS:
+                continue
+            raw = ob / sb * 100.0
+            norm = raw * core.crop_factor(r.get("source_geometry"),
+                                          r.get("output_geometry"))
+            seen[r["title"]] = core._verdict(raw, hist, norm, False)[0]
+        self.assertEqual(seen, LedgerRegression.ANCHORS)
+
+    def test_no_frozen_row_reads_as_kill_it(self):
+        hist = core.history_ratios(normalised=True)
+        for r in self.rows:
+            sb, ob = r.get("source_bytes"), r.get("output_bytes")
+            if not sb or not ob:
+                continue
+            raw = ob / sb * 100.0
+            norm = raw * core.crop_factor(r.get("source_geometry"),
+                                          r.get("output_geometry"))
+            code = core._verdict(raw, hist, norm, False)[0]
+            self.assertIn(code, ("good", "thin", "suspect"),
+                          f"{r['title']} at {raw:.1f}% raw -> {code}")
 
 
 if __name__ == "__main__":
