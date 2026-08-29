@@ -373,7 +373,12 @@ def main() -> int:
     if not s.get("library_complete", True):
         missing = ", ".join(s.get("roots_offline") or ["unknown"])
         print(f"  {c('!! LIBRARY INCOMPLETE: ' + missing + ' not mounted.', '1;31')}")
-        print(f"  {c('   The queue below is PARTIAL. Do not read it as \'nothing left\'.', '1;31')}")
+        # Built outside the f-string: a backslash inside an f-string expression
+        # is a SyntaxError before Python 3.12, and `smeltr report` is the view a
+        # 1am SSH session uses -- on a machine whose python3 is the stock 3.9
+        # this whole file failed to import, so the report was simply gone.
+        partial = "   The queue below is PARTIAL. Do not read it as 'nothing left'."
+        print(f"  {c(partial, '1;31')}")
     print()
 
     if not focused:

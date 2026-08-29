@@ -1,0 +1,259 @@
+# CI for smeltr.
+#
+# What this is defending. The repo drives a detached process that permanently
+# DELETES ~70-90 GB library originals on a `good` verdict. Nothing here talks to
+# that pipeline -- there are no secrets, no deploys, and no runner ever sees the
+# NAS or the staging drive. What CI can do is prove, before a change reaches the
+# Mac that runs the job, that the shipped logic still holds: the verdict
+# thresholds still classify every completed encode the way they were calibrated
+# to, every encode path still passes --all-audio/--all-subtitles, the decision
+# path still does not import the dashboard, and no runtime artifact carrying the
+# auth token has crept into the index.
+#
+# Design notes worth keeping:
+#   * Every action is pinned to a full commit SHA, not a tag. A tag is mutable;
+#     `@v4` is a promise from someone else that today's v4 is yesterday's.
+#     Dependabot (.github/dependabot.yml) proposes the bumps.
+#   * permissions is read-only at the top level and nothing widens it. No job
+#     here needs to write to the repo, and a workflow that cannot write cannot
+#     be turned into one that does by a compromised dependency.
+#   * The bash suites run on macOS because that is the only platform the shipped
+#     scripts target: watchdog.sh's mtime_age() uses BSD `stat -f %m`, which
+#     returns nothing on GNU coreutils, and the corpse/finished boundary it
+#     guards would then be tested against behaviour that never runs in
+#     production.
+#   * The Python matrix floors at 3.9 because that is stock macOS python3.
+#     `smeltr` resolves ${SMELTR_PYTHON:-python3}, so a clone on an unprepared
+#     Mac runs on 3.9 -- and a 3.12-only f-string in report.py had already made
+#     `smeltr report` a SyntaxError there.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Read-only. Nothing in this workflow writes to the repo, publishes, or deploys.
+permissions:
+  contents: read
+
+# One run per ref. Superseded PR pushes are cancelled; main is never cancelled,
+# because the run against a merged commit is the record of whether it was green.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ---------------------------------------------------------------- static
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: actionlint (this workflow's own syntax)
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+            -color
+
+      - name: shellcheck (errors are blocking)
+        run: |
+          shellcheck --version
+          mapfile -t scripts < <(git ls-files '*.sh'; echo smeltr)
+          printf 'checking: %s\n' "${scripts[@]}"
+          shellcheck -S error "${scripts[@]}"
+
+      - name: shellcheck (warnings and style, advisory only)
+        continue-on-error: true
+        run: |
+          mapfile -t scripts < <(git ls-files '*.sh'; echo smeltr)
+          shellcheck -S style "${scripts[@]}"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      # E9 + the whole F set: syntax errors, undefined names, unused imports,
+      # redefinitions, unreachable code. No style rules -- see ruff.toml.
+      - name: ruff
+        run: |
+          pip install --quiet 'ruff==0.16.5'
+          ruff check --output-format=github .
+
+  # ---------------------------------------------------------------- python
+  # The floor matters as much as the ceiling here: 3.9 is what stock macOS
+  # ships, and `smeltr` will happily run on it.
+  python:
+    name: python ${{ matrix.python }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04]
+        python: ['3.9', '3.11', '3.12', '3.13']
+        include:
+          # The platform the job actually runs on. One version is enough: the
+          # ubuntu leg above already covers the version spread.
+          - os: macos-15
+            python: '3.13'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: every module compiles
+        run: |
+          python -m compileall -q core.py verdict.py next_title.py record.py \
+                                  server.py report.py sysmon.py seed_ledger.py
+
+      # There is no ledger.jsonl on a fresh clone (it is gitignored -- the driver
+      # appends to it every cycle, so a tracked copy conflicts constantly). The
+      # calibration suite falls back to tests/fixtures/ledger-calibration.jsonl,
+      # the 22 rows the thresholds were reasoned about.
+      - name: unit tests
+        run: python -m unittest discover -s tests -v
+
+  # ------------------------------------------------------------------ node
+  # The projection strip, the repaint key, and the sysmon charts are pulled
+  # straight out of _PAGE and executed. No package.json, no install step.
+  browser-logic:
+    name: browser logic (node)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - run: node tests/test_projection_ui.js
+      - run: node tests/test_repaint_key.js
+      - run: node tests/test_sysmon_ui.js
+
+  # ----------------------------------------------------------------- shell
+  # macOS on purpose: these test BSD-targeted scripts. See the header.
+  shell:
+    name: shell suites (macOS)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The concurrency guards that decide whether a folder is judged and
+      # RECORDED. core.record() appends with no duplicate guard, so a folder
+      # judged twice writes a second ledger row and double-counts the reclaim.
+      # Run against the tracked copy: the live script is on a drive no runner
+      # can see, and the drift suite below is what keeps the two identical.
+      - name: autopilot concurrency guards
+        run: bash tests/test_autopilot_helpers.sh staging/autopilot.sh
+
+      # ffprobe is what makes the corpse test meaningful -- a truncated encode
+      # that probes "fine" and merely runs short is one of the two corpse shapes
+      # and a missing-duration check walks straight past it.
+      - name: install ffmpeg
+        run: brew install ffmpeg
+
+      - name: watchdog corpse/finished boundary
+        run: bash tests/test_watchdog_triage.sh watchdog.sh
+
+      # Skips cleanly here (the staging drive is not mounted on a runner). Kept
+      # in CI so the skip is visible rather than assumed: if it ever starts
+      # FAILING instead of skipping, the reason is worth seeing.
+      - name: staging drift
+        run: bash tests/test_staging_in_sync.sh
+
+  # ----------------------------------------------------------------- smoke
+  # Everything above tests parts. This runs the actual entry points in the
+  # condition CI is inherently in -- no NAS, no staging drive, no ledger --
+  # because "an unmounted NAS must not look like a finished job" is a
+  # non-negotiable, and the code path that renders it is only reachable when
+  # the roots really are gone.
+  smoke:
+    name: smoke (nothing mounted)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: report renders with the library offline
+        env:
+          SMELTR_DIR: ${{ runner.temp }}/smeltr
+        run: |
+          mkdir -p "$SMELTR_DIR"
+          out=$(python report.py)
+          printf '%s\n' "$out"
+          # The whole point: it must say the library is incomplete, and must not
+          # present an empty queue as a finished job.
+          grep -q 'LIBRARY INCOMPLETE' <<<"$out"
+          grep -q 'PARTIAL' <<<"$out"
+
+      - name: next_title never claims the stop condition while blind
+        env:
+          SMELTR_DIR: ${{ runner.temp }}/smeltr
+        run: |
+          mkdir -p "$SMELTR_DIR"
+          set +e
+          python next_title.py 70 >/dev/null 2>err.txt
+          rc=$?
+          set -e
+          cat err.txt
+          # 1 is the stop condition and would tell the driver to EXIT. With the
+          # roots unreachable the only honest answers are 2 (not mounted) or
+          # 3 (wait). Anything else, and a blind machine ends the job.
+          if [ "$rc" = "1" ] || [ "$rc" = "0" ]; then
+            echo "FAIL: exit $rc with no library mounted -- a blind run must never look finished"
+            exit 1
+          fi
+          echo "ok: exit $rc"
+
+      - name: the dashboard imports and builds a page
+        env:
+          SMELTR_DIR: ${{ runner.temp }}/smeltr
+        run: |
+          mkdir -p "$SMELTR_DIR"
+          python - <<'PY'
+          import server
+          # Never bind a socket in CI; just prove the page and the state payload
+          # can be built, which is where a template or renderer typo would show.
+          page = server._PAGE
+          assert page.count('nonce="__NONCE__"') == 3, "CSP nonces changed"
+          state = server.build_state()
+          assert "summary" in state and "queue" in state, sorted(state)
+          print("page %d bytes, state keys: %s" % (len(page), ", ".join(sorted(state))))
+          PY
+
+  # A single required check for branch protection. Adding a job above does not
+  # mean remembering to add it to the protected-branch list.
+  ci:
+    name: ci
+    if: always()
+    needs: [lint, python, browser-logic, shell, smoke]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: verdict
+        run: |
+          # Every result must be exactly "success". A substring test would pass
+          # on "success failure" -- the string still contains "success".
+          rc=0
+          for r in ${{ join(needs.*.result, ' ') }}; do
+            echo "  $r"
+            [ "$r" = success ] || rc=1
+          done
+          [ $rc -eq 0 ] || echo "one or more jobs did not succeed"
+          exit $rc

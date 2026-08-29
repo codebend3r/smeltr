@@ -1,0 +1,14 @@
+# Actions are pinned to commit SHAs in .github/workflows/ci.yml, which is the
+# point -- a tag can be moved, a SHA cannot. The cost is that a pinned SHA never
+# picks up a security fix on its own, so Dependabot opens the bump PRs and CI
+# proves them.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      # Matches the smeltr-commit-format skill: SMLTR: <imperative subject>.
+      prefix: "SMLTR:"
+    labels: ["ci"]

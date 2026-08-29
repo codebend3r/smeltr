@@ -6,9 +6,7 @@ wrap-in-place layout, stale-slot invalidation at read time, and the header
 check that recreates (never misreads) an older file.
 """
 
-import math
 import os
-import struct
 import sys
 import tempfile
 import unittest
