@@ -12,6 +12,11 @@ node_modules/
 queue_overrides.json
 pause
 
+# The live encode ledger. Written by `record.py` on every finished encode, so a
+# tracked copy conflicts on every driver cycle. Stays on disk — untracking it
+# does not remove it, and the driver keeps appending.
+ledger.jsonl
+
 # Git worktrees checked out inside the repo. Never committable: each is a full
 # second copy of the tree AND carries its own runtime `token` file, so staging
 # one would commit the live auth token the ignores above exist to keep out.
