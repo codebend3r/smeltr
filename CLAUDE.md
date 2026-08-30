@@ -667,6 +667,7 @@ an unattended deletion and a human being asked to look.
 | | Before | After | Why |
 |---|---|---|---|
 | plausibility floor | `OUTLIER_FLOOR_RAW = 12.0`, tested on the **raw** ratio | `OUTLIER_FLOOR_NORM = 6.0`, tested on the **normalised** ratio | see below |
+| the same floor, **raised 2026-08-30** | `OUTLIER_FLOOR_NORM = 6.0` — a plausibility question | `15.0` — a policy question | Flight was judged too small to keep; see *The floor is a policy line now* |
 | relative outlier | `OUTLIER_FACTOR = 0.45` → 15.8% | `0.40` → 14.0% | keeps the human check on the thinnest encodes |
 | not worth doing | `no-saving` at 85% | `no-saving` at 80% | matches the 30–80% band the dashboard draws |
 
@@ -690,6 +691,42 @@ would auto-sync it.
 **Replaying all 12 measured ledger rows through the new rules changes no
 verdict** — `tests/test_verdict_calibration.py` pins that, plus every boundary
 and the fact that `OUTLIER_FLOOR_RAW` no longer exists.
+
+### The floor is a policy line now — raised to 15.0 on 2026-08-30
+
+**A relative threshold drifts, and this one drifted onto the case it was
+guarding.** `below_base` is `cmp_ratio < median × 0.40`, so the line falls as
+the median falls. By 24 ledger rows the median had reached 31.6058% and the
+line 12.6423% — and Flight sits at 12.6426%. It crossed from `suspect` to
+`good` by **+0.0003 percentage points**, with no threshold edited by anyone.
+`test_anchor_rows_keep_their_verdict` is what caught it; that is the drift
+monitor doing exactly its job.
+
+**The operator's call was that Flight should never have been that small.** A
+90.6% reduction is not a result this job wants to keep, so the fix is NOT to
+lower `OUTLIER_FACTOR` to re-cover it — that would have re-armed the same
+drifting rule. The absolute floor was raised instead, from 6.0 to 15.0, and
+its meaning changed with it: 6.0 asked *is this physically possible for 4K at
+CRF 16*, 15.0 asks *is this a reduction we are willing to make unattended*.
+An absolute floor cannot drift when the median moves.
+
+**15.0 is bracketed on both sides, and the test says so.** Above Flight
+(12.64% normalised), below Croods (17.05%) — the thinnest output this library
+has produced that IS wanted. Anything at or above 17.0 starts halting good
+work, and a gate that halts routinely gets waved through.
+`test_floor_brackets_the_one_result_this_job_rejected` pins both ends.
+
+**Replaying all 23 measured rows moves exactly one verdict**: Flight, `good` →
+`suspect`. Oldboy stays `thin`; nothing else changes. Flight itself is already
+synced and its original already deleted — this is about what happens next, and
+the row is the operator's to revisit.
+
+**The floor is the binding rule today, and that is itself pinned.** 15.0 sits
+above the relative line (12.64%), so the relative check decides nothing until
+the median reaches 37.5%. `test_the_floor_is_what_binds_today` fails when that
+stops being true, because the boundary tests around it would otherwise be
+asserting a line that no longer decides anything — which is how the old
+`test_just_above_the_threshold_is_good` came to pass while testing nothing.
 
 **The baseline is contaminated and now says so.** Most ledger rows predate
 geometry capture, so `history_ratios(normalised=True)` cannot crop-adjust them
