@@ -430,7 +430,21 @@ def is_downscale(src_geom: Optional[str], out_geom: Optional[str],
 # 6.0 normalised is a little under half of Flight's 12.6, i.e. "less than half
 # the bitrate of the thinnest encode this job has ever legitimately produced".
 OUTLIER_FACTOR = 0.40      # this far under the median is not routine
-OUTLIER_FLOOR_NORM = 6.0   # per retained pixel; below this, not physically credible
+# Raised 6.0 -> 15.0 on 2026-08-30, and the meaning changed with it: 6.0 asked
+# "is this physically possible for 4K at CRF 16", 15.0 asks "is this a
+# reduction this job is willing to make unattended". Flight (2012) kept 12.6%
+# per retained pixel and that was judged, by the operator, too small to be a
+# result worth keeping -- not a plausibility failure, a quality one.
+#
+# It also has to be ABSOLUTE, because the relative check drifts. `base *
+# OUTLIER_FACTOR` falls as the median falls, and on 2026-08-30 Flight crossed
+# from `suspect` to `good` by +0.0003 pct-points with no threshold edited by
+# anyone -- the baseline simply moved under it. A fixed floor cannot drift.
+#
+# 15.0 sits in the gap between Flight (12.64% normalised) and the thinnest
+# encode this library has produced that IS wanted (Croods, 17.05%). Replaying
+# all 23 measured ledger rows moves exactly one verdict.
+OUTLIER_FLOOR_NORM = 15.0  # per retained pixel; below this, ask a human
 MIN_HISTORY = 3            # below this there is no distribution to speak of
 
 
@@ -490,8 +504,8 @@ def _verdict(ratio: Optional[float], hist: Optional[list[float]] = None,
                   f"(median of {len(hist)})" if base is not None
                   else "implausibly small for 4K at CRF 16")
         if below_floor:
-            detail = (f"under the {OUTLIER_FLOOR_NORM:.0f}% floor below which a 4K "
-                      f"CRF-16 encode is not physically credible; " + detail)
+            detail = (f"under the {OUTLIER_FLOOR_NORM:.0f}% floor, below which this "
+                      f"job does not delete an original unattended; " + detail)
         cropped = norm_ratio is not None and abs(norm_ratio - ratio) >= 0.05
         lead = f"keeps {ratio:.1f}% of source bytes"
         if cropped:

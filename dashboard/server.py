@@ -1189,11 +1189,22 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/stream":
             return self._stream()
         if route == "/api/sysmon/history":
-            # 24 h of samples as raw `<I7f` records (ts + 7 float32, NaN =
-            # missing); the page parses them with a DataView. Binary because
-            # the same day of samples as JSON is ~2x the bytes for no gain.
+            # Up to 7 d of samples as raw `<I7f` records (ts + 7 float32,
+            # NaN = missing); the page parses them with a DataView. Binary
+            # because the same day of samples as JSON is ~2x the bytes for
+            # no gain.
+            #
+            # `span` is the window the page is actually drawing. The full
+            # ring is ~19 MB and the default zoom shows a day of it, so the
+            # page asks for what it will draw and re-asks when you zoom
+            # wider. A missing or unparseable span means the whole ring --
+            # narrower is an optimisation, never a default.
+            try:
+                span = int(query.get("span", ["0"])[0])
+            except ValueError:
+                span = 0
             mon = sysmon.get()
-            body = mon.history_bytes() if mon else b""
+            body = mon.history_bytes(span or sysmon.SLOTS) if mon else b""
             return self._send(200, "application/octet-stream", body)
         return self._deny(404, "not found")
 

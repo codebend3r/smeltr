@@ -4,11 +4,14 @@
  *   node tests/test_sysmon_ui.js
  *
  * Pins:
- *   - the zoom mapping's ends and monotonicity (0 -> 1 h, 100 -> 24 h)
+ *   - the zoom stops: ends (15 min .. 7 d), strict monotonicity, snapping
+ *     (every slider position is one of the twelve named windows), and the
+ *     clamp on an out-of-range position
  *   - decimation: a one-second spike must survive into a bucket's MAX
- *     (averaging alone would erase it at 24 h zoom)
+ *     (averaging alone would erase it at 7 d zoom)
  *   - a missing second is a NaN bucket -- a GAP, never an interpolation
- *   - a stale ring slot (ts from yesterday in today's index) never renders
+ *   - a stale ring slot (a ts one full ring older, in the same index)
+ *     never renders
  *   - NaN samples (metric unreadable) are skipped, not zeroed
  *   - throughput axis nicing (1/2/5 steps), and the honest formatting of
  *     missing values as an em dash
@@ -33,14 +36,17 @@ function fn(name) {
 }
 
 const code = [
-  'var MON_SLOTS=86400, MIB=1048576;',
+  'var MON_SLOTS=604800, MIB=1048576;',
+  /* MON_STOPS is the table monSpan() indexes; pull it out of app.js too so
+     the stops under test are the stops the page ships. */
+  src.match(/var MON_STOPS=\[[^\]]*\];/)[0],
   fn('monSpan'), fn('spanLabel'), fn('niceMax'), fn('monTicks'),
   fn('monBuckets'), fn('monFmtPct'), fn('monFmtMibs'), fn('axLab'),
 ].join('\n');
 /* eslint-disable no-eval */
 const get = new Function(code + `
   return {monSpan, spanLabel, niceMax, monTicks, monBuckets,
-          monFmtPct, monFmtMibs, axLab};`)();
+          monFmtPct, monFmtMibs, axLab, MON_STOPS};`)();
 
 let failures = 0;
 function ok(cond, msg) {
@@ -49,15 +55,30 @@ function ok(cond, msg) {
 }
 function eq(a, b, msg) { ok(Object.is(a, b), msg + ` (got ${a}, want ${b})`); }
 
-console.log('zoom mapping');
-eq(get.monSpan(0), 3600, 'slider 0 is exactly 1 h');
-eq(get.monSpan(100), 86400, 'slider 100 is exactly 24 h');
-ok(get.monSpan(50) > 3600 && get.monSpan(50) < 86400, 'midpoint sits between');
+console.log('zoom stops');
+const STOPS = get.MON_STOPS;
+eq(get.monSpan(0), 900, 'slider 0 is exactly 15 min');
+eq(get.monSpan(STOPS.length - 1), 604800, 'the last stop is exactly 7 d');
+eq(get.monSpan(7), 86400, 'the default stop (7) is exactly 24 h');
 let mono = true;
-for (let p = 1; p <= 100; p++) if (get.monSpan(p) <= get.monSpan(p - 1)) mono = false;
+for (let p = 1; p < STOPS.length; p++) if (get.monSpan(p) <= get.monSpan(p - 1)) mono = false;
 ok(mono, 'span is strictly increasing across the slider');
-eq(get.spanLabel(86400), '24 h', '24 h label');
+/* The point of the change: NO position produces an unnamed window. */
+let snapped = true;
+for (let p = 0; p < STOPS.length; p++) if (!STOPS.includes(get.monSpan(p))) snapped = false;
+ok(snapped, 'every slider position lands on a named stop');
+ok(STOPS.every(v => v <= 604800), 'no stop reaches past the 7 d ring');
+eq(get.monSpan(-3), 900, 'a position below the track clamps to 15 min');
+eq(get.monSpan(999), 604800, 'a position past the track clamps to 7 d');
+eq(get.monSpan(NaN), 900, 'a NaN position clamps rather than yielding undefined');
+eq(get.spanLabel(900), '15 min', '15 min label');
+eq(get.spanLabel(1800), '30 min', '30 min label');
 eq(get.spanLabel(3600), '1 h', '1 h label');
+eq(get.spanLabel(86400), '1 d', 'a full day labels in days, not 24 h');
+eq(get.spanLabel(604800), '7 d', '7 d label');
+/* Every stop must have a label a human reads as a window, not a rounding. */
+ok(STOPS.every(v => /^\d+(\.\d)? (min|h|d)$/.test(get.spanLabel(v))),
+   'every stop labels as a whole named window');
 
 console.log('axis nicing');
 eq(get.niceMax(3.2), 5, '3.2 -> 5');
@@ -66,9 +87,17 @@ eq(get.niceMax(50), 50, '50 -> 50');
 eq(get.niceMax(51), 100, '51 -> 100');
 eq(get.niceMax(0), 1, 'no data floors at 1, never 0 (a 0-height axis lies)');
 ok([900, 1800, 3600, 7200, 10800].includes(get.monTicks(86400)), 'tick step is a clock-round interval');
+/* A tick step must divide the window into a readable number of gridlines:
+   too few and the axis carries no scale, too many and the labels collide. */
+STOPS.forEach(v => {
+  const n = v / get.monTicks(v);
+  ok(n >= 3 && n <= 16, `${get.spanLabel(v)} window draws ${n} gridlines (3..16)`);
+});
+eq(get.monTicks(604800), 86400, 'the 7 d window ticks once per day');
+eq(get.monTicks(900), 300, 'the 15 min window ticks every 5 min');
 
 console.log('decimation');
-const SLOTS = 86400;
+const SLOTS = 604800;
 function ring(samples) {
   const ts = new Float64Array(SLOTS), v = new Float32Array(SLOTS).fill(NaN);
   for (const [t, val] of samples) { ts[t % SLOTS] = t; v[t % SLOTS] = val; }
@@ -95,10 +124,10 @@ const T0 = 1700000000;
   ok(!Number.isNaN(b.avg[1]) && !Number.isNaN(b.avg[3]), 'neighbours still draw');
 }
 {
-  /* stale slot: yesterday's ts occupies today's index */
+  /* stale slot: a ts one full ring older occupies the same index */
   const r = ring([[T0 - SLOTS + 10, 99]]);   // same slot index as T0+10
   const b = get.monBuckets(r.ts, r.v, T0, T0 + 100, 5);
-  ok(Number.isNaN(b.avg[0]), "yesterday's sample in today's slot never renders");
+  ok(Number.isNaN(b.avg[0]), "a sample one full ring old never renders in its reused slot");
 }
 {
   /* NaN sample (metric unreadable) is skipped, not treated as 0 */

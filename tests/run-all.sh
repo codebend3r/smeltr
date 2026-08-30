@@ -15,6 +15,7 @@ else
   echo "(staging drive not mounted - testing the tracked staging/autopilot.sh)"
   bash tests/test_autopilot_helpers.sh staging/autopilot.sh || rc=1
 fi
+echo; echo "=== launcher pids ==="; bash tests/test_launcher_pids.sh || rc=1
 echo; echo "=== watchdog triage ==="; bash tests/test_watchdog_triage.sh || rc=1
 echo; echo "=== projection UI ==="
 if command -v node >/dev/null 2>&1; then node tests/test_projection_ui.js || rc=1
@@ -24,6 +25,9 @@ if command -v node >/dev/null 2>&1; then node tests/test_repaint_key.js || rc=1
 else echo "SKIP: node not installed"; fi
 echo; echo "=== sysmon ui ==="
 if command -v node >/dev/null 2>&1; then node tests/test_sysmon_ui.js || rc=1
+else echo "SKIP: node not installed"; fi
+echo; echo "=== sysmon render ==="
+if command -v node >/dev/null 2>&1; then node tests/test_sysmon_render.js || rc=1
 else echo "SKIP: node not installed"; fi
 echo; echo "=== staging drift ==="; bash tests/test_staging_in_sync.sh || rc=1
 echo; [ $rc -eq 0 ] && echo "ALL SUITES PASSED" || echo "FAILURES ABOVE"

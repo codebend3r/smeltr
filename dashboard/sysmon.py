@@ -1,7 +1,7 @@
 """System resource sampler for the dashboard's monitor strip.
 
 Samples CPU / GPU / memory / network / disk once per second on a daemon
-thread, keeps 24 h of history, and persists it to a fixed-size binary ring
+thread, keeps 7 d of history, and persists it to a fixed-size binary ring
 file so a `./smeltr restart` costs a few seconds of gap, not the whole chart.
 
 Imported ONLY by server.py. Nothing in the decision path (core / verdict /
@@ -20,11 +20,17 @@ Rates are deltas between consecutive ticks. A counter that goes BACKWARDS
 or invented number. A metric that cannot be read yields None. A second with
 no sample at all renders as a gap in the chart -- the honest shape.
 
-The ring file: 16-byte header, then 86400 slots of 32 bytes
+The ring file: 16-byte header, then 604800 slots of 32 bytes
 (`<I7f`: epoch-seconds uint32, then cpu% gpu% ram% net_in net_out disk_r
-disk_w as float32, NaN = missing). Slot index = ts % 86400, so a day wraps
+disk_w as float32, NaN = missing). Slot index = ts % 604800, so a week wraps
 in place and the file never grows or needs compaction. Stale slots (ts older
-than 24 h) are skipped at read time and overwritten in their turn.
+than 7 d) are skipped at read time and overwritten in their turn.
+
+The window was 24 h until 2026-08-29; the chart's zoom now reaches 7 d, and
+a slider stop with nothing behind it is a washed-out lie about an idle
+machine. Widening SLOTS re-keys every slot index, so MAGIC went to
+SMLTRMON2 and the old file is recreated empty -- a one-time loss of the
+held day, not a misread of it.
 """
 
 from __future__ import annotations
@@ -40,10 +46,10 @@ import sys
 import threading
 import time
 
-SLOTS = 86400                       # one slot per second, 24 h
+SLOTS = 604800                      # one slot per second, 7 d
 SLOT = struct.Struct("<I7f")        # ts + cpu gpu ram net_in net_out disk_r disk_w
 SLOT_BYTES = SLOT.size              # 32
-MAGIC = b"SMLTRMON1\0\0\0\0\0\0\0"  # 16 bytes; bump the digit to invalidate
+MAGIC = b"SMLTRMON2\0\0\0\0\0\0\0"  # 16 bytes; bump the digit to invalidate
 N_METRICS = 7
 RING_NAME = "sysmon.ring"
 
@@ -151,11 +157,11 @@ def rate(prev, cur, dt):
 # ------------------------------------------------------------------ ring file
 
 class Ring:
-    """Fixed-size on-disk ring of one sample per second, 24 h deep.
+    """Fixed-size on-disk ring of one sample per second, 7 d deep.
 
     write() is one pwrite per second; load() reads the whole file once at
     startup. A header mismatch (older layout, torn create) recreates the file
-    empty rather than misreading 2.7 MB of stale bytes as data.
+    empty rather than misreading 19 MB of stale bytes as data.
     """
 
     def __init__(self, path: str):
@@ -209,7 +215,7 @@ class Ring:
             return b""
 
     def load(self, now: int):
-        """Every slot still inside the 24 h window, as {ts: [7 floats|None]}."""
+        """Every slot still inside the 7 d window, as {ts: [7 floats|None]}."""
         out = {}
         if self._fd is None:
             return out
@@ -287,9 +293,9 @@ class _Mach:
 
 class Sampler:
     """The 1 Hz loop. The in-memory mirror is a bytearray in the SAME
-    packed `<I7f` layout as the ring file -- 2.8 MB instead of ~19 MB of
+    packed `<I7f` layout as the ring file -- 19 MB instead of ~130 MB of
     Python objects, and serving history is a memcpy under the lock plus a
-    filter outside it, never 50 ms of struct.pack while the sampler and
+    filter outside it, never 350 ms of struct.pack while the sampler and
     every SSE thread wait."""
 
     def __init__(self, directory: str):
@@ -370,7 +376,7 @@ class Sampler:
             started = time.time()
             try:
                 self._tick()
-            except Exception as exc:          # never let one bad read kill 24 h
+            except Exception as exc:          # never let one bad read kill 7 d
                 print(f"sysmon: tick failed: {exc!r}", file=sys.stderr)
             took = time.time() - started
             if took > 5.0:                    # a stalled tick must leave a trace
@@ -419,22 +425,42 @@ class Sampler:
                 out.append(self._sample_dict(ts, rec[1:]))
             return out
 
-    def history_bytes(self):
-        """Every in-window sample, oldest first, as raw `<I7f` records.
-        The lock is held only for the mirror memcpy (~1 ms); the 86400-slot
-        filter runs on the snapshot."""
+    def history_bytes(self, span: int = SLOTS):
+        """The last `span` seconds of samples, oldest first, as raw `<I7f`
+        records. The lock is held only for the mirror memcpy (~1 ms); the
+        604800-slot filter runs on the snapshot.
+
+        `span` exists because the whole ring is 19 MB and the page usually
+        wants a day of it: a phone opening the dashboard must not pull the
+        week to draw 24 h. It only ever NARROWS the window -- a caller
+        asking for more than the ring holds gets what the ring holds.
+
+        Records are appended as CONTIGUOUS RUNS, not one slice per slot: a
+        populated ring is one or two runs, where per-slot slicing built
+        604800 short-lived bytes objects (~40 MB of garbage) per request.
+        """
         now = int(time.time())
-        floor = now - SLOTS
+        span = SLOTS if span is None else max(1, min(int(span), SLOTS))
+        floor = now - span
         with self._lock:
             snap = bytes(self._buf)
         chunks = []
+        run_lo = -1                           # first byte of the open run
+        run_hi = -1                           # last slot offset in that run
         start = (now + 1) % SLOTS             # oldest slot, walking forward
         for k in range(SLOTS):
             off = ((start + k) % SLOTS) * SLOT_BYTES
             ts = int.from_bytes(snap[off:off + 4], "little")
             if ts == 0 or ts <= floor or ts > now + 2:
                 continue
-            chunks.append(snap[off:off + SLOT_BYTES])
+            if off == run_hi + SLOT_BYTES:
+                run_hi = off
+                continue
+            if run_lo >= 0:
+                chunks.append(snap[run_lo:run_hi + SLOT_BYTES])
+            run_lo = run_hi = off
+        if run_lo >= 0:
+            chunks.append(snap[run_lo:run_hi + SLOT_BYTES])
         return b"".join(chunks)
 
 

@@ -67,7 +67,14 @@ if command -v node >/dev/null 2>&1; then
   echo "--- js syntax ---"
   js_rc=0
   for f in web/*.js; do node --check "$f" || js_rc=1; done
-  [ $js_rc -eq 0 ] && echo "PASS web/*.js parse" || rc=1
+  # The visual shooter is an ES module (node --check needs to be told), and
+  # it is the one script here that never runs in CI -- so a syntax error in
+  # it would otherwise surface only the next time somebody reached for it.
+  for f in tests/visual/*.mjs; do
+    [ -e "$f" ] || continue
+    node --check --input-type=module < "$f" || js_rc=1
+  done
+  [ $js_rc -eq 0 ] && echo "PASS web/*.js and tests/visual/*.mjs parse" || rc=1
 else
   echo "SKIP: node not installed"
 fi
