@@ -56,11 +56,22 @@ class Constants(unittest.TestCase):
     def test_floor_is_normalised_not_raw(self):
         """The old name encoded the bug. Nothing may reintroduce it."""
         self.assertFalse(hasattr(core, "OUTLIER_FLOOR_RAW"))
-        self.assertEqual(core.OUTLIER_FLOOR_NORM, 6.0)
+        self.assertEqual(core.OUTLIER_FLOOR_NORM, 15.0)
 
-    def test_floor_sits_below_the_thinnest_legitimate_encode(self):
-        """Flight keeps 12.6% per encoded pixel and is verified good."""
-        self.assertLess(core.OUTLIER_FLOOR_NORM, 12.6)
+    def test_floor_brackets_the_one_result_this_job_rejected(self):
+        """The floor is a policy line now, and it has two sides.
+
+        ABOVE Flight (12.64% per retained pixel): that encode was judged too
+        small to keep, so a Flight-class result must never auto-sync again --
+        and unlike `base * OUTLIER_FACTOR`, a fixed floor cannot drift down
+        onto it as the median falls.
+
+        BELOW Croods (17.05%): the thinnest output this library has produced
+        that IS wanted. A floor at or above that starts halting good work, and
+        a gate that halts routinely gets waved through.
+        """
+        self.assertGreater(core.OUTLIER_FLOOR_NORM, 12.65)
+        self.assertLess(core.OUTLIER_FLOOR_NORM, 17.0)
 
     def test_relative_factor(self):
         self.assertEqual(core.OUTLIER_FACTOR, 0.40)
@@ -74,28 +85,37 @@ class Floor(unittest.TestCase):
     def v(self, raw, norm):
         return core._verdict(raw, self.NO_HIST, norm, False)[0]
 
+    # Against the CONSTANT, never a copy of today's value. These broke as a
+    # block when the floor moved 6.0 -> 15.0, which is five failures saying
+    # one thing.
     def test_below_floor_is_suspect(self):
-        self.assertEqual(self.v(4.0, 5.9), "suspect")
+        f = core.OUTLIER_FLOOR_NORM
+        self.assertEqual(self.v(f / 3, f - 0.1), "suspect")
 
     def test_at_floor_is_good(self):
-        self.assertEqual(self.v(4.5, 6.0), "good")
+        f = core.OUTLIER_FLOOR_NORM
+        self.assertEqual(self.v(f / 3, f), "good")
 
     def test_above_floor_is_good(self):
-        self.assertEqual(self.v(4.5, 6.1), "good")
+        f = core.OUTLIER_FLOOR_NORM
+        self.assertEqual(self.v(f / 3, f + 0.1), "good")
 
     def test_heavy_crop_is_judged_on_encoded_pixels(self):
-        """The regression that halted Flight.
+        """The floor is on the NORMALISED ratio, and still is.
 
-        raw 4.5% would have tripped the old 12% raw floor; 12.0% per retained
-        pixel is comfortably above the new one. A title must not be called
-        implausible for the rows auto-crop correctly threw away.
+        A raw ratio well under the floor clears it when auto-crop explains the
+        difference. A title must not be called too small for the rows auto-crop
+        correctly threw away -- that was the 2026-08-22 regression, and raising
+        the floor to a policy line must not quietly reintroduce it.
         """
-        self.assertEqual(self.v(4.5, 12.0), "good")
+        f = core.OUTLIER_FLOOR_NORM
+        self.assertEqual(self.v(f / 3, f + 0.5), "good")
 
     def test_uncropped_title_is_unaffected(self):
         """With no crop, raw and normalised are the same number."""
-        self.assertEqual(self.v(5.9, 5.9), "suspect")
-        self.assertEqual(self.v(6.1, 6.1), "good")
+        f = core.OUTLIER_FLOOR_NORM
+        self.assertEqual(self.v(f - 0.1, f - 0.1), "suspect")
+        self.assertEqual(self.v(f + 0.1, f + 0.1), "good")
 
 
 class RelativeToHistory(unittest.TestCase):
@@ -116,36 +136,56 @@ class RelativeToHistory(unittest.TestCase):
         """Wide bounds on purpose. This catches a broken ledger, not drift."""
         self.assertTrue(10.0 < self.base < 80.0, f"median {self.base:.1f}%")
 
+    # `suspect` fires on `below_floor OR below_base`, so the observable line is
+    # whichever is HIGHER. Since 2026-08-30 that is the floor (15.0) and not
+    # the relative line -- the median would have to reach 37.5% before the
+    # relative rule binds again. Asserting against self.thr alone tested a
+    # boundary that no longer decides anything.
+    def effective_line(self):
+        return max(self.thr, core.OUTLIER_FLOOR_NORM)
+
     def test_just_below_the_threshold_is_suspect(self):
-        r = self.thr - 0.1
+        r = self.effective_line() - 0.1
         self.assertEqual(core._verdict(r, self.hist, r, False)[0], "suspect")
 
     def test_just_above_the_threshold_is_good(self):
-        r = self.thr + 0.1
+        r = self.effective_line() + 0.1
         self.assertEqual(core._verdict(r, self.hist, r, False)[0], "good")
 
+    def test_the_floor_is_what_binds_today(self):
+        """Which rule is live is a fact worth failing on when it changes."""
+        self.assertGreater(core.OUTLIER_FLOOR_NORM, self.thr,
+                           f"the relative line ({self.thr:.2f}%) has risen above "
+                           f"the floor ({core.OUTLIER_FLOOR_NORM}%); the floor no "
+                           f"longer guards Flight-class results on its own")
+
     def test_flight_still_asks_for_a_human(self):
-        """A deliberate decision, not a side effect -- re-decide if this fails.
+        """Flight-class is REJECTED work, and the floor is what says so.
 
         Flight (2012) keeps 12.6% per encoded pixel against a ~92 GB original:
-        the smallest output this job has ever produced. The SSIM check that
-        cleared it was worth having, so OUTLIER_FACTOR was set to keep it above
-        the line rather than to auto-sync it.
+        the smallest output this job has ever produced, and the operator's call
+        on 2026-08-30 was that it should never have been encoded that small.
+        Whatever else moves, that shape must not auto-sync.
 
-        The baseline drops as more thin encodes land. If it drops far enough
-        that 12.6% clears, this fails ON PURPOSE -- that is a safety threshold
-        moving on its own, and it needs a human decision, not a green suite.
+        This used to ride on `base * OUTLIER_FACTOR` and was therefore drifting:
+        the baseline fell until 12.6426% cleared 12.6423% and the verdict
+        flipped to `good` with nothing edited. It now rides on the absolute
+        floor, which does not move when the median does -- so this asserts the
+        outcome at BOTH a live baseline and a baseline half that low.
         """
-        code, note = core._verdict(9.4, self.hist, 12.6, False)
-        self.assertEqual(
-            code, "suspect",
-            f"Flight-class (12.6% normalised) now clears the relative line "
-            f"({self.thr:.1f}%). The baseline has drifted to {self.base:.1f}%. "
-            f"Deleting a ~92 GB original unreviewed is now possible -- decide "
-            f"deliberately whether that is wanted before changing this test.")
-        # It trips the RELATIVE rule, not the floor -- the note must not claim
-        # a floor that did not fire.
-        self.assertNotIn("floor", note)
+        for label, hist in (("live", self.hist), ("half", [h / 2 for h in self.hist])):
+            code, _ = core._verdict(9.4, hist, 12.6, False)
+            self.assertEqual(
+                code, "suspect",
+                f"Flight-class (12.6% normalised) auto-syncs against the {label} "
+                f"baseline (median {statistics.median(hist):.1f}%). Deleting a "
+                f"~92 GB original unreviewed is possible again -- the floor is "
+                f"meant to make this independent of the baseline.")
+        # It now trips the FLOOR, not the relative rule, and the note has to
+        # name the rule that actually fired -- the inverse of what this
+        # asserted while the relative line was the binding one.
+        _, note = core._verdict(9.4, self.hist, 12.6, False)
+        self.assertIn("floor", note)
         self.assertIn("12.6% per retained pixel", note)
 
     def test_contaminated_baseline_is_disclosed(self):
