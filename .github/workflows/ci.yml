@@ -144,6 +144,7 @@ jobs:
       - run: node tests/test_projection_ui.js
       - run: node tests/test_repaint_key.js
       - run: node tests/test_sysmon_ui.js
+      - run: node tests/test_sysmon_render.js
 
   # ----------------------------------------------------------------- shell
   # macOS on purpose: these test BSD-targeted scripts. See the header.
@@ -161,6 +162,12 @@ jobs:
       # can see, and the drift suite below is what keeps the two identical.
       - name: autopilot concurrency guards
         run: bash tests/test_autopilot_helpers.sh staging/autopilot.sh
+
+      # Whether `stop` can SEE the running dashboard. When it cannot, `start`
+      # binds a SECOND server to a second port with a second token. Needs no
+      # drive and no network -- it shadows ps/pgrep and fakes the processes.
+      - name: launcher server discovery
+        run: bash tests/test_launcher_pids.sh
 
       # ffprobe is what makes the corpse test meaningful -- a truncated encode
       # that probes "fine" and merely runs short is one of the two corpse shapes

@@ -292,6 +292,39 @@ Three suites were added 2026-08-28 to cover the highest-stakes gaps:
   POSTs spawn HandBrake and re-arm deletions. Includes the non-ASCII token
   that used to raise `TypeError` out of `compare_digest`.
 
+### Seeing the charts — visual confirmation
+
+Two halves, because each catches what the other cannot. The 7 d widening
+passed every arithmetic test and still shipped a chart that was 92% empty
+wash, and the fix for THAT shipped a 15 min window whose line rendered
+dotted. Neither was visible in a number.
+
+- **`tests/test_sysmon_render.js`** (in `run-all.sh` and CI) hands the real
+  `drawMon()` a RECORDING 2D context and asserts the ops it emits: every one
+  of the twelve stops draws a line across the full plot width, the wash
+  appears if and only if the window overhangs the ring and is that overhang
+  to the pixel, the no-data stretch rides 0 *and* carries its wash, a gap
+  inside the history still breaks the path, gridlines stay at 3–16 per
+  window, and no two tick labels collide. No browser, no dependency, no
+  golden images — it runs wherever the other node suites do.
+- **`node tests/visual/shoot.mjs`** (`npm run visual`) is the eyeball half
+  and is NOT wired into CI. It seeds a synthetic 7 d ring
+  (`tests/visual/seed_ring.py`) into a temp `SMELTR_DIR`, starts a
+  THROWAWAY dashboard against it — the live ring beside the ledger is never
+  touched — drives the Chrome already installed on this Mac over the
+  DevTools Protocol with node's built-in `WebSocket` (no npm package, no
+  Playwright, nothing installed; it SKIPS LOUDLY with no Chrome), and
+  screenshots all twelve stops in both themes, then montages them into one
+  contact sheet per theme. `--depth-seconds N` seeds a PARTIAL ring, which
+  is how the wash and the 0 baseline get on screen. It reads the stop count
+  off the slider and the label off `#monSpanLbl` rather than page globals,
+  because `web/app.js` is an IIFE and because a visual suite should see
+  exactly what a person sees.
+
+Known artifact, not a bug: the seeded ring ends at `now` and the throwaway
+server's own sampler starts a few seconds later, so the shots show a small
+real gap at the right edge.
+
 `tests/test_repo_invariants.py` enforces the rules this file calls
 non-negotiable and nothing previously checked: every encode path passes
 `--all-audio`/`--all-subtitles` and nothing passes `--audio-lang-list`;
@@ -514,13 +547,26 @@ second request.
 
 - **The resource monitor (2026-08-25)** is a "This Mac" card between the live
   card and the tabs: three canvas charts (Utilization %, Network MiB/s, Disk
-  I/O · all volumes MiB/s), 1 Hz samples, 24 h of history, a log-scale
-  1 h–24 h zoom slider. `dashboard/sysmon.py` (imported ONLY by `server.py` — the
+  I/O · all volumes MiB/s), 1 Hz samples, **7 d of history**, and a zoom
+  slider that **snaps to twelve named stops** — 15 min · 30 min · 1 h · 2 h
+  · 4 h · 6 h · 12 h · 24 h · 2 d · 3 d · 5 d · 7 d (widened 2026-08-29 from
+  a continuous log curve over 1 h–24 h; a continuous curve handed out
+  windows like "3.4 h" that two readings of the chart could not be compared
+  across). `dashboard/sysmon.py` (imported ONLY by `server.py` — the
   decision path never loads it) samples on a daemon thread and persists to
-  `sysmon.ring` beside the ledger: 16-byte magic header + 86400 slots of
-  `<I7f` keyed `ts % 86400`, so a restart costs seconds of gap, not the
-  chart. History reaches the page as raw ring records
-  (`GET /api/sysmon/history`, DataView-parsed); live samples as 1 s
+  `sysmon.ring` beside the ledger: 16-byte magic header + 604800 slots of
+  `<I7f` keyed `ts % 604800`, so a restart costs seconds of gap, not the
+  chart. **Widening SLOTS re-keys every slot index**, so `MAGIC` went to
+  `SMLTRMON2` and the old 24 h file is recreated empty on first launch — a
+  one-time loss, never a misread. History reaches the page as raw ring
+  records (`GET /api/sysmon/history`, DataView-parsed), **sized to the
+  visible window**: the whole ring is ~19 MB and the default stop draws a
+  day, so the page sends `&span=<seconds>` and re-fetches only when a wider
+  stop asks for more than it holds — and says "loading history…" rather
+  than "history since" while that is in flight, because an unfetched window
+  is not a claim about the sampler. `history_bytes()` emits contiguous
+  RUNS, not one slice per slot (per-slot slicing built 604800 short-lived
+  objects per request). Live samples arrive as 1 s
   `event: mon` SSE frames interleaved with the 2 s state frames on the same
   connection — `build_state()` still runs at 2 s, never 1 Hz. The charts
   live entirely OUTSIDE `paint()` and its repaint keys; the redraw clock is
@@ -529,10 +575,25 @@ second request.
   sample). Honesty rules, pinned in `tests/test_sysmon.py` +
   `tests/test_sysmon_ui.js`: a missing second is a line GAP, never an
   interpolation; unreadable metrics are NaN → absent line and `—`, never 0;
-  decimation is min/max band + mean line so a 1 s spike survives a 24 h
+  decimation is min/max band + mean line so a 1 s spike survives a 7 d
   window (the header says "shade = min–max · line = mean"); the window
-  before the oldest held sample is washed with `--skel` and captioned
-  "history since HH:MM" so an empty ring cannot read as an idle machine;
+  before the oldest held sample rides a flat 0 baseline UNDER a `--nodata`
+  wash, a `--nodata-bd` rule at the boundary and an inline "no samples
+  before HH:MM" — **the zeros and the disclosure ship together or neither
+  is honest**. The line is drawn so a window wider than the ring reads as
+  one chart rather than a stub hanging off the right edge; the wash, rule
+  and words are what stop those zeros reading as an idle machine. It is NOT
+  `--skel`: the boot skeleton is deliberately near-invisible against
+  `--panel`, and reusing it left the dark theme showing a flat 0 line with
+  no visible disclaimer at all. A gap INSIDE the history still breaks the
+  path — that is a fact about the machine, where the baseline is a fact
+  about how long we have been recording;
+  past 24 h the axis ticks and both stamps carry a weekday, because a bare
+  "06:00" names three different mornings at the 7 d stop; there are never
+  MORE buckets than the window has seconds (a 15 min window on a 1200 px
+  canvas has 900 samples for 1156 columns, and one-bucket-per-column drew a
+  fully-sampled 1 Hz series as a DOTTED line — the samples were not
+  missing, the screen simply had more resolution than the data);
   throughput axes have a hard 1 MiB/s floor (background chatter must not
   autoscale into a mountain range) and sub-MiB values print as KiB/s so a
   live trickle never rounds to 0. Chart series colours are the `--ch-*`

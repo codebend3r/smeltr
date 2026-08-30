@@ -23,8 +23,37 @@ export SMELTR_BIND="${SMELTR_BIND:-lan}"
 # server.py on the machine -- `stop` would have killed it, and `running` would
 # have adopted its pid and reported a stale URL as live.
 server_pids() { pgrep -f "$DIR/[d]ashboard/server\.py" 2>/dev/null; }
+
+# The pattern above encodes where the server lives TODAY, and that has already
+# moved once: the tree split relocated it from $DIR/server.py to
+# $DIR/dashboard/server.py, and the server running the old code kept its old
+# command line. `stop` could no longer see it -- it said "not running", dropped
+# the pidfile, and `start` then bound a SECOND server to another port, which is
+# the two-tokens-two-ports ambiguity the block above exists to prevent. So the
+# pidfile is honoured as well as the pattern.
+#
+# But only after proving the pid is still a smeltr server OF THIS CHECKOUT. A
+# pidfile outlives its process and pids are recycled; `kill -0` alone says a
+# process exists, not that it is ours, and `stop` would take an unrelated
+# process with it. Matching $DIR keeps a second clone's server out of it too.
+# -ww because the interpreter path alone can exceed the default width, and a
+# truncated command line would hide the $DIR we are matching on.
+pidfile_pid() {
+  local pid cmd
+  pid=$(cat "$PIDF" 2>/dev/null) || return 1
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null || return 1
+  cmd=$(ps -ww -o command= -p "$pid" 2>/dev/null) || return 1
+  case "$cmd" in *"$DIR/"*server.py*) ;; *) return 1 ;; esac
+  echo "$pid"
+}
+
+# Every live server of this checkout, however it was started. sort -un also
+# dedupes the usual case where the pattern and the pidfile name the same pid.
+all_server_pids() { { server_pids; pidfile_pid; } 2>/dev/null | sort -un; }
+
 running() {
-  if [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null; then return 0; fi
+  [ -n "$(pidfile_pid)" ] && return 0
   local found; found=$(server_pids | head -1)
   if [ -n "$found" ]; then echo "$found" > "$PIDF"; return 0; fi
   return 1
@@ -47,7 +76,7 @@ start() {
 }
 
 stop() {
-  local pids; pids=$(server_pids)
+  local pids; pids=$(all_server_pids)
   if [ -n "$pids" ]; then
     # shellcheck disable=SC2086
     kill $pids 2>/dev/null
@@ -55,12 +84,12 @@ stop() {
     # the dying pid, reported "already running" with a URL that had just been
     # deleted, and started nothing -- leaving no dashboard at all.
     for _ in $(seq 1 50); do
-      [ -z "$(server_pids)" ] && break
+      [ -z "$(all_server_pids)" ] && break
       perl -e 'select(undef,undef,undef,0.1)' 2>/dev/null || true
     done
-    if [ -n "$(server_pids)" ]; then
+    if [ -n "$(all_server_pids)" ]; then
       # shellcheck disable=SC2046
-      kill -9 $(server_pids) 2>/dev/null
+      kill -9 $(all_server_pids) 2>/dev/null
     fi
     echo "stopped"
   else

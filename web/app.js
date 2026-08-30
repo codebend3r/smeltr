@@ -1246,12 +1246,16 @@ function conn(state,text){
 }
 
 /* ---- Resource monitor ---------------------------------------------------
-   Charts are fed by two sources: one history fetch (24 h of raw 32-byte
-   records, parsed with a DataView into a client-side ring mirroring the
-   server's), then 1 s `mon` SSE frames appended on top. Everything renders
-   from the ring, decimated to one bucket per pixel column with a MIN/MAX
-   band plus the mean line -- a one-second spike must survive a 24 h window,
-   and averaging alone would erase it.
+   Charts are fed by two sources: a history fetch (raw 32-byte records,
+   parsed with a DataView into a client-side ring mirroring the server's),
+   then 1 s `mon` SSE frames appended on top. Everything renders from the
+   ring, decimated to one bucket per pixel column with a MIN/MAX band plus
+   the mean line -- a one-second spike must survive a 7 d window, and
+   averaging alone would erase it.
+
+   The fetch is SIZED TO THE VISIBLE WINDOW. The ring is a week deep and
+   ~19 MB whole; a phone opening the page on the 24 h stop pulls a day and
+   only widens when you drag past what it holds.
 
    Honesty rules, same as the tables: a second with no sample is a GAP in
    the line, never an interpolation; a metric the sampler could not read
@@ -1259,13 +1263,27 @@ function conn(state,text){
    dash, never a flat zero. The whole strip lives OUTSIDE paint() and its
    repaint keys: a chart frame never rebuilds a table.
 
-   The slider maps 0..100 -> 1 h..24 h on a log scale (equal slider travel
-   feels like equal zoom factor); the window is always anchored at now. ---- */
-var MON_SLOTS=86400, MIB=1048576;
-function monSpan(pos){ return Math.round(3600*Math.pow(24,pos/100)); }
+   The slider SNAPS to a named window rather than sliding along a log
+   curve. Twelve stops, 15 min to 7 d, one per integer position: "3 h" is a
+   window you can hold in your head and compare against yesterday's, where
+   the old continuous mapping handed out "3.4 h" and made two readings of
+   the same chart incomparable. The window is always anchored at now. ---- */
+var MON_SLOTS=604800, MIB=1048576;      /* 7 d, matching sysmon.SLOTS */
+var MON_STOPS=[900,1800,3600,7200,14400,21600,43200,86400,
+               172800,259200,432000,604800];
+var MON_DEFAULT=7;                      /* 24 h -- the stop the page opens on */
+function monSpan(pos){
+  var i=Math.round(pos);
+  if(!(i>=0)) i=0;                      /* NaN included */
+  if(i>MON_STOPS.length-1) i=MON_STOPS.length-1;
+  return MON_STOPS[i];
+}
 function spanLabel(sec){
-  var h=sec/3600;
-  return (h>=9.5?Math.round(h):Math.round(h*10)/10)+" h";
+  if(sec<3600) return Math.round(sec/60)+" min";
+  if(sec<86400){ var h=sec/3600;
+    return (h>=9.5?Math.round(h):Math.round(h*10)/10)+" h"; }
+  var d=sec/86400;
+  return (d>=9.5?Math.round(d):Math.round(d*10)/10)+" d";
 }
 function niceMax(v){
   if(!(v>0)) return 1;
@@ -1273,8 +1291,10 @@ function niceMax(v){
   return (m<=1?1:m<=2?2:m<=5?5:10)*p;
 }
 function monTicks(span){
-  return span<=7200?900:span<=14400?1800:span<=28800?3600:
-         span<=43200?7200:10800;
+  return span<=1800?300:span<=3600?600:span<=7200?900:
+         span<=14400?1800:span<=28800?3600:span<=43200?7200:
+         span<=86400?10800:span<=172800?21600:
+         span<=259200?43200:86400;
 }
 function monBuckets(tsArr,valArr,t0,t1,cols){
   var lo=new Float64Array(cols),hi=new Float64Array(cols),
@@ -1283,7 +1303,7 @@ function monBuckets(tsArr,valArr,t0,t1,cols){
   var span=t1-t0;
   for(s=t0;s<t1;s++){
     i=s%MON_SLOTS;
-    if(tsArr[i]!==s) continue;      /* empty or >24 h stale slot */
+    if(tsArr[i]!==s) continue;      /* empty or >7 d stale slot */
     v=valArr[i];
     if(v!==v) continue;             /* NaN: metric unreadable that second */
     c=((s-t0)*cols/span)|0; if(c>=cols) c=cols-1;
@@ -1310,6 +1330,24 @@ function axLab(v){ return v>=10?Math.round(v):Math.round(v*10)/10; }
 function hhmm(t){ var d=new Date(t*1000);
   return String(d.getHours()).padStart(2,"0")+":"
         +String(d.getMinutes()).padStart(2,"0"); }
+var MON_DAYS=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+/* Past 24 h the window crosses midnight, and a bare "06:00" on the axis --
+   or in the tooltip -- names three different mornings at the 7 d stop.
+   Anything not from today carries its weekday. */
+function isToday(t){
+  var d=new Date(t*1000), n=new Date();
+  return d.getFullYear()===n.getFullYear()&&d.getMonth()===n.getMonth()
+      &&d.getDate()===n.getDate();
+}
+function stampLab(t){
+  return isToday(t)?hhmm(t):MON_DAYS[new Date(t*1000).getDay()]+" "+hhmm(t);
+}
+function tickLab(t,span){
+  if(span<=86400) return hhmm(t);
+  var d=new Date(t*1000), day=MON_DAYS[d.getDay()];
+  /* At a whole-day tick step the time is always 00:00 and carries nothing. */
+  return (d.getHours()===0&&d.getMinutes()===0)?day:day+" "+hhmm(t);
+}
 
 var monTs=new Float64Array(MON_SLOTS), monV=[], monLast=null,
     monEarliest=null;   /* oldest sample held; before it the chart says NO DATA */
@@ -1335,8 +1373,12 @@ var monCard=document.getElementById("sysmon"),
     monZoomEl=document.getElementById("monZoom"),
     monLblEl=document.getElementById("monSpanLbl"),
     monSinceEl=document.getElementById("monSince"),
-    monHover=null, monPos=100, monFetching=false,
-    monHistBroken=false, monDataV=0, monRaf=0;
+    monHover=null, monPos=MON_DEFAULT, monFetching=false,
+    monHistBroken=false, monDataV=0, monRaf=0,
+    /* How much history we have ASKED the server for. The ring is 7 d /
+       ~19 MB and the page usually draws one day of it, so the fetch is
+       sized to the window and re-run when you zoom wider. */
+    monHaveSpan=0, monWantSpan=0;
 
 MON_CHARTS.forEach(function(ch){
   ch.canvas=document.getElementById(ch.cv);
@@ -1350,14 +1392,33 @@ MON_CHARTS.forEach(function(ch){
   });
 });
 
-try{ var _sv=localStorage.getItem("smeltr.monspan");
-  if(_sv!=null&&+_sv>=0&&+_sv<=100) monPos=+_sv; }catch(_){}
+/* The stored value is a STOP INDEX now; "smeltr.monspan" held a 0..100
+   position on the old log curve, so it is read once, converted to the
+   nearest stop, and rewritten under the new key. A stale key left behind
+   would silently restore a position that no longer means anything. */
+try{
+  var _sv=localStorage.getItem("smeltr.monstop");
+  if(_sv!=null&&+_sv>=0&&+_sv<=MON_STOPS.length-1) monPos=Math.round(+_sv);
+  else{
+    var _old=localStorage.getItem("smeltr.monspan");
+    if(_old!=null&&+_old>=0&&+_old<=100){
+      var want=3600*Math.pow(24,+_old/100), best=MON_DEFAULT, bd=Infinity;
+      MON_STOPS.forEach(function(v,i){
+        var d=Math.abs(Math.log(v)-Math.log(want));
+        if(d<bd){ bd=d; best=i; } });
+      monPos=best;
+      localStorage.setItem("smeltr.monstop",String(monPos));
+    }
+    localStorage.removeItem("smeltr.monspan");
+  }
+}catch(_){}
 monZoomEl.value=monPos;
 monLblEl.textContent=spanLabel(monSpan(monPos));
 monZoomEl.addEventListener("input",function(){
-  monPos=+monZoomEl.value;
+  monPos=Math.round(+monZoomEl.value);
   monLblEl.textContent=spanLabel(monSpan(monPos));
-  try{ localStorage.setItem("smeltr.monspan",String(monPos)); }catch(_){}
+  try{ localStorage.setItem("smeltr.monstop",String(monPos)); }catch(_){}
+  monLoad();                 /* no-op unless this stop needs more history */
   monDrawSoon();
 });
 
@@ -1369,15 +1430,24 @@ function monPush(t,vals){
   monDataV++;
 }
 
-function monLoad(){
+/* Fetch exactly the window being drawn, and only re-fetch when a wider
+   stop asks for more than we already hold. `force` is the reconnect path:
+   the same span, re-read, because we may have missed samples while the
+   stream was down. */
+function monLoad(force){
+  var span=monSpan(monPos);
   if(monFetching) return;
-  monFetching=true;
-  fetch("/api/sysmon/history?t="+encodeURIComponent(token),{cache:"no-store"})
+  if(!force&&span<=monHaveSpan) return;
+  monFetching=true; monWantSpan=span;
+  monDrawSoon();                 /* repaint the caption as "loading" */
+  fetch("/api/sysmon/history?t="+encodeURIComponent(token)
+        +"&span="+span,{cache:"no-store"})
     .then(function(r){ return r.ok?r.arrayBuffer():null; })
     .then(function(buf){
       monFetching=false;
       if(!buf){ monHistFail(); return; }
       monHistBroken=false;
+      if(span>monHaveSpan) monHaveSpan=span;
       var dv=new DataView(buf), t=0, i, k;
       for(var o=0;o+32<=buf.byteLength;o+=32){
         t=dv.getUint32(o,true); i=t%MON_SLOTS; monTs[i]=t;
@@ -1395,11 +1465,12 @@ function monLoad(){
     .catch(function(){ monFetching=false; monHistFail(); });
 }
 /* A FAILED history fetch is "history unavailable", never "no samples yet"
-   -- the server may hold a full 24 h we simply could not read. Retry. */
+   -- the server may hold a full week we simply could not read. Retry. */
 function monHistFail(){
   monHistBroken=true;
+  monWantSpan=0;
   monDrawSoon();
-  setTimeout(monLoad,30000);
+  setTimeout(function(){ monLoad(true); },30000);
 }
 
 function monCss(name){
@@ -1418,10 +1489,19 @@ function drawMon(ch,t0,t1,css){
   ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.clearRect(0,0,w,h);
   var x0=MON_GUT, x1=w-6, y0=MON_PADT, y1=h-(ch.axis?MON_AXIS:6);
-  var cols=Math.max(1,Math.round(x1-x0));
-  /* Bucketing is O(window seconds) -- 86400 iterations per series at the
-     24 h zoom -- so it is cached per (window, width, data version): a
-     hover storm repaints from the cache instead of re-walking the day. */
+  /* One bucket per pixel column -- but NEVER more buckets than the window
+     has seconds. A 15 min window on a 1200 px canvas has 900 samples for
+     1156 columns, so a quarter of them hold nothing, and the honest
+     "empty bucket = gap" rule then draws a 1 Hz series as a DOTTED line.
+     The samples are not missing; there is simply more resolution on screen
+     than in the data. Capping the bucket count and giving each bucket a
+     fractional pixel width is what keeps a gap meaning "the sampler missed
+     this second". */
+  var cols=Math.max(1,Math.min(Math.round(x1-x0),t1-t0));
+  var cw=(x1-x0)/cols;                  /* pixels per bucket, >= 1 */
+  /* Bucketing is O(window seconds) -- 604800 iterations per series at the
+     7 d zoom -- so it is cached per (window, width, data version): a
+     hover storm repaints from the cache instead of re-walking the week. */
   var bkey=t0+"|"+t1+"|"+cols+"|"+monDataV, bks;
   if(ch._bkey===bkey){ bks=ch._bks; }
   else{
@@ -1445,10 +1525,34 @@ function drawMon(ch,t0,t1,css){
   function Y(v){ return y1-(Math.min(v,ymax)/ymax)*(y1-y0); }
   ctx.font="10px "+css.mono;
   /* The stretch of the window BEFORE the oldest held sample is washed with
-     the skeleton token: no-data must never look like a machine at rest. */
+     the skeleton token: no-data must never look like a machine at rest.
+     preCols is that stretch in whole columns -- the series loops below ride
+     the 0 baseline across it, and the wash is what keeps those zeros from
+     reading as measurements. */
+  var preCols=0;
   if(css.histStart>t0){
-    ctx.fillStyle=css.skel;
-    ctx.fillRect(x0,y0,Math.min(x1,X(css.histStart))-x0,y1-y0);
+    preCols=Math.max(0,Math.min(cols,
+      Math.round((Math.min(css.histStart,t1)-t0)/(t1-t0)*cols)));
+    var edge=Math.min(x1,X(css.histStart));
+    ctx.fillStyle=css.nodata;
+    ctx.fillRect(x0,y0,edge-x0,y1-y0);
+    /* A hard edge where the record starts. The wash alone is a subtle
+       shade; the rule is what makes "the data begins HERE" unmissable at a
+       glance, and it is the only mark separating a wiped ring from a quiet
+       machine. */
+    ctx.strokeStyle=css.nodataBd; ctx.lineWidth=1;
+    ctx.beginPath();
+    ctx.moveTo(Math.round(edge)+0.5,y0);
+    ctx.lineTo(Math.round(edge)+0.5,y1);
+    ctx.stroke();
+    /* Said in words too, once per card, where there is room for it. The
+       header caption carries the same fact, but it sits outside the plot
+       and reads as a note about the page rather than about this chart. */
+    if(edge-x0>190){
+      ctx.fillStyle=css.ink3; ctx.textAlign="center"; ctx.textBaseline="middle";
+      ctx.fillText("no samples before "+css.histLabel,
+                   x0+(edge-x0)/2,(y0+y1)/2);
+    }
   }
   ctx.strokeStyle=css.grid; ctx.fillStyle=css.ink; ctx.lineWidth=1;
   [0,0.5,1].forEach(function(f){
@@ -1465,7 +1569,7 @@ function drawMon(ch,t0,t1,css){
     ctx.beginPath(); ctx.moveTo(gx,y0); ctx.lineTo(gx,y1); ctx.stroke();
     if(ch.axis){
       ctx.fillStyle=css.ink; ctx.textAlign="center"; ctx.textBaseline="top";
-      ctx.fillText(hhmm(tt),gx,y1+4);
+      ctx.fillText(tickLab(tt,t1-t0),gx,y1+4);
     }
   }
   ch.series.forEach(function(se,si){
@@ -1474,18 +1578,29 @@ function drawMon(ch,t0,t1,css){
     for(var c=0;c<cols;c++){
       if(b.lo[c]!==b.lo[c]) continue;
       var yh=Y(b.hi[c]), yl=Y(b.lo[c]);
-      ctx.fillRect(x0+c,yh,1,Math.max(1,yl-yh));
+      ctx.fillRect(x0+c*cw,yh,Math.max(1,cw),Math.max(1,yl-yh));
     }
     ctx.globalAlpha=1;
     ctx.strokeStyle=colr; ctx.lineWidth=1.6; ctx.lineJoin="round";
     ctx.beginPath();
     var pen=false;
-    for(c=0;c<cols;c++){
+    /* BEFORE the oldest held sample the line rides the 0 baseline. Nothing
+       was measured there, and the --skel wash under it plus the "history
+       since HH:MM" caption are what say so -- the baseline exists only so a
+       window wider than the ring reads as one chart instead of a broken
+       one hanging off the right edge. This is NOT the gap rule: a missing
+       second INSIDE the history still breaks the path below, because there
+       the sampler was running and produced nothing, which is a fact about
+       the machine rather than about how long we have been recording. */
+    if(preCols>0){
+      ctx.moveTo(x0,Y(0)); ctx.lineTo(x0+preCols*cw,Y(0)); pen=true;
+    }
+    for(c=preCols;c<cols;c++){
       var v=b.avg[c];
       if(v!==v){ pen=false; continue; }   /* gap: break, never bridge */
       var y=Y(v);
-      if(pen) ctx.lineTo(x0+c+0.5,y);
-      else { ctx.moveTo(x0+c+0.5,y); pen=true; }
+      if(pen) ctx.lineTo(x0+(c+0.5)*cw,y);
+      else { ctx.moveTo(x0+(c+0.5)*cw,y); pen=true; }
     }
     ctx.stroke();
   });
@@ -1515,16 +1630,24 @@ function monDraw(){
   var early=monEarliest;
   if(early!=null&&early<t1-MON_SLOTS) early=t1-MON_SLOTS;
   var css={ink:monCss("--ink-2"),ink3:monCss("--ink-3"),
-           grid:monCss("--line"),skel:monCss("--skel"),
+           grid:monCss("--line"),nodata:monCss("--nodata"),
+           nodataBd:monCss("--nodata-bd"),
            mono:monCss("--mono")||"monospace",
-           histStart:(early==null?t1:Math.max(t0,early))};
+           histStart:(early==null?t1:Math.max(t0,early)),
+           histLabel:(early==null?"this session":stampLab(early))};
   MON_CHARTS.forEach(function(ch){ drawMon(ch,t0,t1,css); });
   /* The legend is the LATEST sample, and says so; a sampler that has gone
      quiet must show an em dash, not its last reading forever. */
   var stale=!monLast||now-monLast.t>5;
+  /* A window we have not fetched yet must NOT report itself as a machine
+     with no history: "history since" is a claim about the sampler, and
+     while a wider fetch is in flight the only true statement is that we
+     are still reading. */
   monSinceEl.textContent=
     monHistBroken?"history unavailable — live only":
-    early==null?"no samples yet":(early>t0?"history since "+hhmm(early):"");
+    (monFetching&&monWantSpan>monHaveSpan)?"loading history…":
+    early==null?"no samples yet":
+    (early>t0?"history since "+stampLab(early):"");
   MON_CHARTS.forEach(function(ch){
     ch.series.forEach(function(se,si){
       var v=stale?null:monLast.v[se.k];
@@ -1554,7 +1677,7 @@ function monTipDraw(t0,t1){
      same number disagreeing. */
   var when=st||monHover.t, d=new Date(when*1000);
   monTipEl.appendChild(el("div","t",
-    "1 s sample · "+hhmm(when)+":"+String(d.getSeconds()).padStart(2,"0")));
+    "1 s sample · "+stampLab(when)+":"+String(d.getSeconds()).padStart(2,"0")));
   for(var k=0;k<7;k++){
     var row=el("div","row");
     row.appendChild(el("span","",MON_NAMES[k]));
@@ -1649,7 +1772,7 @@ es.onopen=function(){ conn("on","live");
   /* A reconnect means missed seconds (and possibly a restarted server whose
      ring has samples this page never saw). Refetch history to fill the gap
      rather than leave a hole that never heals. */
-  if(booted) monLoad();
+  if(booted) monLoad(true);
 };
 es.onerror=function(){
   /* The spec permanently CLOSES an EventSource on a non-200 (e.g. a 403 from
@@ -1688,5 +1811,5 @@ es.addEventListener("mon",function(ev){
    anchored to now and must keep sliding -- and the legend must go stale --
    even when the sampler or the stream stops feeding it. */
 setInterval(monDrawSoon,1000);
-monLoad();
+monLoad(true);
 })();

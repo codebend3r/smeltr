@@ -9,6 +9,7 @@ check that recreates (never misreads) an older file.
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -208,6 +209,50 @@ class TestHistoryServing(unittest.TestCase):
             self.assertEqual(stamps, sorted(stamps))
             self.assertIn(now - 10, stamps)
             self.assertNotIn(stale, stamps)
+
+    def test_history_bytes_span_narrows_the_window(self):
+        # The page asks for the window it is drawing: the ring is 7 d /
+        # ~19 MB and the default zoom shows a day of it. `span` may only
+        # NARROW -- a caller asking for more than the ring holds gets the
+        # ring, and one asking for nothing at all still gets the ring.
+        with tempfile.TemporaryDirectory() as d:
+            s = sysmon.Sampler(d)             # no .start(): no thread
+            now = int(time.time())
+            inside, outside = now - 100, now - 4000
+            s._store(inside, [1.0] * 7)
+            s._store(outside, [2.0] * 7)
+
+            def stamps(*args):
+                raw = s.history_bytes(*args)
+                return [sysmon.SLOT.unpack_from(raw, o)[0]
+                        for o in range(0, len(raw), sysmon.SLOT_BYTES)]
+
+            self.assertIn(outside, stamps())            # default: whole ring
+            wide = stamps(3600)
+            self.assertIn(inside, wide)
+            self.assertNotIn(outside, wide)             # older than the span
+            self.assertEqual(stamps(sysmon.SLOTS * 99), stamps())
+            self.assertEqual(stamps(0), stamps(1))      # clamped, never empty-by-zero
+
+    def test_history_bytes_coalesces_runs_across_the_wrap(self):
+        # Records are emitted as contiguous runs now, not one slice per
+        # slot. The ring wraps at SLOTS-1 -> 0, so the run must BREAK
+        # there and still come out oldest-first: a run that walked past
+        # the wrap would splice the newest samples in front of the oldest.
+        with tempfile.TemporaryDirectory() as d:
+            s = sysmon.Sampler(d)
+            now = int(time.time())
+            edge = (now // sysmon.SLOTS) * sysmon.SLOTS - 1   # slot SLOTS-1
+            want = [edge - 1, edge, edge + 1, edge + 2]
+            if want[0] <= now - sysmon.SLOTS or want[-1] > now:
+                self.skipTest("the wrap point is not inside the live window")
+            for ts in want:
+                s._store(ts, [float(ts % 7)] * 7)
+            raw = s.history_bytes()
+            got = [sysmon.SLOT.unpack_from(raw, o)[0]
+                   for o in range(0, len(raw), sysmon.SLOT_BYTES)]
+            self.assertEqual([t for t in got if t in want], want)
+            self.assertEqual(got, sorted(got))
 
 
 class TestSinceCursor(unittest.TestCase):

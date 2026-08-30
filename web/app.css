@@ -38,6 +38,13 @@
      roots and measures ~2 s, so that gap used to render as a black screen.
      --skel is the ghost block, --skel-hi the shimmer crest that travels it. */
   --skel:#161a21; --skel-hi:#222834;
+  /* The monitor's NO-DATA wash, and the boundary where history begins. Not
+     --skel: the boot skeleton is deliberately near-invisible against
+     --panel, and reusing it left a 7 d window with 5 minutes of history
+     rendering in dark as a flat 0 line with no visible disclaimer -- which
+     is exactly what an idle Mac looks like. The zeros drawn under this
+     wash are only honest while the wash reads. */
+  --nodata:#1c222d; --nodata-bd:#39424f;
   /* Resource-monitor chart series. Deliberately DIMMER than the page accents
      (--hot/--cool/--good are tuned for text and badges): line charts want
      OKLCH L 0.48-0.67 on this surface, and the trio is validated for
@@ -67,6 +74,7 @@
   --halo-good:rgba(15,122,85,.18); --halo-good-2:rgba(15,122,85,.05);
   --band-bd:#2f7357;
   --skel:#e6eaf1; --skel-hi:#f4f7fb;
+  --nodata:#e7ebf2; --nodata-bd:#bcc5d3;
   --ch-1:#c2540f; --ch-2:#0567a0; --ch-3:#128a50;
 }
 *{box-sizing:border-box;margin:0;padding:0}
@@ -522,7 +530,13 @@ footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3)
 .monnote{font-size:11px;color:var(--ink-3)}
 .monzoom{margin-left:auto;display:flex;align-items:center;gap:10px;
   font-size:11.5px;color:var(--ink-3)}
-#monZoom{width:180px;accent-color:var(--hot)}
+/* The track is long on purpose: 12 discrete stops from 15 min to 7 d need
+   room to be picked apart by touch. min-width beats a fixed width so the
+   flex row can still shrink it before it wraps. */
+#monZoom{width:340px;min-width:150px;flex-shrink:1;accent-color:var(--hot)}
+/* Fixed label box: "15 min" is wider than "7 d", and a track that slid
+   left as you dragged would fight the thumb you are dragging. */
+#monSpanLbl{min-width:46px;text-align:right}
 #monZoom:focus-visible{outline:2px solid var(--cool);outline-offset:2px}
 .monchart{margin-top:10px}
 .monlab{display:flex;align-items:baseline;gap:8px;font-size:11px;color:var(--ink-3);
@@ -553,7 +567,8 @@ footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3)
    Every colour here is an existing token, so both themes are covered. ---- */
 @media (max-width:700px){
   body{padding:16px 12px 48px}
-  #monZoom{width:110px}
+  #monZoom{width:100%;min-width:0}
+  .monzoom{width:100%;margin-left:0}
   .monleg{gap:9px}
   .monchart canvas{height:80px}
   .monchart.tall canvas{height:96px}
