@@ -7,7 +7,8 @@ deletion). Four checks guard that, and until this suite none had a test:
   _host_ok      DNS-rebinding: a browser pointed at an attacker's name that
                 resolves to our LAN IP arrives with THAT name in Host.
   _token_ok     the shared secret, compared in constant time over BYTES.
-  _writes_ok    network peers are read-only unless SMELTR_LAN_WRITES=1.
+  _writes_ok    network peers are read-only unless SMELTR_LAN_WRITES=1 --
+                EXCEPT /api/pause, which any device holding the URL may call.
   _is_private   which addresses may be bound at all -- a VPN or public
                 address must fail CLOSED to loopback, because the token
                 crosses the wire in cleartext.
@@ -118,12 +119,49 @@ class WriteGate(unittest.TestCase):
     def test_loopback_always_writes(self):
         with mock.patch.object(server, "LAN_WRITES", False):
             self.assertTrue(handler(peer="127.0.0.1", local="127.0.0.1")
-                            ._writes_ok())
+                            ._writes_ok("/api/queue/skip"))
 
     def test_lan_peer_is_read_only_by_default(self):
         with mock.patch.object(server, "LAN_WRITES", False):
             self.assertFalse(handler(peer="192.168.1.50", local="192.168.1.9")
+                             ._writes_ok("/api/queue/skip"))
+
+    def test_lan_peer_may_pause(self):
+        """The one write allowed off-box. Its worst case is the pipeline
+        WAITING -- it cannot delete, encode, reorder or stage. The operator
+        watches this on an iPad and could not stop the job from it."""
+        with mock.patch.object(server, "LAN_WRITES", False):
+            self.assertTrue(handler(peer="192.168.1.50", local="192.168.1.9")
+                            ._writes_ok("/api/pause"))
+
+    def test_lan_peer_may_pause_but_still_not_delete_or_encode(self):
+        """Every OTHER mutating route stays on this Mac. Un-skipping re-arms a
+        ~90 GB deletion; encode control spawns and kills HandBrake."""
+        with mock.patch.object(server, "LAN_WRITES", False):
+            h = handler(peer="192.168.1.50", local="192.168.1.9")
+            for route in ("/api/queue/skip", "/api/queue/order",
+                          "/api/encode/start", "/api/encode/abort",
+                          "/api/stage/start", "/api/stage/cancel"):
+                self.assertFalse(h._writes_ok(route), route)
+
+    def test_an_unnamed_route_gets_the_STRICT_answer(self):
+        """A caller that forgets the route must not fall through to the loose
+        branch. A new endpoint is refused off-box until it is listed."""
+        with mock.patch.object(server, "LAN_WRITES", False):
+            self.assertFalse(handler(peer="192.168.1.50", local="192.168.1.9")
                              ._writes_ok())
+
+    def test_the_pause_route_is_spelled_the_way_do_POST_dispatches_it(self):
+        """LAN_WRITE_ROUTES is matched against parsed.path, so a typo here
+        would silently re-lock the iPad rather than fail loudly."""
+        self.assertIn("/api/pause", server.LAN_WRITE_ROUTES)
+        src_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "dashboard", "server.py")
+        with open(src_path, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn('parsed.path == "/api/pause"', src)
+        self.assertIn("self._writes_ok(parsed.path)", src)
 
     def test_this_mac_over_its_own_lan_url_writes(self):
         """Source address == the listener's own address is this Mac talking to
@@ -131,12 +169,12 @@ class WriteGate(unittest.TestCase):
         peer cannot spoof it over TCP -- the SYN-ACK routes back to us."""
         with mock.patch.object(server, "LAN_WRITES", False):
             self.assertTrue(handler(peer="192.168.1.9", local="192.168.1.9")
-                            ._writes_ok())
+                            ._writes_ok("/api/queue/skip"))
 
     def test_opt_in_lets_the_lan_write(self):
         with mock.patch.object(server, "LAN_WRITES", True):
             self.assertTrue(handler(peer="192.168.1.50", local="192.168.1.9")
-                            ._writes_ok())
+                            ._writes_ok("/api/queue/skip"))
 
 
 class PrivateAddressGate(unittest.TestCase):

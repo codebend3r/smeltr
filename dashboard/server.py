@@ -192,6 +192,16 @@ REQUIRE_TOKEN = os.environ.get("SMELTR_REQUIRE_TOKEN") == "1" or LAN_EXPOSED
 # un-skipping a title puts an irreplaceable original back on the deletion path,
 # and monitoring from a phone needs none of that.
 LAN_WRITES = os.environ.get("SMELTR_LAN_WRITES") == "1"
+# ...with ONE exception, added 2026-08-30 because the operator watches this on
+# an iPad and could not stop the pipeline from it. Pause/resume is the only
+# write whose worst case is the pipeline WAITING. It cannot delete, encode,
+# reorder or stage anything: it creates or removes a flag file that makes
+# next_title.py answer exit 3, and waiting is already the direction
+# core.paused() fails towards. Everything else stays on this Mac -- un-skipping
+# re-arms a ~90 GB deletion, and encode control spawns and kills HandBrake.
+# The token still gates it, so this is "any device you have handed the URL to",
+# not "anyone on the network".
+LAN_WRITE_ROUTES = ("/api/pause",)
 NONCE = secrets.token_urlsafe(16)
 POLL_SECONDS = 2.0
 # Must be BELOW POLL_SECONDS. Above it, every second SSE frame was a
@@ -1114,8 +1124,9 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, IndexError):
             return False
 
-    def _writes_ok(self) -> bool:
-        # Loopback peers always; LAN peers only with the explicit opt-in.
+    def _writes_ok(self, route: str = "") -> bool:
+        # Loopback peers always; LAN peers only with the explicit opt-in, or
+        # for the one route in LAN_WRITE_ROUTES.
         # A connection whose SOURCE address equals the listener's own local
         # address is this Mac talking to itself -- the operator loaded the
         # page via the LAN URL in a local browser. Same keyboard, so it
@@ -1124,8 +1135,13 @@ class Handler(BaseHTTPRequestHandler):
         # its address to another device, which would inherit write access.
         # A remote peer cannot spoof this over TCP -- the SYN-ACK would
         # route back to us, not to it.
-        return (LAN_WRITES or self._peer_is_loopback()
-                or self.connection.getsockname()[0] == self.client_address[0])
+        if (LAN_WRITES or self._peer_is_loopback()
+                or self.connection.getsockname()[0] == self.client_address[0]):
+            return True
+        # Default "" is deliberately NOT in LAN_WRITE_ROUTES: a caller that
+        # forgets to pass the route gets the strict answer, never the loose
+        # one.
+        return route in LAN_WRITE_ROUTES
 
     def _token_ok(self, query: dict) -> bool:
         if not REQUIRE_TOKEN:
@@ -1268,10 +1284,11 @@ class Handler(BaseHTTPRequestHandler):
         # able to, by default -- but this Mac's own loopback requests still can.
         # _deny closes the connection, so the unread body on the wire can never
         # be replayed as a smuggled request.
-        if not self._writes_ok():
+        if not self._writes_ok(parsed.path):
             return self._deny(403, "read-only from the network — "
-                              "skip/reorder, encode start/abort, stage pulls "
-                              "and pause/resume only from this Mac")
+                              "skip/reorder, encode start/abort and stage "
+                              "pulls only from this Mac. Pause/resume works "
+                              "from any device holding this URL.")
         try:
             length = int(self.headers.get("Content-Length") or "0")
         except ValueError:
@@ -1661,7 +1678,8 @@ _PAGE = (_asset("index.html")
 # LAN-writes opt-in is on. (Loopback can always write regardless.)
 _scope_text = (" + ".join(BINDS) + " · token required"
                + ("" if LAN_WRITES
-                  else " · network peers read-only — writes from this Mac only")
+                  else " · network peers may pause/resume — all other "
+                       "writes from this Mac only")
                if LAN_EXPOSED else "127.0.0.1 only")
 _SCOPE = html.escape(_scope_text)
 PAGE = _PAGE.replace("__NONCE__", NONCE).replace("__SCOPE__", _SCOPE)

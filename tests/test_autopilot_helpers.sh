@@ -66,5 +66,29 @@ unset -f pgrep ps
 ck "slug_of matches the log filenames"    "$(slug_of "Shrek (2001)")" "shrek2001"
 ck "slug_of caps at 20 chars"             "$(slug_of "Kubo and the Two Strings (2016)")" "kuboandthetwostrings"
 
+# library_roots_online: the fact that turns "cannot locate the original" from
+# a halt into a deferral. An empty find is two different facts -- "the title
+# is not there" and "the NAS is not there" -- and halting on the second cost
+# 4h16m of encoding on 2026-08-31. Overriding LIB_ROOTS is the point: the
+# helper must read the array, never a second hardcoded list.
+mkdir -p "$TMP/rootA/A" "$TMP/rootB/B"
+# shellcheck disable=SC2034  # read inside library_roots_online, sourced above
+LIB_ROOTS=("$TMP/rootA" "$TMP/rootB")
+ck "all roots listable = online"          "$(library_roots_online && echo yes || echo no)" "yes"
+# shellcheck disable=SC2034
+LIB_ROOTS=("$TMP/rootA" "$TMP/rootGone")
+ck "a missing root = offline"             "$(library_roots_online && echo yes || echo no)" "no"
+mkdir -p "$TMP/rootEmpty"
+# shellcheck disable=SC2034
+LIB_ROOTS=("$TMP/rootA" "$TMP/rootEmpty")
+ck "a mounted-but-EMPTY root = offline"   "$(library_roots_online && echo yes || echo no)" "no"
+
+# The main loop must DEFER on unreachable roots, never halt -- and the halt
+# that remains must claim the roots are reachable, because that is the only
+# state in which "no unique match" means a human problem.
+ck "unresolved+offline defers"            "$(grep -c 'DEFER \$done_folder: library roots unreachable' "$AP")" "1"
+ck "the remaining halt asserts roots up"  "$(grep -c 'roots ARE reachable' "$AP")" "1"
+ck "stop condition waits on a deferred folder" "$(grep -c 'syncs_in_flight || \[ -n "\$done_folder" \]' "$AP")" "1"
+
 echo; echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -143,6 +143,7 @@ jobs:
 
       - run: node tests/test_projection_ui.js
       - run: node tests/test_repaint_key.js
+      - run: node tests/test_pause_toggle.js
       - run: node tests/test_sysmon_ui.js
       - run: node tests/test_sysmon_render.js
 

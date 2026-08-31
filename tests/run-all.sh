@@ -23,6 +23,9 @@ else echo "SKIP: node not installed"; fi
 echo; echo "=== repaint key ==="
 if command -v node >/dev/null 2>&1; then node tests/test_repaint_key.js || rc=1
 else echo "SKIP: node not installed"; fi
+echo; echo "=== pause toggle ==="
+if command -v node >/dev/null 2>&1; then node tests/test_pause_toggle.js || rc=1
+else echo "SKIP: node not installed"; fi
 echo; echo "=== sysmon ui ==="
 if command -v node >/dev/null 2>&1; then node tests/test_sysmon_ui.js || rc=1
 else echo "SKIP: node not installed"; fi

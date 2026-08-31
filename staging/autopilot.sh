@@ -172,6 +172,26 @@ next_title() {
 }
 next_reason() { tr '\n' ' ' 2>/dev/null <"$NEXT_REASON"; }
 
+# The ONE list of library roots in this script; library_path_of and
+# library_roots_online must never disagree about what "the library" is.
+# (Still one of the four hand-synced copies CLAUDE.md documents.)
+LIB_ROOTS=("/Volumes/Vhagar/Media/4K Movies" "/Volumes/Vermithor/Media/4K Movies" \
+           "/Volumes/Vermithor/Media/4K Family Movies")
+
+# Can this process actually SEE the library right now? An empty find is two
+# very different facts -- "the title is not there" and "the NAS is not there"
+# -- and halting on the second cost 4h16m of encoding on 2026-08-31 when a
+# mount blip hit the exact second the judge block ran. A root is online when
+# it lists at least one entry: every root always holds letter buckets, and an
+# unmounted /Volumes path either vanishes or reads empty.
+library_roots_online() {
+  local r
+  for r in "${LIB_ROOTS[@]}"; do
+    [ -n "$(find "$r" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ] || return 1
+  done
+  return 0
+}
+
 # Resolve the library folder the same way .sync-to-library.sh does: exactly
 # one <root>/<bucket>/<title> match across all roots. Never guess the bucket
 # from the first letter -- "A Bug's Life (1998)" files under B and "1917
@@ -180,8 +200,7 @@ next_reason() { tr '\n' ' ' 2>/dev/null <"$NEXT_REASON"; }
 # halts loudly before record() can write a row against the wrong file.
 library_path_of() {
   local title="$1" matches n
-  matches=$(find "/Volumes/Vhagar/Media/4K Movies" "/Volumes/Vermithor/Media/4K Movies" \
-                 "/Volumes/Vermithor/Media/4K Family Movies" \
+  matches=$(find "${LIB_ROOTS[@]}" \
                  -mindepth 2 -maxdepth 2 -type d -name "$title" 2>/dev/null)
   n=$(printf '%s\n' "$matches" | grep -c . || true)
   [ "$n" -eq 1 ] || return 0
@@ -233,6 +252,7 @@ start_encode() {
 # ---------------------------------------------------------------- main loop
 
 log "=== autopilot up (dry-run=$DRY) ==="
+deferred=""
 
 # Two independent jobs per pass, in this order, so a finished encode hands its
 # push to the background and the NEXT encode starts in the same iteration --
@@ -240,27 +260,47 @@ log "=== autopilot up (dry-run=$DRY) ==="
 while true; do
 
   # ---- 1. A finished encode: judge here (fast), then detach record + sync.
+  #         Resolution runs FIRST, and an empty result is only a halt when the
+  #         roots are provably reachable. A NAS blip at this exact line used to
+  #         halt the whole loop -- including the next encode -- for as long as
+  #         nobody was awake (4h16m on 2026-08-31). Now it DEFERS: the folder
+  #         stays put, the loop re-finds it every pass and retries, and step 2
+  #         below still starts the next encode. Judging waits with the sync (it
+  #         needs nothing from the NAS, but re-judging every 30s pass of a long
+  #         outage is pure log spam). Nothing about deletion changes: record,
+  #         sync, and the verify-before-delete all still happen, just later.
   done_folder=$(finished_folder)
   if [ -n "$done_folder" ]; then
-    log "JUDGE $done_folder"
-    vjson=$("$SMELTR" verdict "$done_folder"); vrc=$?
-    log "  $vjson"
-    case $vrc in
-      0) ;;
-      2) halt "$done_folder needs a human: $(echo "$vjson" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("verdict"))')" ;;
-      3) halt "$done_folder returned a ladder verdict after finishing - unexpected" ;;
-      4) halt "$done_folder could not be evaluated" ;;
-    esac
-
     srcpath=$(library_path_of "$done_folder")
-    [ -z "$srcpath" ] && halt "cannot locate the library original for $done_folder"
-    letter=$(echo "$done_folder" | cut -c1 | tr '[:lower:]' '[:upper:]')
-    nas=$(echo "$srcpath" | cut -d/ -f3)
-
-    if $DRY; then
-      log "(dry run) would record + sync $done_folder -> $nas/$letter"
+    if [ -z "$srcpath" ] && ! library_roots_online; then
+      if [ "$deferred" != "$done_folder" ]; then
+        log "DEFER $done_folder: library roots unreachable - record+sync retries every pass; encoding continues"
+        deferred="$done_folder"
+      fi
     else
-      sync_async "$done_folder" "$srcpath" "$nas/$letter"
+      [ -n "$deferred" ] && log "RESUME $deferred: library roots reachable again"
+      deferred=""
+      log "JUDGE $done_folder"
+      vjson=$("$SMELTR" verdict "$done_folder"); vrc=$?
+      log "  $vjson"
+      case $vrc in
+        0) ;;
+        2) halt "$done_folder needs a human: $(echo "$vjson" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("verdict"))')" ;;
+        3) halt "$done_folder returned a ladder verdict after finishing - unexpected" ;;
+        4) halt "$done_folder could not be evaluated" ;;
+      esac
+
+      # Roots reachable and still no (or no unique) match: that is the real
+      # "needs a human" -- deleting depends on exactly-one match.
+      [ -z "$srcpath" ] && halt "cannot locate the library original for $done_folder (roots ARE reachable - zero or multiple matches)"
+      letter=$(echo "$done_folder" | cut -c1 | tr '[:lower:]' '[:upper:]')
+      nas=$(echo "$srcpath" | cut -d/ -f3)
+
+      if $DRY; then
+        log "(dry run) would record + sync $done_folder -> $nas/$letter"
+      else
+        sync_async "$done_folder" "$srcpath" "$nas/$letter"
+      fi
     fi
   fi
 
@@ -280,10 +320,11 @@ while true; do
       sleep 300; continue
     fi
     if [ $nrc -ne 0 ] || [ -z "$title" ]; then
-      # Never exit while a sync is still running: its replenish stages the next
-      # titles, so exiting here would strand the queue one pull short.
-      if syncs_in_flight; then
-        log "nothing startable yet - waiting on an in-flight sync to replenish"
+      # Never exit while a sync is still running (its replenish stages the
+      # next titles) OR while a finished folder sits deferred/just-dispatched:
+      # exiting would strand an encode that never reached the ledger.
+      if syncs_in_flight || [ -n "$done_folder" ]; then
+        log "nothing startable yet - waiting on an in-flight or deferred sync"
         sleep 60; continue
       fi
       log "STOP CONDITION: nothing staged above ${STOP_MBPS} Mb/s. Encoding paused; staging continues."

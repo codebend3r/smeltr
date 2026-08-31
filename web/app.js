@@ -412,29 +412,96 @@ function updateProj(p, e){
    HandBrake's full precision, and only there -- one number, one precision. */
 var liveRefs={};
 /* One control for both cards. The switch never touches the running encode:
-   on means only that the NEXT one will not start. Disabled while the POST is
-   in flight; success repaints the card with the server's answer, and the
-   .finally re-enable covers failure (a denied LAN write, a network blip),
-   where nothing repaints and the switch would otherwise stay dead. */
+   on means only that the NEXT one will not start.
+
+   It used to DISABLE itself for the whole POST round-trip, and that
+   round-trip is not short: /api/pause answers with a freshly built state
+   payload, which stats the NAS roots over SMB -- 0.5-1.0 s here. A click
+   inside that window landed on a disabled button, so it never reached api()
+   and never even raised the "another action is still in flight" notice, the
+   ONE outcome that notice exists to prevent. Driving the real page, six of
+   ten rapid clicks vanished with no feedback of any kind. Pause/resume is
+   precisely the control a person hammers -- pause, look at the machine,
+   resume, pause again -- so refusing input for a second at a time is the
+   whole bug.
+
+   The switch therefore never disables. Two rules replace it:
+     - pauseState() draws the user's UNSETTLED intent over the server's
+       committed value, so the flip lands on the click, not after the SMB
+       stats.
+     - The LAST click wins: a click during a write is recorded rather than
+       dropped, and the in-flight call drains it when it lands. Two
+       round-trips still never race -- that single-flight property is what
+       the disable was really protecting -- but nothing is silently refused,
+       and a round trip back to where it started sends nothing at all.
+
+   Intent is released the moment a write settles, so a denied LAN write or a
+   dead server snaps the switch back to the truth instead of leaving the
+   optimistic flip standing. The queue tab's "next after resume" mark stays
+   on the server's value on purpose: an unconfirmed intent may draw the
+   control under the finger, never a claim about what the driver will do. */
+var pauseWant=null;   /* what was last asked for, until a write settles */
+var pauseBusy=false;  /* a write is in flight */
+
+function pauseState(s){
+  return pauseWant!==null ? pauseWant : s.paused===true;
+}
+
+function pauseSend(want){
+  pauseWant=want;
+  /* Draw it on this click, before anything touches the wire. */
+  if(last.state) paint(last.state);
+  if(pauseBusy) return;
+  pauseBusy=true;
+  (function drain(){
+    var sent=pauseWant;
+    api("/api/pause",{paused:sent}).then(function(){
+      /* A click landed while this was in flight and asked for something
+         else: send the newer intent rather than losing it. */
+      if(pauseWant!==sent) return drain();
+      /* Settled. api() has already painted the server's answer on success
+         and raised a notice on failure; releasing the intent is what lets
+         either of those reach the switch. */
+      pauseWant=null; pauseBusy=false;
+      if(last.state) paint(last.state);
+    });
+  })();
+}
+
+/* ONE NATIVE <button> IS THE WHOLE CONTROL -- the pill and the sentence both
+   live inside it. Two separate failures put it here and both are worth not
+   reintroducing:
+
+   1. Only the 36x20 pill was clickable. The label beside it is a SENTENCE
+      ("will pause after this encode — <title> still finishes, syncs, and
+      replaces its 90.35 GiB library original") and a person reads it and
+      clicks it. Hit-testing the real page, a click on the words did nothing.
+   2. Moving the handler onto a wrapping <div> fixed the mouse and NOT the
+      iPad, which is where this is actually watched. iOS Safari only
+      synthesises a click from a tap on natively interactive elements (or
+      ones carrying cursor:pointer), so a listener on a plain div is a
+      coin-toss across platforms.
+
+   A <button> takes the event from a mouse, a finger, a pen and the keyboard
+   everywhere, with no touch/pointer shims, no synthetic-click plumbing and
+   no double-fire. It is also the accessible control for free: role="switch"
+   + aria-checked, with the sentence as its name. The pill is decorative
+   markup inside it (aria-hidden), never a second focus stop. */
 function pauseSwitch(on, label){
-  var row=el("div","pauserow");
-  var sw=el("button","swt"+(on?" on":""));
-  sw.type="button";
-  sw.setAttribute("role","switch");
-  sw.setAttribute("aria-checked", on?"true":"false");
-  sw.setAttribute("aria-label","Pause after the current encode");
-  sw.title=on
+  var b=el("button","pauserow"+(on?" on":""));
+  b.type="button";
+  b.setAttribute("role","switch");
+  b.setAttribute("aria-checked", on?"true":"false");
+  b.title=on
     ? "Resume — let the driver start the next encode (it rechecks within 5 minutes)"
     : "Finish, verify and sync this encode as normal, then start nothing new — frees the CPU/GPU";
-  sw.appendChild(el("i"));
-  sw.addEventListener("click",function(){
-    sw.disabled=true;
-    api("/api/pause",{paused:!on})
-      .finally(function(){ sw.disabled=false; });
-  });
-  row.appendChild(sw);
-  row.appendChild(el("span","swt-label"+(on?" on":""),label));
-  return row;
+  var pill=el("span","swt"+(on?" on":""));
+  pill.setAttribute("aria-hidden","true");
+  pill.appendChild(el("i"));
+  b.appendChild(pill);
+  b.appendChild(el("span","swt-label"+(on?" on":""),label));
+  b.addEventListener("click",function(){ pauseSend(!on); });
+  return b;
 }
 
 function renderLive(live, s, driverAlive){
@@ -442,8 +509,11 @@ function renderLive(live, s, driverAlive){
      banners -- never a second top-level copy. It and driverAlive are in the
      sig: the pause control and the idle card's claims are built once per
      card build, so flipping either must rebuild the card (rare events, not
-     the 2s SSE frames the animation-restart rule is about). */
-  var paused=s.paused===true;
+     the 2s SSE frames the animation-restart rule is about). pauseState()
+     lets an unsettled click draw itself here without waiting for the write
+     to land -- the sig then moves on the click, which is what makes the
+     switch feel like a switch. */
+  var paused=pauseState(s);
   var host=document.getElementById("liveWrap");
   var sig=live.map(function(e){ return e.title; }).join("|")
     +"|p:"+(paused?1:0)+"|d:"+(driverAlive?1:0);
@@ -1006,7 +1076,7 @@ function renderLedger(rows, xfers){
   pane.appendChild(table(
     [{label:"#",n:true},{label:"Title",cls:"title-cell"},{label:"Original",n:true},{label:"Output",n:true},
      {label:"Saved",n:true},{label:"Shrink",n:true},{label:"CRF",n:true},{label:"Tracks"},{label:"Moved to"},
-     {label:"Source of record"},{label:"Finished"}],
+     {label:"Finished"}],
     ordered, function(r,i){
       var tr=el("tr");
       tr.appendChild(el("td","n muted",String(ordered.length-i)));
@@ -1037,9 +1107,36 @@ function renderLedger(rows, xfers){
           destTd.title=r.source_path.replace(/\/[^/]*$/,"");
       }else destTd.appendChild(el("span","muted","—"));
       tr.appendChild(destTd);
-      tr.appendChild(el("td","muted",RECORD[r.provenance]||r.provenance||"—"));
-      tr.appendChild(el("td","muted",(r.finished_at||"—").slice(0,10)));
-      if(r.note){ tr.title=r.note; }
+      /* Date AND time. "2026-08-31" alone could not answer "when did this
+         one actually land", which is the question asked of a ledger whose
+         rows are hours long. finished_at is "YYYY-MM-DD HH:MM:SS" and the
+         whole of it is shown -- truncating to minutes would discard
+         precision the record already holds. The eight rows hand-migrated
+         from the old state file carry no timestamp at all and still say
+         "—": a missing time is never back-filled from the file's mtime. */
+      var fin=el("td","muted nowrap");
+      if(r.finished_at){
+        fin.appendChild(el("span",null,r.finished_at.slice(0,10)));
+        var hms=r.finished_at.slice(11,19);
+        /* A REAL space in the text, not just the margin: the cell is copied
+           and read aloud as its textContent, and a CSS gap alone yielded
+           "2026-08-3109:27:06" to both. */
+        if(hms) fin.appendChild(el("span","fin-t"," "+hms));
+      }else fin.appendChild(el("span",null,"—"));
+      tr.appendChild(fin);
+      /* The "Source of record" COLUMN is gone, not the disclosure. Every row
+         that was not measured live already announces itself in the numbers
+         themselves -- "~" on every approximated figure (exact===false) and
+         "—" where a size is unrecoverable -- so the column repeated in words
+         what the digits already said, in the widest cell of the table. The
+         provenance still rides in the row tooltip, and summary() still
+         excludes an unrecoverable original from every total rather than
+         back-solving it. */
+      var tips=[];
+      if(r.note) tips.push(r.note);
+      if(r.provenance&&r.provenance!=="live")
+        tips.push("source of record: "+(RECORD[r.provenance]||r.provenance));
+      if(tips.length) tr.title=tips.join(" · ");
       if(!moving[r.title]) return tr;
       /* A push still in flight gets a SECOND row of its own, spanning every
          column. Squeezed into the "Moved to" cell it had an 84px bar and a
@@ -1049,7 +1146,7 @@ function renderLedger(rows, xfers){
          not repeat it. */
       tr.classList.add("rowmoving");
       var xtr=el("tr","xrow"), xtd=el("td");
-      xtd.colSpan=11;
+      xtd.colSpan=10;
       progSlot("led|"+r.title, xtd);
       xtr.appendChild(xtd);
       return [tr,xtr];

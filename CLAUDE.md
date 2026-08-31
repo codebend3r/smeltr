@@ -145,6 +145,71 @@ ledger.jsonl        the irreplaceable record, beside the launcher
    `smeltr report` banners it too; the paused idle card yields to the
    louder facts first (`x9_online` false, then no driver process).
 
+   **The switch must never refuse a click (fixed 2026-08-30).** It used to
+   set `disabled` for the whole POST round-trip — and that round-trip is not
+   short, because `/api/pause` answers with a freshly built state payload
+   that stats the NAS roots over SMB (0.5–1.0 s). A click inside that window
+   hit a disabled button, so it never reached `api()` and never even raised
+   the "another action is still in flight" notice, which is the ONE outcome
+   that notice exists to prevent: driving the real page, **six of ten rapid
+   clicks vanished with no feedback of any kind**. Pause/resume is the
+   control a person hammers, so that read as a broken toggle. The switch now
+   never disables: `pauseState()` draws the user's UNSETTLED intent over the
+   server's committed value so the flip lands on the click, and the LAST
+   click wins — a click during a write is recorded and the in-flight call
+   drains it when it lands, so two round-trips still never race but nothing
+   is silently dropped (a round trip back to the starting value sends
+   nothing at all). Intent is released the moment a write settles, so a
+   denied LAN write snaps the switch back to the truth rather than leaving
+   the optimistic flip standing. The queue tab's "next after resume" mark
+   deliberately stays on the server's value: an unconfirmed intent may draw
+   the control under the finger, never a claim about what the driver will
+   do.
+
+   **The control is ONE native `<button>` — pill and sentence inside it.**
+   Two separate failures put it there. First, only the 36×20 pill was
+   clickable: the label beside it is a SENTENCE ("will pause after this
+   encode — *title* still finishes, syncs, and replaces its 90.35 GiB library
+   original") and a person reads it and aims at it, but it was inert.
+   Second, moving the handler onto a wrapping `<div>` fixed the mouse and NOT
+   the iPad — **which is where this is actually watched**. iOS Safari only
+   synthesises a click from a tap on natively interactive elements (or ones
+   carrying `cursor:pointer`), so a listener on a plain div is a coin-toss
+   across platforms. A `<button>` takes the event from a mouse, a finger, a
+   pen and the keyboard everywhere, with no touch shims and no double-fire,
+   and it is the accessible control for free (`role="switch"` +
+   `aria-checked`, the sentence as its name; the pill is `aria-hidden`
+   decoration, never a second focus stop). `.pauserow` carries the button
+   reset and is `inline-flex` so it hugs pill+sentence instead of making the
+   card's whole width a pipeline control; `touch-action:manipulation` drops
+   the double-tap delay and `@media (pointer:coarse)` gives a finger a 44px
+   target.
+
+   **A synthetic `element.click()` cannot catch either of those** and two
+   successive "fixes" shipped believing it had. `.click()` skips hit testing
+   AND skips the platform's tap→click synthesis, so it passes on a control
+   nothing can actually reach with a real input. Verify pointer-driven UI
+   with `Input.dispatchMouseEvent` at real coordinates, `Input.dispatchTouchEvent`
+   under `Emulation.setTouchEmulationEnabled`, and `document.elementFromPoint`
+   — the way `tests/visual/shoot.mjs` already drives Chrome.
+   `tests/test_pause_toggle.js` pins the structure (it IS a button, one
+   handler, the CSS target rules); the pointer/touch runs are manual.
+
+   **Pause/resume is the ONE write a network peer may make (2026-08-30).**
+   The reason the toggle looked dead on the iPad was neither of the bugs
+   above: `_writes_ok()` refused every POST from a network peer, so the
+   switch flipped optimistically, took a 403 and snapped back. That gate is
+   right for skip/reorder, encode start/abort and stage pulls — un-skipping
+   re-arms a ~90 GB deletion and encode control spawns and kills HandBrake —
+   but pause's worst case is the pipeline WAITING, which is the direction
+   `core.paused()` already fails towards. `LAN_WRITE_ROUTES = ("/api/pause",)`
+   is checked per request; `_writes_ok()` takes the route and its default
+   `""` is deliberately NOT in the tuple, so a caller that forgets the route
+   gets the STRICT answer and a new endpoint stays refused off-box until it
+   is listed. `SMELTR_LAN_WRITES=1` still opens everything. The token still
+   gates it all, so this is "any device you handed the URL to", not "anyone
+   on the network". `tests/test_http_gates.py` pins each route on both sides.
+
 ### The driver is CONCURRENT as of 2026-08-22
 
 HandBrake is never idle waiting on I/O. One pass of the loop dispatches a
@@ -177,6 +242,38 @@ The CRF ladder now fires from the `next_title` path. It used to hang off
 `finished_folder()`, but `.watch-encode.sh` deletes the partial when it
 auto-kills a blowup, so there was no finished folder and the branch could never
 run — the title simply restarted at the CRF that had just blown up.
+
+### No gap between encodes — the operator's standing requirement (2026-08-31)
+
+**The only sanctioned gap between one encode finishing and the next starting
+is the dashboard's pause toggle.** Everything below exists because a NAS blip
+at 05:11 on 2026-08-31 hit the exact second the judge block ran
+`library_path_of()`, the empty find was treated as "needs a human", and the
+HALT idled the CPU for 4h16m while an already-staged title sat unencoded.
+Two changes, which must both stay:
+
+- **`.autopilot.sh` DEFERS instead of halting when the library roots are
+  unreachable.** Resolution now runs before judging; an empty result plus
+  `library_roots_online()` false logs `DEFER` once, leaves the folder in
+  place (the loop re-finds and retries every pass), and step 2 still starts
+  the next encode. Judge/record/sync all happen when the roots return —
+  nothing about deletion changes, it just happens later. The halt that
+  remains fires only when the roots are provably reachable and the match is
+  zero-or-multiple, which really is a human problem. `LIB_ROOTS` is now the
+  one in-script root list (still one of the four hand-synced copies), and
+  the stop condition refuses to fire while a deferred folder exists.
+- **`next_title.py` picks before it reports blindness.** A staged title
+  encodes from the X9 and needs nothing from the NAS, so `core.queue()`
+  keeps a row whose root is offline IF the title is staged (size read from
+  the staged copy — same bytes; an unstaged offline row still drops), and
+  exit 2 is now only the answer when blind AND nothing staged is pickable.
+  Precedence: paused (3, stating both facts when also blind — this reversed
+  the old "offline beats paused") → pick (0) → offline (2) → waits (3) →
+  stop (1). The CI smoke job's "2 or 3, never 0 or 1 with nothing mounted"
+  still holds: no X9 means nothing staged.
+
+`tests/test_pause.py` (driver contract + `OfflineRootKeepsStagedRows`) and
+`tests/test_autopilot_helpers.sh` pin all of it.
 
 `staging/autopilot.sh` in this repo tracks the live script for history.
 **The X9 copy is what runs.** `tests/test_staging_in_sync.sh` fails on drift.

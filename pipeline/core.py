@@ -756,15 +756,28 @@ def queue(min_mbps: float = STOP_MBPS, live: Optional[list] = None,
         # but only when no path-keyed row already covers this file.
         if not done_paths and folder.lower() in done:
             continue
-        if any(path.startswith(r.rstrip("/") + os.sep) for r in offline):
+        # A row whose root is offline is dropped -- UNLESS the title is
+        # staged on the X9. The staging copy is byte-for-byte the library
+        # original and is what actually gets encoded, so a NAS outage must
+        # not stop the encode side of the pipeline: the driver keeps working
+        # through the staged titles and only the record/sync side waits
+        # (autopilot defers it and retries). Size comes from the staged copy
+        # -- same bytes, and the offline path cannot be statted. Halting
+        # encodes on a mount blip cost 4h16m on 2026-08-31.
+        root_offline = any(path.startswith(r.rstrip("/") + os.sep)
+                           for r in offline)
+        staged_here = folder.lower() in staged
+        if root_offline and not staged_here:
             continue
-        if not os.path.exists(path):
+        if not root_offline and not os.path.exists(path):
             continue
+        size = (_size(os.path.join(X9, folder, os.path.basename(path)))
+                if root_offline else _size(path))
         rows.append({
             "title": folder,
             "mbps": round(mbps, 1),
-            "bytes": _size(path),
-            "staged": folder.lower() in staged,
+            "bytes": size,
+            "staged": staged_here,
             "encoding": folder.lower() in encoding,
             "location": _library_of(path),
         })

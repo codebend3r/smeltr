@@ -89,11 +89,60 @@ class DriverContract(unittest.TestCase):
         core.queue_cached = lambda min_mbps=None: []
         self.assertEqual(self._main(), 3)
 
-    def test_offline_still_beats_paused(self):
-        # Blindness is the louder fact and is reported first; both codes
-        # make the driver wait rather than exit, so nothing is lost.
+    def test_paused_beats_offline_and_states_both(self):
+        # Reversed 2026-08-31 (offline used to be reported first). Pause is
+        # now checked before EVERYTHING: it is the one sanctioned reason to
+        # withhold an encode, and since the offline check moved below the
+        # pick (a staged title encodes with the NAS gone), a pre-emptive
+        # exit 2 would have let blindness outrank the operator's own choice.
+        # Both codes still make the driver wait; the stderr carries both
+        # facts so neither is hidden.
         core.offline_roots = lambda: ["/Volumes/Vhagar/Media/4K Movies"]
         core.paused = lambda: True
+        core.queue_cached = lambda min_mbps=None: []
+        err = io.StringIO()
+        argv, sys.argv = sys.argv, ["next_title.py"]
+        try:
+            with contextlib.redirect_stderr(err):
+                rc = next_title.main()
+        finally:
+            sys.argv = argv
+        self.assertEqual(rc, 3)
+        self.assertIn("paused", err.getvalue())
+        self.assertIn("library incomplete", err.getvalue())
+
+    def test_offline_with_a_staged_pick_still_encodes(self):
+        # THE no-gap rule (operator requirement, 2026-08-31): an unreachable
+        # NAS must not idle the CPU while staged work exists. The staged copy
+        # is byte-for-byte the library original; only record/sync needs the
+        # NAS, and the driver defers that side separately. A mount blip at
+        # judge time used to halt everything for 4h16m.
+        core.offline_roots = lambda: ["/Volumes/Vhagar/Media/4K Movies"]
+        core.paused = lambda: False
+        core.queue_cached = lambda min_mbps=None: []
+        row = {"title": "Alpha (2001)", "staged": True}
+        saved = core.pick_next
+        core.pick_next = lambda rows: (row, set())
+        try:
+            out = io.StringIO()
+            argv, sys.argv = sys.argv, ["next_title.py"]
+            try:
+                with contextlib.redirect_stdout(out), \
+                     contextlib.redirect_stderr(io.StringIO()):
+                    rc = next_title.main()
+            finally:
+                sys.argv = argv
+            self.assertEqual(rc, 0)
+            self.assertEqual(out.getvalue().strip(), "Alpha (2001)")
+        finally:
+            core.pick_next = saved
+
+    def test_offline_with_nothing_staged_is_2_never_the_stop_condition(self):
+        # With no staged candidate the old rule stands in full: blind and
+        # idle answers "library incomplete", never "job finished".
+        core.offline_roots = lambda: ["/Volumes/Vhagar/Media/4K Movies"]
+        core.paused = lambda: False
+        core.queue_cached = lambda min_mbps=None: []
         self.assertEqual(self._main(), 2)
 
     def test_unpaused_empty_queue_is_still_the_stop_condition(self):
@@ -101,6 +150,57 @@ class DriverContract(unittest.TestCase):
         core.paused = lambda: False
         core.queue_cached = lambda min_mbps=None: []
         self.assertEqual(self._main(), 1)
+
+
+class OfflineRootKeepsStagedRows(unittest.TestCase):
+    """queue() must keep a row whose library root is offline IF the title is
+    staged on the X9 -- the staged copy is what encodes, and dropping it idled
+    the CPU for the length of every NAS outage. An offline row that is NOT
+    staged still drops (its size cannot be observed and it cannot encode)."""
+
+    def setUp(self):
+        self._saved = (core.offline_roots, core.load_index, core.X9,
+                       core.live_encodes, core.ledger, core.load_overrides)
+        self._tmp = tempfile.TemporaryDirectory()
+        core.X9 = self._tmp.name
+        root = "/Volumes/Vhagar/Media/4K Movies"
+        self._root = root
+        core.offline_roots = lambda: [root]
+        core.live_encodes = lambda: []
+        core.ledger = lambda: []
+        core.load_overrides = lambda: {"skip": [], "priority": [],
+                                       "corrupt": False}
+        core.load_index = lambda: [
+            {"path": root + "/A/Alpha (2001)/Alpha (2001) Remux-2160p.mkv",
+             "overall_bitrate": 90e6},
+            {"path": root + "/B/Beta (2002)/Beta (2002) Remux-2160p.mkv",
+             "overall_bitrate": 80e6},
+        ]
+        d = os.path.join(self._tmp.name, "Alpha (2001)")
+        os.makedirs(d)
+        with open(os.path.join(d, "Alpha (2001) Remux-2160p.mkv"), "w") as fh:
+            fh.write("x" * 1024)
+
+    def tearDown(self):
+        (core.offline_roots, core.load_index, core.X9,
+         core.live_encodes, core.ledger, core.load_overrides) = self._saved
+        self._tmp.cleanup()
+
+    def test_staged_row_survives_its_root_going_offline(self):
+        rows = core.queue(min_mbps=70)
+        titles = [r["title"] for r in rows]
+        self.assertIn("Alpha (2001)", titles)
+
+    def test_its_size_is_read_from_the_staged_copy(self):
+        row = next(r for r in core.queue(min_mbps=70)
+                   if r["title"] == "Alpha (2001)")
+        # The library path cannot be statted; the staged copy is the same
+        # bytes. Never None, never a guess.
+        self.assertEqual(row["bytes"], 1024)
+
+    def test_unstaged_offline_row_still_drops(self):
+        titles = [r["title"] for r in core.queue(min_mbps=70)]
+        self.assertNotIn("Beta (2002)", titles)
 
 
 class ArrivingFolders(unittest.TestCase):
