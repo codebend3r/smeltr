@@ -1040,7 +1040,8 @@ def _stage_worker(title: str, src: str, hidden: str) -> None:
     half-arrived title -- a VISIBLE folder without a source .mkv is exactly
     the state that halts the driver ("no source file", exit 2). A leftover
     from a crashed server stays hidden too: it can only ever render as a
-    stalled arrival, never as an encodable folder.
+    stalled arrival, never as an encodable folder -- until the next server
+    start, when _adopt_orphan_pulls() finishes what this thread could not.
     """
     slug = _slug_of(title)
     log = os.path.join(core.X9, ".pull-%s.log" % slug)
@@ -1098,6 +1099,105 @@ def _stage_worker(title: str, src: str, hidden: str) -> None:
             _stage_active["title"] = None
         with _state_lock:
             _state_cache["payload"] = None
+
+
+def _finish_orphan_locked(title: str, hidden: str) -> None:
+    """Commit or clean up ONE orphaned pull folder. Caller holds _stage_lock.
+
+    The commit evidence is the folder's contents, not a return code: the
+    .ssh-xfer.sh script renames "<name>.partial" to its final name only on a
+    byte-count match, so a final .mkv with no .partial beside it IS the
+    completed, verified pull. Anything else is a dead half-pull and gets the
+    same delete-the-folder cleanup as the worker's failure path.
+    """
+    try:
+        files = os.listdir(hidden)
+    except OSError:
+        return
+    real = [f for f in files if not f.startswith("._")]
+    complete = (any(f.endswith(".mkv") for f in real)
+                and not any(f.endswith(".partial") for f in real))
+    if complete:
+        dest = os.path.join(core.X9, title)
+        try:
+            if os.path.exists(dest):
+                raise OSError("a folder named %s already exists" % title)
+            os.rename(hidden, dest)
+            _set_note("Staged %s — finished a pull orphaned by a server "
+                      "restart. The library original is untouched, and is "
+                      "deleted only when a good encode of it syncs back."
+                      % title, kind="ok")
+        except OSError as e:
+            # Never delete a completed 70 GB pull over a rename problem.
+            _set_note("Found the completed orphaned pull of %s but could "
+                      "NOT move it into place (%s) — the file is in %s; "
+                      "move it by hand."
+                      % (title, e, os.path.basename(hidden)), kind="bad")
+        return
+    # Delete only inside the staging drive, however hidden was built.
+    realpath = os.path.realpath(hidden)
+    if realpath.startswith(os.path.realpath(core.X9) + os.sep):
+        shutil.rmtree(realpath, ignore_errors=True)
+    _set_note("Removed the half-finished pull of %s left behind by a server "
+              "restart — stage it again." % title, kind="bad")
+
+
+def _sweep_orphans_once() -> bool:
+    """Finish pulls orphaned by a server restart. True when nothing is left.
+
+    The pull child is start_new_session'd, so it survives a server restart --
+    but the _stage_worker thread that waits on it and does the commit rename
+    dies with the old process. On 2026-08-31 that stranded a complete,
+    verified 61 GB pull as a stalled arrival until a human renamed it. This
+    sweep applies the commit-or-cleanup the dead worker would have.
+
+    False means "come back later": a puller is still alive (the orphaned
+    transfer itself, or the replenisher's -- pgrep cannot tell them apart and
+    does not need to), or a worker in THIS process owns a hidden folder
+    (_stage_active covers the pre-spawn and post-exit windows pgrep misses).
+    """
+    try:
+        names = os.listdir(core.X9)
+    except OSError:
+        # No staging drive to sweep. The next restart with it mounted adopts
+        # whatever is there; retrying here would tick forever on a machine
+        # that simply has no X9.
+        return True
+    orphans = [n for n in names if n.startswith(".pull-")
+               and os.path.isdir(os.path.join(core.X9, n))]
+    if not orphans:
+        return True
+    with _stage_lock:
+        if _stage_active["title"] is not None:
+            return False
+        if _pgrep(r"ssh-xfer\.sh pull"):
+            return False
+        for n in orphans:
+            _finish_orphan_locked(n[len(".pull-"):], os.path.join(core.X9, n))
+    _drop_state_cache()
+    return True
+
+
+def _adopt_orphan_pulls() -> None:
+    """Startup: finish pulls a previous server run left behind, off-thread.
+
+    Off the startup path because the cleanup half can rmtree tens of GB. The
+    loop keeps ticking while an orphan's transfer is still running -- the
+    child survived the restart -- and commits once it exits.
+    """
+    try:
+        if not any(n.startswith(".pull-")
+                   and os.path.isdir(os.path.join(core.X9, n))
+                   for n in os.listdir(core.X9)):
+            return
+    except OSError:
+        return
+
+    def loop():
+        while not _sweep_orphans_once():
+            time.sleep(STAGE_PUMP_SECONDS)
+
+    threading.Thread(target=loop, daemon=True).start()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1755,6 +1855,9 @@ def main() -> None:
     # beside the ledger. Started before serving so the first page load
     # already has whatever the previous run persisted.
     sysmon.start(core.SMELTR_DIR)
+    # Adopt pulls a previous server run left behind: the transfer child
+    # survives a restart, its wait-then-rename worker thread does not.
+    _adopt_orphan_pulls()
     port = free_port()
     httpd = ThreadingHTTPServer((BIND, port), Handler)
     httpd.daemon_threads = True

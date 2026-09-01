@@ -287,5 +287,107 @@ class Cancel(Fixture):
         self.assertIsNone(server._stage_wait["why"])
 
 
+class OrphanPulls(Fixture):
+    """A server restart must FINISH an orphaned pull, not strand it.
+
+    The pull child is start_new_session'd, so it survives a server restart --
+    but the _stage_worker thread that waits on it and does the commit rename
+    dies with the old process. On 2026-08-31 that left a complete, verified
+    61 GB pull sitting hidden in .pull-<title> rendering as a stalled arrival
+    until a human renamed it. _sweep_orphans_once() is the recovery: called
+    at startup (and re-ticked while an orphan transfer is still running), it
+    applies the same commit-or-cleanup the worker would have.
+
+    The commit evidence is the folder's contents, not a return code: the
+    .ssh-xfer.sh script renames "<name>.partial" to its final name only on a
+    byte-count match, so a final .mkv with no .partial beside it IS the
+    completed, verified pull.
+    """
+
+    def orphan(self, title, *files):
+        d = os.path.join(core.X9, ".pull-" + title)
+        os.makedirs(d)
+        for f in files:
+            with open(os.path.join(d, f), "wb") as fh:
+                fh.write(b"x" * 8)
+        return d
+
+    def test_a_completed_orphan_is_renamed_into_place(self):
+        hidden = self.orphan("A (1990)", "A (1990) Bluray-2160p.mkv")
+        done = server._sweep_orphans_once()
+        self.assertTrue(done)
+        self.assertFalse(os.path.exists(hidden))
+        dest = os.path.join(core.X9, "A (1990)")
+        self.assertTrue(
+            os.path.isfile(os.path.join(dest, "A (1990) Bluray-2160p.mkv")))
+        self.assertEqual(server._encode_note["kind"], "ok")
+
+    def test_a_half_finished_orphan_is_deleted(self):
+        hidden = self.orphan("B (1991)", "B (1991) Bluray-2160p.mkv.partial")
+        done = server._sweep_orphans_once()
+        self.assertTrue(done)
+        self.assertFalse(os.path.exists(hidden))
+        self.assertFalse(os.path.exists(os.path.join(core.X9, "B (1991)")))
+        self.assertEqual(server._encode_note["kind"], "bad")
+
+    def test_an_empty_orphan_folder_is_deleted(self):
+        hidden = self.orphan("C (1992)")
+        self.assertTrue(server._sweep_orphans_once())
+        self.assertFalse(os.path.exists(hidden))
+
+    def test_appledouble_junk_is_not_mistaken_for_the_film(self):
+        """._foo.mkv is 4 KiB of Finder metadata, not a completed pull."""
+        hidden = self.orphan("D (1993)", "._D (1993) Bluray-2160p.mkv")
+        self.assertTrue(server._sweep_orphans_once())
+        self.assertFalse(os.path.exists(hidden))
+        self.assertFalse(os.path.exists(os.path.join(core.X9, "D (1993)")))
+
+    def test_a_live_transfer_is_left_alone(self):
+        """pgrep says a puller is alive: not an orphan yet, come back later."""
+        hidden = self.orphan("E (1994)", "E (1994).mkv.partial")
+        with mock.patch.object(server, "_pgrep", return_value=True):
+            done = server._sweep_orphans_once()
+        self.assertFalse(done)
+        self.assertTrue(os.path.isdir(hidden))
+
+    def test_an_active_worker_defers_the_sweep(self):
+        """_stage_active covers the pre-spawn window pgrep cannot see."""
+        hidden = self.orphan("F (1995)", "F (1995).mkv.partial")
+        server._stage_active["title"] = "F (1995)"
+        done = server._sweep_orphans_once()
+        self.assertFalse(done)
+        self.assertTrue(os.path.isdir(hidden))
+
+    def test_a_dest_that_already_exists_keeps_the_pull_and_says_so(self):
+        """Never delete a completed pull over a rename problem."""
+        hidden = self.orphan("G (1996)", "G (1996) Bluray-2160p.mkv")
+        os.makedirs(os.path.join(core.X9, "G (1996)"))
+        done = server._sweep_orphans_once()
+        self.assertTrue(done)
+        self.assertTrue(
+            os.path.isfile(os.path.join(hidden, "G (1996) Bluray-2160p.mkv")))
+        self.assertEqual(server._encode_note["kind"], "bad")
+        self.assertIn("by hand", server._encode_note["msg"])
+
+    def test_nothing_to_do_is_done(self):
+        self.assertTrue(server._sweep_orphans_once())
+
+    def test_an_unreadable_staging_drive_is_done_not_a_spin(self):
+        core.X9 = os.path.join(self._tmp.name, "gone")
+        self.assertTrue(server._sweep_orphans_once())
+
+    def test_adopt_spawns_a_watcher_only_when_an_orphan_exists(self):
+        with mock.patch.object(server.threading, "Thread") as t:
+            server._adopt_orphan_pulls()
+            t.assert_not_called()
+            self.orphan("H (1997)", "H (1997).mkv.partial")
+            server._adopt_orphan_pulls()
+            t.assert_called_once()
+
+    def test_main_wires_the_adoption_in(self):
+        import inspect
+        self.assertIn("_adopt_orphan_pulls()", inspect.getsource(server.main))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

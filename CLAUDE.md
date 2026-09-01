@@ -83,7 +83,9 @@ ledger.jsonl        the irreplaceable record, beside the launcher
    HALTS the driver (`no source file`, exit 2 — confirmed in a sandbox).
    Hidden means invisible to `next_title.py`, `core.staged_folders()`, and
    the replenisher's `find`; a leftover from a crashed server can only ever
-   render as a stalled arrival, never as an encodable folder. One pull at a
+   render as a stalled arrival, never as an encodable folder — and since
+   2026-09-01 the next server start adopts it (see *Orphan adoption*
+   below). One pull at a
    time (in-process flag AND `pgrep ssh-xfer.sh pull`, so the guard survives
    a server restart); held while the replenisher is mid-run (its lock +
    pgrep — a lock with no live process is reported as STALE, with the rmdir
@@ -96,6 +98,24 @@ ledger.jsonl        the irreplaceable record, beside the launcher
    `next_title.py` also passes over a visible folder with no source `.mkv`
    and exits 3 — a wait, not a halt — so the hidden folder is now
    defence-in-depth rather than the only thing preventing that halt.)
+
+   **Orphan adoption (2026-09-01).** The pull child is `start_new_session`'d,
+   so it survives a server restart — but the `_stage_worker` thread that
+   waits on it and does the commit rename dies with the old process. On
+   2026-08-31 that stranded a complete, verified 61 GB pull of Addams
+   Family 2 as a stalled arrival until a human renamed it. `main()` now
+   calls `_adopt_orphan_pulls()`: if any `.pull-<title>` folder exists, a
+   daemon thread ticks `_sweep_orphans_once()` every 20 s until done. The
+   commit evidence is the folder's CONTENTS, not a return code — a final
+   `.mkv` with no `.partial` beside it IS the completed pull, because
+   `.ssh-xfer.sh` renames the `.partial` only on a byte-count match — so a
+   complete orphan is renamed into place; a `.partial`/empty/junk-only
+   folder is a dead half-pull and gets the worker's delete-the-folder
+   cleanup. The sweep defers (returns "come back later") while ANY
+   `ssh-xfer.sh pull` is alive or `_stage_active` is set, so it can never
+   touch a folder something is still writing; a rename failure (including
+   a destination that already exists) keeps the pull and says "move it by
+   hand" — never deleted. Pinned in `test_stage_queue.py::OrphanPulls`.
 
    **The pull QUEUE (2026-08-23).** `POST /api/stage/start` no longer refuses
    a busy wire — it ENQUEUES. `_stage_queue` is an in-memory FIFO of titles;
