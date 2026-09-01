@@ -46,14 +46,25 @@ function nasMark(name){
 
 /* Parent folder of the original, relative to the NAS volume; the title
    folder itself is dropped (it repeats the Title cell). Ambiguous or
-   unknown paths come through as null and stay an honest em dash. */
-function srcDirTd(srcDir,title){
+   unknown paths come through as null and stay an honest em dash.
+   Rendered as the same root+bucket pill pair as the History tab's
+   "Moved to" cell, coloured by the row's NAS so the two columns read as
+   one destination; a row with no known NAS keeps the plain mono text. */
+function srcDirTd(srcDir,title,nas){
   var td=el("td","src-dir","—");
   if(srcDir){
-    var rel=srcDir.replace(/^\/Volumes\/[^/]+\//,"");
+    var rel=srcDir.replace(/^\/Volumes\/[^/]+\//,"").replace(/^Media\//,"");
     var tail="/"+title;
     if(rel.slice(-tail.length)===tail) rel=rel.slice(0,-tail.length);
-    td.textContent=rel; td.title=srcDir;
+    td.title=srcDir;
+    if(nas&&nas!=="?"){
+      td.textContent="";
+      var cut=rel.lastIndexOf("/");
+      var root=cut>0?rel.slice(0,cut):rel;
+      var bucket=cut>0?rel.slice(cut+1):"";
+      td.appendChild(el("span","mark "+nasClass(nas),root));
+      if(bucket) td.appendChild(el("span","mark bucket "+nasClass(nas),bucket));
+    }else td.textContent=rel;
   }
   return td;
 }
@@ -1048,7 +1059,7 @@ function renderQueue(q, s, live, xfers, hist){
       tr.appendChild(titleTd);
       var nasTd=el("td"); nasTd.appendChild(nasMark(r.location));
       tr.appendChild(nasTd);
-      tr.appendChild(srcDirTd(r.src_dir,r.title));
+      tr.appendChild(srcDirTd(r.src_dir,r.title,r.location));
       var td=el("td");
       if(r.skipped) td.appendChild(el("span","mark skip","skipped"));
       else{
@@ -1118,7 +1129,7 @@ function renderQueue(q, s, live, xfers, hist){
     tr.appendChild(crfTd);
     tr.appendChild(el("td","title-cell",t.title));
     var nasTd=el("td"); nasTd.appendChild(nasMark(t.nas)); tr.appendChild(nasTd);
-    tr.appendChild(srcDirTd(t.src_dir,t.title));
+    tr.appendChild(srcDirTd(t.src_dir,t.title,t.nas));
     var st=el("td");
     progSlot("xfer|"+t.title, st);
     tr.appendChild(st);
@@ -1209,8 +1220,8 @@ function renderLedger(rows, xfers){
   var ordered=rows.slice().reverse();
   pane.appendChild(table(
     [{label:"#",n:true},{label:"Title",cls:"title-cell"},{label:"Original",n:true},{label:"Output",n:true},
-     {label:"Saved",n:true},{label:"Shrink",n:true},{label:"CRF",n:true},{label:"Tracks"},{label:"Moved to"},
-     {label:"Finished"}],
+     {label:"Saved",n:true},{label:"Shrink",n:true},{label:"CRF",n:true},{label:"Tracks"},{label:"NAS"},
+     {label:"Moved to"},{label:"Finished"}],
     ordered, function(r,i){
       var tr=el("tr");
       tr.appendChild(el("td","n muted",String(ordered.length-i)));
@@ -1224,38 +1235,50 @@ function renderLedger(rows, xfers){
         r.crf==null?"—":String(r.crf)));
       tr.appendChild(el("td","muted",
         (r.audio==null?"—":r.audio+"a / "+r.subs+"s")));
-      var destTd=el("td");
+      /* NAS and folder are two columns, mirroring the queue tab. dest
+         records volume and bucket but NOT the library root; the root pill
+         comes from source_path where the ledger holds one — sync replaces
+         the original in its own library folder, so that dir IS the
+         destination (it already fed the tooltip). A dest-only row keeps
+         its bucket pill; an unknown volume ("?") gets no pill on either
+         half. */
+      var nasTd=el("td"), destTd;
       if(r.dest){
-        /* The letter bucket wears the SAME pill as its NAS — one destination,
-           one styling — instead of a muted "/W" beside a pill. An unknown
-           volume ("?") gets no pill on either half. dest records volume and
-           bucket but NOT the library root, and Vermithor holds two roots —
-           the tooltip carries the full path where the ledger recorded it. */
         var vol=r.dest.split("/")[0];
-        destTd.appendChild(nasMark(vol));
+        nasTd.appendChild(nasMark(vol));
         var rest=r.dest.slice(vol.length).replace(/^\//,"");
-        if(rest && vol && vol!=="?")
-          destTd.appendChild(el("span","mark bucket "+nasClass(vol),rest));
-        else if(rest) destTd.appendChild(el("span","muted","/"+rest));
-        if(r.source_path)
-          destTd.title=r.source_path.replace(/\/[^/]*$/,"");
-      }else destTd.appendChild(el("span","muted","—"));
+        if(r.source_path && vol && vol!=="?")
+          destTd=srcDirTd(r.source_path.replace(/\/[^/]*$/,""), r.title, vol);
+        else{
+          destTd=el("td");
+          if(rest && vol && vol!=="?")
+            destTd.appendChild(el("span","mark bucket "+nasClass(vol),rest));
+          else if(rest) destTd.appendChild(el("span","muted","/"+rest));
+          else destTd.appendChild(el("span","muted","—"));
+        }
+      }else{
+        nasTd.appendChild(el("span","muted","—"));
+        destTd=el("td"); destTd.appendChild(el("span","muted","—"));
+      }
+      tr.appendChild(nasTd);
       tr.appendChild(destTd);
-      /* Date AND time. "2026-08-31" alone could not answer "when did this
-         one actually land", which is the question asked of a ledger whose
-         rows are hours long. finished_at is "YYYY-MM-DD HH:MM:SS" and the
-         whole of it is shown -- truncating to minutes would discard
-         precision the record already holds. The eight rows hand-migrated
-         from the old state file carry no timestamp at all and still say
-         "—": a missing time is never back-filled from the file's mtime. */
+      /* Date AND time — "2026-08-31" alone could not answer "when did this
+         one actually land". Format is the operator's pick (2026-09-01):
+         MM-DD-YY HH:MM, minutes precision. finished_at still records
+         seconds; the row tooltip is not asked to repeat them. The eight
+         rows hand-migrated from the old state file carry no timestamp at
+         all and still say "—": a missing time is never back-filled from
+         the file's mtime. */
       var fin=el("td","muted nowrap");
       if(r.finished_at){
-        fin.appendChild(el("span",null,r.finished_at.slice(0,10)));
-        var hms=r.finished_at.slice(11,19);
+        var fa=r.finished_at;
+        fin.appendChild(el("span",null,
+          fa.slice(5,7)+"-"+fa.slice(8,10)+"-"+fa.slice(2,4)));
+        var hm=fa.slice(11,16);
         /* A REAL space in the text, not just the margin: the cell is copied
            and read aloud as its textContent, and a CSS gap alone yielded
-           "2026-08-3109:27:06" to both. */
-        if(hms) fin.appendChild(el("span","fin-t"," "+hms));
+           "2026-08-3109:27" to both. */
+        if(hm) fin.appendChild(el("span","fin-t"," "+hm));
       }else fin.appendChild(el("span",null,"—"));
       tr.appendChild(fin);
       /* The "Source of record" COLUMN is gone, not the disclosure. Every row
@@ -1280,7 +1303,7 @@ function renderLedger(rows, xfers){
          not repeat it. */
       tr.classList.add("rowmoving");
       var xtr=el("tr","xrow"), xtd=el("td");
-      xtd.colSpan=10;
+      xtd.colSpan=11;
       progSlot("led|"+r.title, xtd);
       xtr.appendChild(xtd);
       return [tr,xtr];
