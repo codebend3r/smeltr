@@ -158,11 +158,14 @@ console.log('captions keep their units and do not repeat the destination');
 check('the caption does not repeat the destination (the pills are on the ledger row above)',
   api.xferState(xfer(9 * GIB)).text.indexOf('copied to') < 0 &&
   api.xferState(xfer(9 * GIB)).text.indexOf('copied') >= 0);
-check('a moving push carries rate and ETA',
-  ['MB/s', 'left'].every(w =>
+check('a moving push carries a binary rate and a marked ETA',
+  ['MiB/s', '~', 'left'].every(w =>
     api.xferState(xfer(9 * GIB)).text.indexOf(w) >= 0));
+check('the rate is never decimal MB/s beside binary GiB operands',
+  api.xferState(xfer(9 * GIB)).text.indexOf('MB/s') < 0 ||
+  api.xferState(xfer(9 * GIB)).text.indexOf('MiB/s') >= 0);
 check('a stalled push claims no rate and no ETA',
-  api.xferState(xfer(9 * GIB, { stalled: true })).text.indexOf('MB/s') < 0);
+  api.xferState(xfer(9 * GIB, { stalled: true })).text.indexOf('MiB/s') < 0);
 check('both operands carry GiB',
   (api.xferState(xfer(9 * GIB)).text.match(/GiB/g) || []).length === 2);
 check('a stalled push is never given a percentage bar',

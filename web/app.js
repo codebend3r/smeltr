@@ -923,8 +923,11 @@ function arrState(r){
   if(!r.bytes) return {shape:"plain",label:"arriving"};
   var p=Math.max(0,Math.min(100,r.arriving_bytes/r.bytes*100));
   var t=p.toFixed(1)+"% · "+gib(r.arriving_bytes)+" of "+gib(r.bytes)+" pulled";
+  /* MiB/s, not MB/s: the sizes in this sentence and the Network chart above
+     are binary, and one decimal rate beside them read 4.9% high. The ETA is
+     an extrapolation, so it carries the page's "~" estimate marker. */
   if(r.arriving_rate_bps>0)
-    t+=" · "+(r.arriving_rate_bps/1e6).toFixed(0)+" MB/s · "+
+    t+=" · "+(r.arriving_rate_bps/1048576).toFixed(0)+" MiB/s · ~"+
        dur((r.bytes-r.arriving_bytes)/r.arriving_rate_bps)+" left";
   return {shape:"bar",pull:true,label:"arriving",pct:p,text:t};
 }
@@ -937,7 +940,7 @@ function xferState(t){
   var txt = stall ? "no progress — "+moved
           : t.pct!=null ? pct(t.pct)+" · "+moved : moved;
   if(!stall && t.rate_bps>0)
-    txt+=" · "+(t.rate_bps/1e6).toFixed(0)+" MB/s · "+
+    txt+=" · "+(t.rate_bps/1048576).toFixed(0)+" MiB/s · ~"+
          dur((t.total_bytes-t.done_bytes)/t.rate_bps)+" left";
   return {shape:stall?"stall":(t.pct!=null?"bar":"plain"),
           label:stall?"stalled":"transferring",pct:t.pct,text:txt};
@@ -977,14 +980,20 @@ function renderQueue(q, s, live){
     if(e.crf!=null) liveCrf[(e.folder||e.title).toLowerCase()]=e.crf;
   });
   var pane=document.getElementById("pane"); pane.replaceChildren();
-  /* An unmounted NAS must never look like a finished job. */
+  /* An unmounted NAS must never look like a finished job — and neither must
+     a push still travelling: the driver's own stop condition refuses to fire
+     while a sync is in flight, so this tab may not claim what the driver
+     won't. The transfer itself renders on History. */
   if(s && s.library_complete===false)
     pane.appendChild(el("div","empty",
       "Library not fully mounted — "+(s.roots_offline||[]).join(", ")+
       " offline. This list is PARTIAL, not empty."));
   if(!q.length){
     if(!(s && s.library_complete===false))
-      pane.appendChild(el("div","empty","Nothing left above the stop threshold."));
+      pane.appendChild(el("div","empty",
+        s&&s.xfer_count ? "Nothing left to encode — "+s.xfer_count+" file"+
+          (s.xfer_count>1?"s":"")+" still copying to the NAS (see History)"
+        : "Nothing left above the stop threshold."));
     return; }
   var pinned=q.filter(function(r){ return r.pinned&&!r.skipped; }).length;
   var active=q.filter(function(r){ return !r.skipped; }).length;
@@ -1367,10 +1376,14 @@ function paint(s){
   if(tab==="events"&&evFetchedFor!==s.events_rev){
     evFetchedFor=s.events_rev; fetchEvents();
   }
+  /* The queue key carries the transfer COUNT (it decides the empty-state
+     sentence), never the transfers themselves — their bytes and shape belong
+     to the ledger key alone. */
   var key=tab+"|"+JSON.stringify(tab==="queue"
     ? [s.queue.map(qShape), s.live.map(function(e){ return [e.folder, e.crf]; }),
        s.summary.library_complete, s.summary.roots_offline,
-       s.can_start, s.encode_note, s.summary.paused, s.stage_active]
+       s.can_start, s.encode_note, s.summary.paused, s.stage_active,
+       (s.transfers||[]).length]
     : tab==="ledger" ? [s.ledger, (s.transfers||[]).map(xShape)]
     : [evRev, evData===null]);
   if(last.key!==key){
@@ -1384,7 +1397,8 @@ function paint(s){
              /* A busy wire changes the button's PROMISE from "pull now" to
                 "wait in line"; saying "stage" while five titles queue ahead
                 would misstate what the click does. */
-             stage_busy:s.stage_active!=null||(s.stage_queue||[]).length>0}),
+             stage_busy:s.stage_active!=null||(s.stage_queue||[]).length>0,
+             xfer_count:(s.transfers||[]).length}),
           s.live)
        :tab==="ledger"?renderLedger(s.ledger, s.transfers)
        :renderEvents()); }

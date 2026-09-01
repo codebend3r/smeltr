@@ -249,6 +249,11 @@ _state_cache = {"at": 0.0, "payload": None}
 # seen, and when it last GREW. Lets the payload report a rate and call a
 # non-growing .partial stalled instead of rendering it as live progress.
 _xfer_track: dict = {}
+# How long a measured rate may be re-reported with no growth observed. Longer
+# than any SMB stat cadence seen live (a few seconds), far shorter than the
+# 120 s stall line -- past this the caption keeps its byte counts and drops
+# the rate/ETA rather than counting down from stale evidence.
+RATE_HOLD_SECONDS = 60
 
 
 def _transfers() -> list:
@@ -311,10 +316,13 @@ def _transfers() -> list:
             if dt > 0:
                 # Mean over the gap since the last growth frame (SMB stat
                 # caching makes many frames report no growth at all), lightly
-                # smoothed so the ETA doesn't thrash between bursts.
+                # smoothed so the ETA doesn't thrash between bursts. Weighted
+                # by dt: a 2 s frame and a 40 s gap are not equal evidence
+                # (equal weighting read up to 21% high in live sampling).
                 inst = (done - rec["done"]) / dt
                 prev = rec.get("rate")
-                rec["rate"] = inst if prev is None else (prev + inst) / 2
+                rec["rate"] = (inst if prev is None
+                               else (prev * 20 + inst * dt) / (20 + dt))
             rec.update(done=done, t=now, grew=now)
         elif done < rec["done"]:
             # A smaller partial is a NEW attempt; restart tracking.
@@ -334,9 +342,15 @@ def _transfers() -> list:
         # The held rate is reported on EVERY non-stalled frame, not only the
         # frames where growth was observed: a no-growth frame is a stat-cadence
         # artifact, and a rate/ETA caption that blinked in and out every few
-        # seconds read as the page glitching. Stall (>120 s without growth) is
-        # what clears it -- that is a fact about the wire, not the sampling.
-        rate = None if stalled else rec.get("rate")
+        # seconds read as the page glitching. But the hold is BOUNDED by its
+        # own age: a .partial whose mtime keeps refreshing while its size does
+        # not never trips `stalled`, and a rate measured minutes ago republished
+        # with a countdown that never counts down is a lie the old
+        # report-on-growth-only code could not tell. 60 s covers every stat
+        # cadence seen live; past it the caption drops rate/ETA and keeps the
+        # byte counts, which are still facts.
+        fresh_rate = (now - rec["grew"]) <= RATE_HOLD_SECONDS
+        rate = rec.get("rate") if not stalled and fresh_rate else None
         rows.append({
             "title": folder,
             "nas": core.volume_name(root),

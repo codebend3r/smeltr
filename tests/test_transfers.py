@@ -86,6 +86,19 @@ class TransferRateHold(unittest.TestCase):
         self.assertTrue(row["stalled"])
         self.assertIsNone(row["rate_bps"])
 
+    def test_a_rate_older_than_the_hold_window_is_dropped(self):
+        # Not yet "stalled" (that needs >120 s AND a stale mtime), but the
+        # held measurement has aged past RATE_HOLD_SECONDS — the caption
+        # keeps its byte counts and drops the countdown.
+        self._row()
+        time.sleep(0.02)
+        self._partial(400)
+        self.assertIsNotNone(self._row()["rate_bps"])
+        server._xfer_track[FOLDER]["grew"] -= (server.RATE_HOLD_SECONDS + 1)
+        row = self._row()
+        self.assertFalse(row["stalled"])
+        self.assertIsNone(row["rate_bps"])
+
     def test_a_shrunken_partial_is_a_new_attempt_with_no_rate(self):
         self._row()
         time.sleep(0.02)
