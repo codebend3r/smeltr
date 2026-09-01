@@ -897,6 +897,24 @@ second request.
   partial (a new attempt). `tests/test_transfers.py` pins it.
 - `server._arrivals()` marks staged folders holding only a replenish
   `.partial` as *arriving* — present on disk but not yet encodable.
+- **The Events tab (2026-09-01)** is the driver/watcher timeline, built for
+  debugging outages like 2026-09-01's (a dead hand-run sync halted the driver
+  while the band ladder killed the encode — six log reads to reconstruct;
+  the tab shows the whole chain at a glance). `dashboard/events.py` (imported
+  ONLY by `server.py`) parses the tail of `.autopilot.log` — stamped lines
+  become events, indented/unstamped lines fold into the event above as
+  `detail` — plus the watch logs' `KILLED`/`COMPLETE` verdicts, newest first,
+  served at `GET /api/events`. The 2 s SSE frames carry only `events_rev`
+  (log mtimes+sizes); the page refetches at most once per rev move and only
+  while the tab is open, so the timeline never rides the state payload.
+  Honesty rules: a `KILLED` line that is the FINAL line of its watch log is
+  stamped from the file's mtime (the watcher writes it and exits, so mtime IS
+  the write time); any earlier `KILLED` in a re-used log shows "—", never a
+  guess. `QUARTER` progress noise never becomes an event. Severity chips
+  reuse the page's three colour tokens (halted/killed bad, stale/defer warn,
+  cycle/complete good); an unmapped kind renders as a plain pill, never an
+  error. No log (X9 unmounted) is an empty tab that says so, never an error
+  page. `tests/test_events.py` pins the parser.
 - **A push renders on the History tab ONLY** (operator's call 2026-09-01): a
   recorded title has left the queue, and the synthetic "transferring" row the
   Queue tab used to draw up top read as work still waiting to encode. The

@@ -43,6 +43,7 @@ from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pipeline import core
+from dashboard import events as events_mod
 from dashboard import sysmon
 
 # Token persists across restarts in a 0600 file, so LAN devices survive the
@@ -560,6 +561,10 @@ def build_state() -> dict:
             # The paused card asserts what the driver will do; it may only
             # do that when a driver actually exists to do it.
             "driver_alive": driver,
+            # Change marker only — the timeline itself is /api/events, so the
+            # 2 s SSE frames stay small and the page refetches only when a
+            # log actually moved.
+            "events_rev": events_mod.rev(),
         }
         with _state_lock:
             # Stamp AFTER the build. Stamping before meant a slow cold build was
@@ -1325,6 +1330,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, "text/html; charset=utf-8", PAGE.encode())
         if route == "/api/state":
             body = json.dumps(build_state()).encode()
+            return self._send(200, "application/json; charset=utf-8", body)
+        if route == "/api/events":
+            # The driver/watcher timeline for the Events tab. Read-only, and
+            # fetched on demand rather than riding the SSE frames.
+            body = json.dumps({"rev": events_mod.rev(),
+                               "events": events_mod.events()}).encode()
             return self._send(200, "application/json; charset=utf-8", body)
         if route == "/api/stream":
             return self._stream()
