@@ -19,6 +19,7 @@ test http.server, not this.
 """
 import os
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -151,16 +152,26 @@ class WriteGate(unittest.TestCase):
             self.assertFalse(handler(peer="192.168.1.50", local="192.168.1.9")
                              ._writes_ok())
 
-    def test_the_pause_route_is_spelled_the_way_do_POST_dispatches_it(self):
+    def test_lan_peer_may_start_the_driver(self):
+        """Added 2026-08-31 with the big play/pause toggle. The operator
+        presses play from the iPad, and even this Mac's own browser arrives
+        via the LAN URL. Start's worst case is the pipeline running exactly
+        as designed -- the same class as resume, already LAN-allowed."""
+        with mock.patch.object(server, "LAN_WRITES", False):
+            self.assertTrue(handler(peer="192.168.1.50", local="192.168.1.9")
+                            ._writes_ok("/api/driver/start"))
+
+    def test_the_lan_routes_are_spelled_the_way_do_POST_dispatches_them(self):
         """LAN_WRITE_ROUTES is matched against parsed.path, so a typo here
         would silently re-lock the iPad rather than fail loudly."""
-        self.assertIn("/api/pause", server.LAN_WRITE_ROUTES)
         src_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "dashboard", "server.py")
         with open(src_path, encoding="utf-8") as fh:
             src = fh.read()
-        self.assertIn('parsed.path == "/api/pause"', src)
+        for route in ("/api/pause", "/api/driver/start"):
+            self.assertIn(route, server.LAN_WRITE_ROUTES)
+            self.assertIn('parsed.path == "%s"' % route, src)
         self.assertIn("self._writes_ok(parsed.path)", src)
 
     def test_this_mac_over_its_own_lan_url_writes(self):
@@ -217,6 +228,66 @@ class Allowlist(unittest.TestCase):
         for host in server.ALLOWED_HOSTS:
             self.assertEqual(host, host.lower())
             self.assertFalse(host.endswith("."))
+
+
+class DriverStart(unittest.TestCase):
+    """_apply_driver_start spawns the PIPELINE. Every path here mocks the
+    spawn out -- a test must never launch the real driver."""
+
+    @staticmethod
+    def _h():
+        return object.__new__(server.Handler)
+
+    def test_refuses_while_the_driver_is_alive(self):
+        with mock.patch.object(server, "_driver_pids", return_value=[123]), \
+             mock.patch.object(server.subprocess, "Popen") as pop:
+            err = self._h()._apply_driver_start({})
+        self.assertIn("already running", err)
+        pop.assert_not_called()
+
+    def test_refuses_while_an_encode_runs(self):
+        """A driver started beside a dashboard encode would pick and start a
+        SECOND encode; only one may ever run."""
+        with mock.patch.object(server, "_driver_pids", return_value=[]), \
+             mock.patch.object(server.core, "live_encodes",
+                               return_value=[{"title": "x"}]), \
+             mock.patch.object(server.subprocess, "Popen") as pop:
+            err = self._h()._apply_driver_start({})
+        self.assertIn("encode", err)
+        pop.assert_not_called()
+
+    def test_refuses_with_no_staging_drive(self):
+        with mock.patch.object(server, "_driver_pids", return_value=[]), \
+             mock.patch.object(server.core, "live_encodes", return_value=[]), \
+             mock.patch.object(server.core, "X9",
+                               "/nonexistent/smeltr-test-x9"), \
+             mock.patch.object(server.subprocess, "Popen") as pop:
+            err = self._h()._apply_driver_start({})
+        self.assertIn("not mounted", err)
+        pop.assert_not_called()
+
+    def test_launch_clears_pause_stale_lock_and_detaches(self):
+        """Success: the stale mkdir lock is cleared (kill -9 skips the
+        driver's trap), the pause flag is cleared (play means play), and the
+        spawn is detached with cwd on the X9 -- the driver must survive a
+        dashboard restart."""
+        with tempfile.TemporaryDirectory() as d:
+            os.mkdir(os.path.join(d, ".autopilot.lock"))
+            with mock.patch.object(server, "_driver_pids", return_value=[]), \
+                 mock.patch.object(server.core, "live_encodes",
+                                   return_value=[]), \
+                 mock.patch.object(server.core, "X9", d), \
+                 mock.patch.object(server.core, "set_paused") as sp, \
+                 mock.patch.object(server.subprocess, "Popen") as pop:
+                err = self._h()._apply_driver_start({})
+            self.assertIsNone(err)
+            self.assertFalse(
+                os.path.isdir(os.path.join(d, ".autopilot.lock")))
+            sp.assert_called_once_with(False)
+            kw = pop.call_args.kwargs
+            self.assertEqual(kw["cwd"], d)
+            self.assertTrue(kw["start_new_session"])
+            self.assertEqual(pop.call_args.args[0], ["./.autopilot.sh"])
 
 
 if __name__ == "__main__":

@@ -698,6 +698,23 @@ def offline_roots() -> list[str]:
     return [r for r in LIBRARY_ROOTS if not os.path.isdir(r)]
 
 
+def error_marker(title: str) -> Optional[str]:
+    """First line of $X9/.error-<title>, or None when the title is fine.
+
+    Written by .autopilot.sh when the CRF ladder exhausts (projection outside
+    the 30-80% band at every rung -- up 16-18-20-22 for too-big, down
+    16-14-12-10 for too-small). The marker is the title's ERROR state: never
+    deleted, never skipped (a skip is the operator's click, 2026-08-31),
+    just unpickable and rendered red until a human deletes the marker file.
+    """
+    try:
+        with open(os.path.join(X9, ".error-" + title),
+                  encoding="utf-8") as fh:
+            return fh.readline().strip() or "CRF ladder exhausted"
+    except OSError:
+        return None
+
+
 def staged_folders() -> list[str]:
     try:
         return sorted(
@@ -788,6 +805,13 @@ def queue(min_mbps: float = STOP_MBPS, live: Optional[list] = None,
         low_t = r["title"].lower()
         r["skipped"] = low_t in skips
         r["pinned"] = (not r["skipped"]) and low_t in pri
+        # The ladder's ERROR state rides the row so every view (queue tab,
+        # report, pick) reads ONE source. Checked regardless of staged: a
+        # marker whose folder was hand-removed still needs its red row --
+        # the state ends when the human deletes the marker, not before.
+        note = error_marker(r["title"])
+        r["error"] = note is not None
+        r["error_note"] = note
     # Skipped rows stay IN PLACE in the bitrate ranking -- the views grey
     # them out as disabled rows rather than sinking or dropping them, so a
     # skip can never read as a vanished (or finished) title. Pinned rows come
@@ -862,6 +886,12 @@ def pick_next(rows: list) -> tuple[Optional[dict], set]:
             # A replenish pull still landing: picking this title would make
             # start_encode halt on "no source file" mid-pull.
             reasons.add("arriving")
+            continue
+        if row.get("error"):
+            # Ladder-exhausted titles wait for a human; re-picking one would
+            # loop the same doomed encode forever. Distinct from "skipped":
+            # the operator never chose this, the pipeline did.
+            reasons.add("errored")
             continue
         if row.get("skipped"):
             reasons.add("skipped")

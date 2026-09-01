@@ -73,7 +73,9 @@ def main() -> int:
         # the stop condition. No universal quantifiers: the reasons compose,
         # and "every title is skipped" is false beside an arriving one.
         msgs = {"arriving": "a replenish pull is still landing",
-                "skipped": "staged titles are hand-skipped"}
+                "skipped": "staged titles are hand-skipped",
+                "errored": "staged titles are in an error state "
+                           "(CRF ladder exhausted) awaiting review"}
         print("; ".join(msgs.get(w, w) for w in sorted(waits)) + " -- waiting",
               file=sys.stderr)
         return 3

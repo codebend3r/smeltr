@@ -1,15 +1,28 @@
 #!/bin/bash
-# The staging drive runs the script; the repo only holds a copy for history.
+# The staging drive runs the scripts; the repo only holds copies for history.
 # A copy that silently drifts from the live one is the exact failure this repo
 # already carries elsewhere (four hand-synced library-root lists). Fail loudly.
+# watch-encode.sh joined the mirror 2026-08-31 with the two-direction band
+# ladder -- it kills encodes and deletes partials, which is exactly the class
+# of script whose drift must not go unnoticed.
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-LIVE="/Volumes/Crucial X9/4K Movies/.autopilot.sh"
-[ -f "$LIVE" ] || { echo "SKIP: staging drive not mounted"; exit 0; }
-if diff -q "$REPO/staging/autopilot.sh" "$LIVE" >/dev/null; then
-  echo "PASS staging/autopilot.sh matches the live script"
-else
-  echo "FAIL staging/autopilot.sh has drifted from $LIVE"
-  diff -u "$REPO/staging/autopilot.sh" "$LIVE" | head -40
-  exit 1
-fi
+X9="/Volumes/Crucial X9/4K Movies"
+[ -d "$X9" ] || { echo "SKIP: staging drive not mounted"; exit 0; }
+rc=0
+for name in autopilot.sh watch-encode.sh; do
+  LIVE="$X9/.$name"
+  if [ ! -f "$LIVE" ]; then
+    echo "FAIL no live copy at $LIVE"
+    rc=1
+    continue
+  fi
+  if diff -q "$REPO/staging/$name" "$LIVE" >/dev/null; then
+    echo "PASS staging/$name matches the live script"
+  else
+    echo "FAIL staging/$name has drifted from $LIVE"
+    diff -u "$REPO/staging/$name" "$LIVE" | head -40
+    rc=1
+  fi
+done
+exit $rc

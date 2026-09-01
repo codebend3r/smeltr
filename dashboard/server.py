@@ -201,7 +201,13 @@ LAN_WRITES = os.environ.get("SMELTR_LAN_WRITES") == "1"
 # re-arms a ~90 GB deletion, and encode control spawns and kills HandBrake.
 # The token still gates it, so this is "any device you have handed the URL to",
 # not "anyone on the network".
-LAN_WRITE_ROUTES = ("/api/pause",)
+# /api/driver/start joined it 2026-08-31 with the big play/pause toggle: the
+# operator presses play from the iPad, and even this Mac's own browser reaches
+# the page via the LAN URL, so a loopback-only play button is a dead button.
+# Start's worst case is the pipeline running exactly as designed -- the same
+# class as resume, which was already LAN-allowed -- and it deletes nothing the
+# normal verified pipeline would not.
+LAN_WRITE_ROUTES = ("/api/pause", "/api/driver/start")
 NONCE = secrets.token_urlsafe(16)
 POLL_SECONDS = 2.0
 # Must be BELOW POLL_SECONDS. Above it, every second SSE frame was a
@@ -1317,6 +1323,8 @@ class Handler(BaseHTTPRequestHandler):
                 err = self._apply_stage_cancel(body)
             elif parsed.path == "/api/pause":
                 err = self._apply_pause(body)
+            elif parsed.path == "/api/driver/start":
+                err = self._apply_driver_start(body)
             else:
                 return self._deny(404, "not found")
         if err:
@@ -1486,6 +1494,63 @@ class Handler(BaseHTTPRequestHandler):
             if not _stage_queue:
                 _stage_wait["why"] = None
         _set_note("Removed %s from the pull queue." % title, kind="ok")
+        return None
+
+    def _apply_driver_start(self, body: dict):
+        # The big play button's "nothing is running" half. Launches
+        # .autopilot.sh exactly the way CLAUDE.md's restart line does --
+        # detached, cwd on the X9, appending to .autopilot.log -- because a
+        # stopped driver previously had NO control at all: the operator had
+        # to ssh in and paste a nohup line. Pause/resume stays the other
+        # half; this route never touches a live pipeline (it refuses one).
+        #
+        # Refusals mirror can_start in reverse: two drivers double-record
+        # against a ledger with no duplicate guard, and a driver started
+        # beside a dashboard encode would pick and start a SECOND encode.
+        # Two simultaneous clicks can both pass the pgrep -- the driver's own
+        # mkdir lock then lets one win and the loser exits "already
+        # running", the documented-harmless race.
+        if _driver_pids():
+            return "the driver is already running"
+        if core.live_encodes():
+            return ("an encode is already running — the driver would start "
+                    "a second one beside it; abort it or let it finish first")
+        if not os.path.isdir(core.X9):
+            return "the staging drive is not mounted"
+        # kill -9 (the documented stop) skips the driver's trap, so a lock
+        # with no live process is provably stale -- the watchdog's rule --
+        # and would make the fresh launch exit "already running" forever.
+        lock = os.path.join(core.X9, ".autopilot.lock")
+        if os.path.isdir(lock):
+            try:
+                os.rmdir(lock)
+            except OSError as e:
+                return "stale .autopilot.lock could not be cleared: %s" % e
+        # Play means play: a leftover pause flag would leave the fresh driver
+        # answering exit 3 in 300 s waits -- a start button that lies.
+        try:
+            core.set_paused(False)
+        except OSError as e:
+            return "could not clear the pause flag: %s" % e
+        try:
+            logf = open(os.path.join(core.X9, ".autopilot.log"), "ab")
+        except OSError as e:
+            return "could not open .autopilot.log: %s" % e
+        try:
+            # start_new_session: the driver must survive a dashboard restart
+            # -- it is the pipeline, the server is only its window.
+            subprocess.Popen(["./.autopilot.sh"], cwd=core.X9, stdout=logf,
+                             stderr=subprocess.STDOUT,
+                             stdin=subprocess.DEVNULL, start_new_session=True)
+        except OSError as e:
+            return "could not launch the driver: %s" % e
+        finally:
+            logf.close()
+        # NOT the watchdog: a play-launched driver has no reboot recovery
+        # until ops/watchdog.sh is relaunched by hand, and silently spawning
+        # a supervisor that relaunches drivers is not what play means.
+        _set_note("driver launched — it sweeps the drive, then picks the "
+                  "next title within ~30 s", "ok")
         return None
 
     def _apply_pause(self, body: dict):

@@ -473,6 +473,12 @@ tr:hover .rowacts,tr:focus-within .rowacts,.rowacts.armed{opacity:1}
 .rowskip td:last-child{opacity:1}
 .rowskip .title-cell{opacity:1}
 .rowskip .tname{color:var(--ink-3);text-decoration:line-through}
+/* Ladder-exhausted ERROR state: red title, error emoji beside it. Never
+   struck through -- struck means the operator chose to skip; red means the
+   pipeline gave up and a human owes the row a decision. --bad exists in
+   both themes. */
+.tname.err{color:var(--bad);font-weight:600}
+.err-emoji{margin-right:6px;flex:none}
 /* Queue control. The grip drags, the button skips; both write only the
    overrides file on the server, nothing else. */
 .grip{cursor:grab;color:var(--ink-3);user-select:none;-webkit-user-select:none;
@@ -508,6 +514,35 @@ tr.pin-end td{border-bottom:2px solid var(--cool-bd)}
 /* A finger is not a mouse pointer: give it a full-size target even though the
    pill is 20px tall. */
 @media (pointer:coarse){ .pauserow{min-height:44px} }
+
+/* The BIG play/pause toggle -- the one control that must be findable from
+   across the room, so it takes the full card width (unlike .pauserow, which
+   deliberately hugs). Same native-<button> rules. Colours are tokens only:
+   .play leans on the ready-row greens, .pause on the encoding ambers, so
+   both themes already carry every colour used here. */
+.bigplay{display:flex;align-items:center;gap:18px;width:100%;margin:0 0 14px;
+  padding:18px 22px;border-radius:var(--r);cursor:pointer;text-align:left;
+  font:inherit;color:var(--ink);background:var(--panel-2);
+  border:1px solid var(--line);touch-action:manipulation;
+  -webkit-user-select:none;user-select:none;
+  -webkit-tap-highlight-color:transparent}
+.bigplay.play{background:var(--row-ready);border-color:var(--good-bd)}
+.bigplay.pause{background:var(--row-enc);border-color:var(--warn-bd)}
+.bigplay.busy{border-color:var(--cool-bd);cursor:progress}
+.bigplay.play:hover{border-color:var(--good)}
+.bigplay.pause:hover{border-color:var(--warn)}
+.bigplay:focus-visible{outline:2px solid var(--cool);outline-offset:3px}
+.bp-icon{flex:none}
+.bigplay.play .bp-icon{width:0;height:0;
+  border-left:26px solid var(--good);
+  border-top:16px solid transparent;border-bottom:16px solid transparent}
+.bigplay.pause .bp-icon{width:26px;height:30px;
+  border-left:9px solid var(--warn);border-right:9px solid var(--warn)}
+.bigplay.busy .bp-icon{width:24px;height:24px;border-radius:50%;
+  border:3px solid var(--cool-bd);border-top-color:var(--cool)}
+.bp-act{display:block;font-size:18px;font-weight:700;letter-spacing:.2px}
+.bp-sub{display:block;margin-top:4px;color:var(--ink-2);font-size:13px}
+@media (pointer:coarse){ .bigplay{min-height:68px} }
 .swt{position:relative;display:block;width:36px;height:20px;flex:0 0 auto;
   border:1px solid var(--line);border-radius:999px;background:none;
   transition:border-color .18s ease,background-color .18s ease}

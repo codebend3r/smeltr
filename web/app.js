@@ -504,7 +504,68 @@ function pauseSwitch(on, label){
   return b;
 }
 
-function renderLive(live, s, driverAlive){
+/* ---- the big play/pause toggle ------------------------------------------
+   One oversized control at the top of the live section, because the states
+   it covers were previously spread across three places (the pause switch,
+   the queue's start button, and a nohup line in CLAUDE.md). Three states:
+     driver dead          -> PLAY  = POST /api/driver/start (launches the
+                             autopilot; the server clears a leftover pause
+                             flag first -- play means play)
+     driver alive, paused -> PLAY  = resume, via the SAME pauseSend the
+                             switch uses, so the two controls share one
+                             intent and can never race each other
+     driver alive         -> PAUSE = pause-after-current
+   The "next up" line is ALWAYS the server's own pick (next_up, from
+   _mark_ready -> core.pick_next) -- never re-derived here, the same rule as
+   the queue's green row. Same native-<button> and never-disable rules as
+   the pause switch: a start in flight redraws as "starting…" through
+   driverWant, and a refused start snaps back when the intent releases. */
+var driverWant=null;
+function driverStartSend(){
+  if(driverWant!==null) return;
+  driverWant=true;
+  if(last.state) paint(last.state);
+  api("/api/driver/start",{}).then(function(){
+    driverWant=null;
+    if(last.state) paint(last.state);
+  });
+}
+function bigToggle(paused, driverAlive, live, nextTitle){
+  var b=el("button","bigplay");
+  b.type="button";
+  var icon=el("span","bp-icon"); icon.setAttribute("aria-hidden","true");
+  var txt=el("span","bp-text");
+  var act=el("span","bp-act"), sub=el("span","bp-sub");
+  txt.appendChild(act); txt.appendChild(sub);
+  b.appendChild(icon); b.appendChild(txt);
+  if(!driverAlive && driverWant!==null){
+    b.classList.add("busy");
+    act.textContent="Starting the driver…";
+    sub.textContent=nextTitle ? "first pick: "+nextTitle : "";
+  }else if(!driverAlive){
+    b.classList.add("play");
+    act.textContent="Start encoding";
+    sub.textContent=nextTitle ? "next up: "+nextTitle
+      : "nothing pickable — check the queue";
+    b.addEventListener("click",driverStartSend);
+  }else if(paused){
+    b.classList.add("play");
+    act.textContent="Resume encoding";
+    sub.textContent=nextTitle ? "next up: "+nextTitle
+      : "nothing pickable — check the queue";
+    b.addEventListener("click",function(){ pauseSend(false); });
+  }else{
+    b.classList.add("pause");
+    act.textContent="Pause encoding";
+    sub.textContent=live.length
+      ? "after this encode — "+live[0].title+" still finishes and syncs"
+      : "nothing new will start";
+    b.addEventListener("click",function(){ pauseSend(true); });
+  }
+  return b;
+}
+
+function renderLive(live, s, driverAlive, nextTitle){
   /* paused rides in the summary -- the ONE carrier, the same field report.py
      banners -- never a second top-level copy. It and driverAlive are in the
      sig: the pause control and the idle card's claims are built once per
@@ -516,9 +577,11 @@ function renderLive(live, s, driverAlive){
   var paused=pauseState(s);
   var host=document.getElementById("liveWrap");
   var sig=live.map(function(e){ return e.title; }).join("|")
-    +"|p:"+(paused?1:0)+"|d:"+(driverAlive?1:0);
+    +"|p:"+(paused?1:0)+"|d:"+(driverAlive?1:0)
+    +"|n:"+(nextTitle||"")+"|w:"+(driverWant!==null?1:0);
   if(host.dataset.sig!==sig){
     host.replaceChildren(); liveRefs={}; host.dataset.sig=sig;
+    host.appendChild(bigToggle(paused, driverAlive, live, nextTitle));
     if(!live.length){
       var c=el("div","card");
       if(paused){
@@ -839,6 +902,7 @@ function updateProgress(s){
 function qShape(r){
   return [r.title,r.mbps,r.bytes,r.location,r.src_dir,
           !!r.skipped,!!r.pinned,!!r.encoding,!!r.ready,!!r.staged,!!r.next_up,
+          !!r.error,r.error_note||null,
           r.arriving_bytes!=null,!!r.arriving_stalled,
           r.stage_queued==null?null:r.stage_queued,r.stage_wait||null];
 }
@@ -908,6 +972,19 @@ function renderQueue(q, s, live, xfers, hist){
       var cell=el("div","tcell");
       var name=el("span","tname",r.title);
       if(r.skipped) name.className="tname struck";
+      /* Ladder-exhausted ERROR state (operator's rule 2026-08-31): red
+         title + error emoji, never struck through and never hidden -- the
+         pipeline moved on but a human still owes this row a decision. The
+         emoji is textContent like everything else (titles are filesystem
+         strings; rule 2 stands). */
+      if(r.error){
+        name.className="tname err";
+        var em=el("span","err-emoji","❗");
+        em.setAttribute("role","img");
+        em.setAttribute("aria-label","error");
+        em.title=r.error_note||"CRF ladder exhausted";
+        cell.appendChild(em);
+      }
       cell.appendChild(name);
       cell.appendChild(rowActions(r,s));
       titleTd.appendChild(cell);
@@ -1165,7 +1242,9 @@ function renderLedger(rows, xfers){
 function paint(s){
   renderAlert(s.summary, s.encode_note);
   renderStats(s.summary);
-  renderLive(s.live, s.summary, s.driver_alive===true);
+  var nextUp=(s.queue||[]).filter(function(r){ return r.next_up; })[0];
+  renderLive(s.live, s.summary, s.driver_alive===true,
+    nextUp ? nextUp.title : null);
   /* The key must cover EVERYTHING the pane's STRUCTURE depends on — both tabs
      draw live transfers, so transfers belong in BOTH keys. They were once
      omitted entirely, and the transferring row painted a single still frame

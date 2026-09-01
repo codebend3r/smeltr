@@ -331,15 +331,33 @@ while true; do
       exit 0
     fi
 
-    # The CRF ladder. .watch-encode.sh deletes the partial when it auto-kills a
-    # blowup, so there is no finished folder left to carry the retry -- the old
-    # ladder branch hung off finished_folder() and could never fire, and the
-    # title simply restarted at the same CRF that had just blown up.
+    # The CRF ladder. .watch-encode.sh deletes the partial when it auto-kills
+    # an out-of-band projection (30-80% of source, both directions since
+    # 2026-08-31), so there is no finished folder left to carry the retry --
+    # the old ladder branch hung off finished_folder() and could never fire,
+    # and the title simply restarted at the same CRF that had just blown up.
+    # The watcher picks the next rung: UP 16-18-20-22 when the projection is
+    # too big, DOWN 16-14-12-10 when it is too small. "none-*" means the
+    # ladder is exhausted (22 still over, 10 still under, or the projection
+    # flipped sides on an already-laddered rung).
     crf=16
     kl="$X9/.watch-$(slug_of "$title").log"
     if grep -q '^KILLED|' "$kl" 2>/dev/null; then
       crf=$(grep '^KILLED|' "$kl" | tail -1 | sed 's/.*next: CRF //')
-      [ "$crf" = "none" ] && halt "$title still inflates at CRF 20 - pathological source"
+      case "$crf" in
+        none*)
+          # Ladder exhausted. NOT a halt and NOT a skip (operator's rule,
+          # 2026-08-31): the title goes to an ERROR state -- marker on the
+          # X9, red row in the queue -- and the loop moves on to the next
+          # title. next_title.py passes over marked titles. The source and
+          # the library original are untouched; the watcher already deleted
+          # the partial. A human clears the state by deleting the marker.
+          printf '%s: CRF ladder exhausted (%s) at %s\n' \
+            "$title" "$crf" "$(date '+%Y-%m-%d %H:%M:%S')" > "$X9/.error-$title"
+          log "ERROR $title: CRF ladder exhausted ($crf) - marked for review, moving on"
+          : > "$kl"
+          continue ;;
+      esac
       log "LADDER $title -> CRF $crf"
       : > "$kl"
     fi

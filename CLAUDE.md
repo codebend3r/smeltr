@@ -65,10 +65,10 @@ ledger.jsonl        the irreplaceable record, beside the launcher
    sync, or delete anything in the library. Start refuses while
    `autopilot.sh` is alive (pgrep, not the lock file) or any encode runs;
    abort's skip-write is what stops a running driver relaunching the same
-   title 30 s later. CRF 22/24 sit OUTSIDE the ladder (`.watch-encode.sh`
-   maps only 16→18→20): a blowup at 22/24 is still auto-killed but nothing
-   restarts it. Slow halves (parity gate, kill grace) run on daemon threads
-   and report through `encode_note` in the state payload.
+   title 30 s later. A dashboard start at CRF 24 sits outside the ladder
+   maps (see *The band ladder* below): an out-of-band kill at 24 goes
+   straight to `none-*`. Slow halves (parity gate, kill grace) run on
+   daemon threads and report through `encode_note` in the state payload.
 3. Stage-on-demand (2026-08-22): `POST /api/stage/start` SPAWNS an
    `.ssh-xfer.sh pull` of one library title onto the staging drive (the
    hover "stage" button on library-only rows). It mirrors the per-title pull
@@ -202,13 +202,37 @@ ledger.jsonl        the irreplaceable record, beside the launcher
    right for skip/reorder, encode start/abort and stage pulls — un-skipping
    re-arms a ~90 GB deletion and encode control spawns and kills HandBrake —
    but pause's worst case is the pipeline WAITING, which is the direction
-   `core.paused()` already fails towards. `LAN_WRITE_ROUTES = ("/api/pause",)`
-   is checked per request; `_writes_ok()` takes the route and its default
+   `core.paused()` already fails towards. `LAN_WRITE_ROUTES` is checked per
+   request; `_writes_ok()` takes the route and its default
    `""` is deliberately NOT in the tuple, so a caller that forgets the route
    gets the STRICT answer and a new endpoint stays refused off-box until it
    is listed. `SMELTR_LAN_WRITES=1` still opens everything. The token still
    gates it all, so this is "any device you handed the URL to", not "anyone
    on the network". `tests/test_http_gates.py` pins each route on both sides.
+   (Since 2026-08-31 `/api/driver/start` is the SECOND LAN-writable route —
+   see 5.)
+5. Driver start (2026-08-31): `POST /api/driver/start` LAUNCHES
+   `.autopilot.sh` — the big play/pause toggle's "nothing is running" half,
+   because a stopped driver previously had no dashboard control at all. It
+   spawns the driver exactly the way the restart line below does (detached
+   via `start_new_session`, cwd on the X9, appending to `.autopilot.log`),
+   so a dashboard restart cannot kill it. Refuses while the driver is alive
+   (pgrep), while ANY encode runs (a driver started beside a dashboard
+   encode would pick and start a second one), or with no X9 mounted. First
+   it clears a provably-stale `.autopilot.lock` (no live process — the
+   watchdog's rule) and the pause flag (play means play; a leftover flag
+   would leave the fresh driver waiting in 300 s ticks). It deliberately
+   does NOT start the watchdog: a play-launched driver has no reboot
+   recovery until `ops/watchdog.sh` is relaunched by hand. LAN-writable for
+   the same reason as pause: the operator presses play from the iPad, and
+   start's worst case is the pipeline running exactly as designed. The big
+   toggle (`bigToggle` in `web/app.js`) has three states — start (driver
+   dead), resume (paused; it shares `pauseSend` with the pause switch so
+   the two controls cannot race), and pause-after-current — and its "next
+   up" line is always the server's `next_up` pick, never re-derived
+   client-side. A start in flight renders through the same
+   unsettled-intent pattern as the switch (`driverWant`), so a refused
+   start snaps back instead of lying.
 
 ### The driver is CONCURRENT as of 2026-08-22
 
@@ -242,6 +266,33 @@ The CRF ladder now fires from the `next_title` path. It used to hang off
 `finished_folder()`, but `.watch-encode.sh` deletes the partial when it
 auto-kills a blowup, so there was no finished folder and the branch could never
 run — the title simply restarted at the CRF that had just blown up.
+
+### The band ladder and the ERROR state (2026-08-31, operator's spec)
+
+`.watch-encode.sh` (now mirrored in `staging/`, drift-checked like
+`autopilot.sh`) kills a running encode whose PROJECTION lands outside the
+**30–80% band** — both directions, checked **every 60 s tick** once the
+projection opens at 5% progress (the dashboard strip's opening point), not
+just at quarter checkpoints: Addams Family 2 ran its full 4.5 h to produce a
+9.6% file the verdict then refused. Two honesty guards on the early
+projection: a `CUR=0` stat is a glitch and skips the tick (killing a healthy
+encode over a momentary unreadable stat deletes hours of work), and TWO
+consecutive ticks must agree on the same violation before the kill fires.
+
+On a kill the partial is deleted and the driver retries at the next rung —
+**up 16→18→20→22 when too big, down 16→14→12→10 when too small**. A
+violation OPPOSITE to the rung's own direction (too small at 18/20/22, too
+big at 14/12/10) exhausts immediately — a projection that flips sides
+between adjacent rungs would oscillate forever. Exhaustion (`none-too-big` /
+`none-too-small`) is the **ERROR state**: `.autopilot.sh` writes
+`$X9/.error-<title>` and MOVES ON — never a halt, never a skip, never a
+deletion. `core.error_marker()` puts `error`/`error_note` on the queue row;
+`pick_next` passes it over (wait reason `errored`); the queue tab renders
+the title red with a ❗ (hover for the note). The state ends when a human
+deletes the marker file. Known consequence the operator accepted: clean
+digital/animated sources that legitimately land under 30% (Kubo 23.7%,
+Minions 17.2%) will now ladder DOWN and may end red at CRF 10 —
+`tests/test_error_state.py` pins the mechanics.
 
 ### No gap between encodes — the operator's standing requirement (2026-08-31)
 
