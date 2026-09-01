@@ -1073,8 +1073,10 @@ function renderQueue(q, s, live){
         if(r.pinned) td.appendChild(el("span","mark pin","pinned"));
         if(r.encoding) td.appendChild(el("span","mark enc","encoding"));
         else if(r.arriving_bytes!=null){
-          /* Slot only — updateProgress() paints and repaints it. */
-          progSlot("arr|"+r.title.toLowerCase(), td);
+          /* Cell stays empty on purpose: the arrival rides a full-width row
+             of its own below, the same pair History gives a push — an 84px
+             bar and its caption crammed in this cell ran off the table's
+             right edge (operator's call 2026-09-01). */
         }
         else if(r.staged){
           td.appendChild(el("span","mark staged","staged"));
@@ -1111,6 +1113,18 @@ function renderQueue(q, s, live){
       tr.appendChild(td);
       if(r.pinned && !r.skipped && ranks[i]===pinned && pinned<active)
         tr.classList.add("pin-end");
+      if(!r.skipped && !r.encoding && r.arriving_bytes!=null){
+        /* The arriving pull gets a SECOND row spanning every column —
+           mark, bar and caption drawn by updateProgress() into the slot,
+           exactly the History transfer pair. The xrow carries no dataset,
+           so wireDrag ignores it and drop indices stay q-indices. */
+        tr.classList.add("rowmoving");
+        var xtr=el("tr","xrow"), xtd=el("td");
+        xtd.colSpan=9;
+        progSlot("arr|"+r.title.toLowerCase(), xtd);
+        xtr.appendChild(xtd);
+        return [tr,xtr];
+      }
       return tr;
     }));
   /* A recorded title has LEFT the queue — its push renders on the History
