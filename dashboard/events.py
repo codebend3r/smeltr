@@ -90,6 +90,11 @@ def _driver_events():
             # ("size guard PASS: …") — detail of the event above.
             frag = m.group(3) if m else line.strip()
             if frag:
+                # .sync-to-library.sh divides by 1073741824 and prints "GB":
+                # the value is GiB. Relabel, or the size guard in front of a
+                # deletion reads 7.4% low against History's GiB column.
+                if frag.startswith("size guard"):
+                    frag = frag.replace(" GB", " GiB")
                 d = out[-1]["detail"]
                 d = frag if d is None else d + " · " + frag
                 out[-1]["detail"] = d[:DETAIL_CAP]
@@ -110,37 +115,82 @@ def _watch_events():
         for i, line in enumerate(lines):
             parts = line.split("|")
             word = parts[0]
-            if word == "KILLED":
-                # The watcher writes KILLED and exits, so for the FINAL line
-                # the file's mtime is the write time. Earlier lines claim no
-                # time at all.
-                ts = stamp if i == len(lines) - 1 else None
-                out.append({"ts": ts, "kind": "killed",
-                            "text": "KILLED " + " — ".join(parts[1:]),
+            if word in ("KILLED", "FAILED"):
+                # The watcher writes its last line and exits, so for the
+                # FINAL line the file's mtime is the write time — surfaced
+                # as APPROXIMATE (the page draws "~", minutes precision).
+                # An earlier line of a re-used log claims no time at all.
+                # FAILED is a HandBrake that DIED (reboot/kill) — the single
+                # most likely reason someone opens this tab.
+                final = i == len(lines) - 1
+                if word == "KILLED" and "next: none-" in line:
+                    # Ladder exhausted: .autopilot.sh writes .error-<title>
+                    # and moves on — a human owes this row a decision, so it
+                    # must not scan identically to a routine retry.
+                    kind = "exhausted"
+                else:
+                    kind = "failed" if word == "FAILED" else "killed"
+                out.append({"ts": stamp if final else None, "kind": kind,
+                            "text": _regib(word + " " + " — ".join(parts[1:])),
                             "detail": None, "src": "watcher",
+                            "approx": final,
                             "_ord": stamp})
             elif word == "COMPLETE" and len(parts) >= 3:
+                tail = " — ".join(parts[3:])
                 out.append({"ts": parts[2], "kind": "complete",
-                            "text": "COMPLETE " + parts[1] + " — " +
-                                    " — ".join(parts[3:]),
+                            "text": _regib("COMPLETE " + parts[1] +
+                                           ((" — " + tail) if tail else "")),
                             "detail": None, "src": "watcher",
+                            "approx": False,
                             "_ord": parts[2]})
     return out
 
 
+def _regib(text: str) -> str:
+    """.watch-encode.sh divides bytes by 1073741824 and labels the result
+    "GB" — the value is GiB. Relabel so this tab can never be read as
+    disagreeing with History about the size of the original being deleted."""
+    return text.replace(" GB", " GiB")
+
+
 def events(limit=DEFAULT_LIMIT):
-    """Newest-first merged timeline, at most `limit` rows."""
+    """Newest-first merged timeline: {"events": [...], "total": n}.
+
+    `total` counts every (collapsed) event the sources held, so the page can
+    say "250 of 266" instead of a bare count that reads as "that is
+    everything"."""
     rows = []
     for e in _driver_events():
         e["_ord"] = e["ts"]
+        e["approx"] = False
         rows.append(e)
     rows.extend(_watch_events())
     # Stable sort: equal-ordinal rows keep source order (a watch KILLED with
     # only an mtime hint lands beside the driver lines of the same second).
     rows.sort(key=lambda e: e["_ord"])
+    # Collapse runs of the identical event. The driver logs its wait reason
+    # every 300 s, so a 21 h pause is ~250 copies of one sentence — enough to
+    # evict the entire real history from the row budget and render the tab
+    # as "nothing has ever happened here". The collapsed row keeps the
+    # NEWEST stamp and says how many lines it stands for.
+    merged = []
     for e in rows:
+        p = merged[-1] if merged else None
+        if (p is not None and p["kind"] == e["kind"]
+                and p["text"] == e["text"] and p["src"] == e["src"]):
+            p["count"] += 1
+            p["ts"] = e["ts"] or p["ts"]
+            p["approx"] = e["approx"] if e["ts"] else p["approx"]
+            p["_ord"] = e["_ord"]
+            if e["detail"]:
+                p["detail"] = e["detail"]
+        else:
+            e["count"] = 1
+            merged.append(e)
+    for e in merged:
         del e["_ord"]
-    return list(reversed(rows[-limit:]))
+    return {"events": list(reversed(merged[-limit:])),
+            "total": len(merged)}
 
 
 def rev() -> str:

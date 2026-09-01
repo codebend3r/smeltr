@@ -1348,8 +1348,10 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/events":
             # The driver/watcher timeline for the Events tab. Read-only, and
             # fetched on demand rather than riding the SSE frames.
+            tl = events_mod.events()
             body = json.dumps({"rev": events_mod.rev(),
-                               "events": events_mod.events()}).encode()
+                               "events": tl["events"],
+                               "total": tl["total"]}).encode()
             return self._send(200, "application/json; charset=utf-8", body)
         if route == "/api/stream":
             return self._stream()

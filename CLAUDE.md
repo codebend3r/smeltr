@@ -915,14 +915,30 @@ second request.
   served at `GET /api/events`. The 2 s SSE frames carry only `events_rev`
   (log mtimes+sizes); the page refetches at most once per rev move and only
   while the tab is open, so the timeline never rides the state payload.
-  Honesty rules: a `KILLED` line that is the FINAL line of its watch log is
-  stamped from the file's mtime (the watcher writes it and exits, so mtime IS
-  the write time); any earlier `KILLED` in a re-used log shows "—", never a
-  guess. `QUARTER` progress noise never becomes an event. Severity chips
-  reuse the page's three colour tokens (halted/killed bad, stale/defer warn,
-  cycle/complete good); an unmapped kind renders as a plain pill, never an
-  error. No log (X9 unmounted) is an empty tab that says so, never an error
-  page. `tests/test_events.py` pins the parser.
+  Honesty rules (each one a 2026-09-01 data-critic finding, all pinned in
+  `tests/test_events.py`):
+  - a `KILLED`/`FAILED` line that is the FINAL line of its watch log is
+    stamped from the file's mtime (the watcher writes it and exits) but
+    rendered as an ESTIMATE — `~` prefix, minutes precision, tooltip naming
+    the inference; any earlier line of a re-used log shows "—", never a
+    guess.
+  - `FAILED` (a HandBrake that DIED — the most likely reason the tab is
+    open) is an event, and ladder exhaustion (`next: none-*`) is kind
+    `exhausted`, distinct from a routine `killed` retry.
+  - watcher/sync "GB" strings are relabelled **GiB** (`.watch-encode.sh` and
+    `.sync-to-library.sh` divide by 1073741824) so the tab can never be read
+    as disagreeing with History about the size of the original being deleted.
+  - runs of the identical event COLLAPSE to one row with "× N" (the driver
+    logs its wait reason every 300 s; a 21 h pause must not evict the whole
+    real history from the row budget).
+  - truncation is disclosed: the payload carries `total`, the tab label says
+    "(250 of 266)" and a footer names where the older history lives.
+  - a failed fetch renders "could not load — retrying" and retries on the
+    next frame, never a permanent spinner; an empty tab distinguishes "the
+    X9 is offline" (from `x9_online`) from "no events recorded yet".
+  `QUARTER` progress noise never becomes an event. Severity chips reuse the
+  page's three colour tokens; an unmapped kind renders as a plain pill,
+  never an error.
 - **A push renders on the History tab ONLY** (operator's call 2026-09-01): a
   recorded title has left the queue, and the synthetic "transferring" row the
   Queue tab used to draw up top read as work still waiting to encode. The
