@@ -893,8 +893,16 @@ second request.
   progress; `done > total` means a stale leftover from an older attempt.
   The measured rate is **held across no-growth frames** (SMB stat caching
   makes many frames report no growth; the rate/ETA caption used to blink in
-  and out every few seconds) and cleared only by a stall or a shrunken
-  partial (a new attempt). `tests/test_transfers.py` pins it.
+  and out every few seconds) but the hold is **bounded at 60 s of no growth**
+  (`RATE_HOLD_SECONDS`) — a `.partial` whose mtime keeps refreshing while its
+  size does not never trips `stalled`, and republishing a minutes-old rate
+  with a frozen countdown is the lie the bound prevents. Growth samples are
+  dt-weighted into the smoothed rate. Captions print the rate as **MiB/s**
+  (binary, matching the GiB operands and the sysmon axis — `/1e6` MB/s read
+  4.9% high) and mark the ETA `~` like every other extrapolation. An empty
+  queue while a push is still travelling says so instead of "nothing left"
+  (the driver's stop condition refuses to fire mid-sync; the page may not
+  claim what the driver won't). `tests/test_transfers.py` pins it.
 - `server._arrivals()` marks staged folders holding only a replenish
   `.partial` as *arriving* — present on disk but not yet encodable.
 - **A push renders on the History tab ONLY** (operator's call 2026-09-01): a
