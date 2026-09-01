@@ -450,6 +450,17 @@ td.q-crf{font-variant-numeric:tabular-nums;font-style:italic;color:var(--ink-3)}
 /* The live row shows the encoder's ACTUAL CRF -- a measurement, so it loses
    the italic that marks a planned value. */
 .rowenc td.q-crf{font-style:normal;font-weight:640;color:var(--hot-soft)}
+/* The in-cell CRF picker. Unlike the hover actions it is ALWAYS visible: it
+   carries the row's planned value, which is information the column exists to
+   show, so hiding it behind :hover would blank a whole column. Muted while
+   the row is following the default and solid once a human has chosen -- the
+   same italic-vs-upright vocabulary the plain cell used. */
+td.q-crf .crfcell{font-style:italic;color:var(--ink-3);background:transparent;
+                  border-color:transparent;padding:2px 2px}
+tr:hover td.q-crf .crfcell,td.q-crf .crfcell:focus-visible{
+  background:var(--panel-2);border-color:var(--line)}
+td.q-crf .crfcell.set{font-style:normal;font-weight:640;color:var(--ink-2);
+                      border-color:var(--line)}
 .rowskip td.q-mbps,.rowskip td.q-size{color:var(--ink-3);font-weight:400}
 
 /* ---- Row actions live in the title cell and appear on hover. The reveal is
@@ -662,4 +673,6 @@ footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3)
   /* No hover exists here, so the row actions are always shown. */
   .rowacts{opacity:1}
   .crfsel{padding:6px 6px;font-size:12px}
+  /* No hover on a phone, so the picker must read as a control unprompted. */
+  td.q-crf .crfcell{background:var(--panel-2);border-color:var(--line)}
 }

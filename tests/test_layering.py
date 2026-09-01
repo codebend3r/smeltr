@@ -20,8 +20,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # What `.autopilot.sh` executes on every cycle, via the `smeltr` launcher:
 #   smeltr next    -> next_title.py     smeltr verdict -> verdict.py
-#   smeltr record  -> record.py         (all three import core)
-DECISION_PATH = ("core", "verdict", "next_title", "record")
+#   smeltr record  -> record.py         smeltr crf     -> crf.py
+#   (all four import core)
+DECISION_PATH = ("core", "verdict", "next_title", "record", "crf")
 PIPELINE_DIR = "pipeline"
 DASHBOARD_DIR = "dashboard"
 

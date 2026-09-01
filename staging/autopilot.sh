@@ -340,7 +340,15 @@ while true; do
     # too big, DOWN 16-14-12-10 when it is too small. "none-*" means the
     # ladder is exhausted (22 still over, 10 still under, or the projection
     # flipped sides on an already-laddered rung).
-    crf=16
+    # The START rung. 16 unless a human picked one on the dashboard for this
+    # title -- `smeltr crf` reads queue_overrides.json and always answers with
+    # an integer, so a missing override, an unreadable file or a broken
+    # checkout all come back as 16 rather than idling the CPU. The numeric
+    # guard is belt-and-braces: an empty or non-numeric answer would reach
+    # HandBrake as -q and kill the encode at startup.
+    crf=$("$SMELTR" crf "$title" 2>/dev/null)
+    case "$crf" in ''|*[!0-9]*) crf=16 ;; esac
+    [ "$crf" = 16 ] || log "PLANNED $title -> CRF $crf (chosen on the dashboard)"
     kl="$X9/.watch-$(slug_of "$title").log"
     if grep -q '^KILLED|' "$kl" 2>/dev/null; then
       crf=$(grep '^KILLED|' "$kl" | tail -1 | sed 's/.*next: CRF //')

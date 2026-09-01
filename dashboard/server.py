@@ -16,8 +16,8 @@ Two modes, chosen by SMELTR_BIND (default 127.0.0.1):
 
 In both modes: Host header allowlisted (blocks DNS-rebinding); no CORS headers;
 the client can never name a path (fixed file set); mutations go only through
-core.save_overrides() (skip list + priority) and also require a custom X-Smeltr
-header a cross-origin page cannot attach; CSP is nonce-based with no external
+core.save_overrides() (skip list, priority, per-title CRF) and also require a
+custom X-Smeltr header a cross-origin page cannot attach; CSP is nonce-based with no external
 origins; every value reaches the DOM via textContent. A LAN bind refuses any
 non-private address and fails closed to loopback -- the token rides in the URL
 in cleartext HTTP, which is acceptable on a home LAN and not on the internet.
@@ -539,6 +539,10 @@ def build_state() -> dict:
             "syncing": _sync_in_flight(),
             "encode_note": note,
             "crf_choices": list(CRF_CHOICES),
+            # The picker's "auto" option is labelled with this, so a moved
+            # default renames the option instead of quietly meaning something
+            # else on rows nobody has touched.
+            "crf_default": core.CRF_DEFAULT,
             "stage_queue": pending,
             "stage_active": staging_now,
             "can_start": not live and not driver,
@@ -565,7 +569,10 @@ def build_state() -> dict:
 # What it deliberately does NOT do: judge, record, sync, or delete anything in
 # the library. A Smeltr-started encode produces a file on the staging drive and
 # stops. The driver is still the only thing that can delete an original.
-CRF_CHOICES = (16, 18, 20, 22, 24)
+# The menu is core's, not ours: the DRIVER now honours a hand-picked CRF (see
+# core.planned_crf / `smeltr crf`), so a value offered here that core rejects
+# would be accepted by the page and silently dropped on the way to HandBrake.
+CRF_CHOICES = core.CRF_CHOICES
 _encode_lock = threading.Lock()
 # Surfaced in the state payload and rendered as a banner. The parity gate and
 # the abort both run in background threads, long after their POST returned 200,
@@ -1413,6 +1420,8 @@ class Handler(BaseHTTPRequestHandler):
                 err = self._apply_skip(body)
             elif parsed.path == "/api/queue/order":
                 err = self._apply_order(body)
+            elif parsed.path == "/api/queue/crf":
+                err = self._apply_crf(body)
             elif parsed.path == "/api/encode/start":
                 err = self._apply_encode_start(body)
             elif parsed.path == "/api/encode/abort":
@@ -1445,7 +1454,11 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(title, str):
             return "expected {title: str, crf: int}"
         if crf is None:
-            crf = 16
+            # No CRF in the body means "whatever this row is planned at" --
+            # the same value the queue cell shows and the driver would use.
+            # Defaulting to a bare 16 here would have the start button
+            # quietly disagree with the number under the operator's cursor.
+            crf = core.planned_crf(title)
         if crf not in CRF_CHOICES:
             return "CRF must be one of %s" % ", ".join(
                 str(c) for c in CRF_CHOICES)
@@ -1715,6 +1728,50 @@ class Handler(BaseHTTPRequestHandler):
         if skipped:
             skip.append(row["title"])
         core.save_overrides(skip, pri)
+        return None
+
+    def _apply_crf(self, body: dict):
+        """Set (or clear) the CRF a queued title will START its encode at.
+
+        This is the fourth thing that steers the pipeline rather than watching
+        it, and the narrowest: it decides `-q` for ONE title's next encode and
+        nothing else. It cannot judge, sync, or delete -- but a CRF chosen too
+        high produces a legitimately-verdicted `good` encode that syncs and
+        replaces a ~90 GB original with a worse picture, so it is NOT in
+        LAN_WRITE_ROUTES. Loopback only, like skip and reorder.
+
+        `crf: null` clears the override back to the default rather than
+        writing CRF_DEFAULT as a choice: a row nobody has touched must keep
+        tracking the default if the default ever moves.
+        """
+        title, crf = body.get("title"), body.get("crf")
+        if not isinstance(title, str):
+            return "expected {title: str, crf: int|null}"
+        if crf is not None and (isinstance(crf, bool)
+                                or not isinstance(crf, int)
+                                or crf not in CRF_CHOICES):
+            return "CRF must be null or one of %s" % ", ".join(
+                str(c) for c in CRF_CHOICES)
+        matches = [r for r in self._queue_rows()
+                   if r["title"].lower() == title.lower()]
+        if not matches:
+            return "title is not in the queue"
+        if len(matches) > 1:
+            # Overrides key on the folder name; two distinct library files can
+            # share one. One click must never act on both.
+            return "two queue rows share this folder name; refusing to act on both"
+        row = matches[0]
+        # An encode already running is past the point where -q means anything;
+        # accepting the change would show a new number on a row whose encoder
+        # is committed to the old one for the next several hours.
+        if row.get("encoding"):
+            return "this title is encoding right now — abort it first"
+        ov = core.load_overrides()
+        crfs = {t: v for t, v in ov["crf"].items()
+                if t.lower() != row["title"].lower()}
+        if crf is not None:
+            crfs[row["title"]] = crf
+        core.save_overrides(ov["skip"], ov["priority"], crfs)
         return None
 
     def _apply_order(self, body: dict):

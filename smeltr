@@ -108,6 +108,10 @@ case "${1:-report}" in
   record) shift; exec "$PY" "$DIR/pipeline/record.py" "$@" ;;
   verdict) shift; exec "$PY" "$DIR/pipeline/verdict.py" "$@" ;;
   next) shift; exec "$PY" "$DIR/pipeline/next_title.py" "$@" ;;
+  # The CRF a hand-picked queue row should start at. Always prints an integer
+  # and exits 0 -- .autopilot.sh substitutes it into -q, and there is no
+  # failure here worth idling the CPU over.
+  crf) shift; exec "$PY" "$DIR/pipeline/crf.py" "$@" ;;
   open)   running || start >/dev/null 2>&1; exec open "$(cat "$DIR/url")" ;;
-  *)      echo "usage: smeltr {start|stop|restart|status|url|open|report [...]|record <folder> [...]}" >&2; exit 2 ;;
+  *)      echo "usage: smeltr {start|stop|restart|status|url|open|report [...]|record <folder> [...]|crf <title>}" >&2; exit 2 ;;
 esac

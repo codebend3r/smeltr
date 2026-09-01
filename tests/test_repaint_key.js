@@ -107,6 +107,23 @@ check('skipping moves qShape', (() => {
   const r = arriving(1 * GIB, 8e6); const s = Object.assign({}, r, { skipped: true });
   return key(api.qShape(r)) !== key(api.qShape(s));
 })());
+check('a hand-picked CRF moves qShape', (() => {
+  /* The picker's selected option is a NODE-level fact: the cell must be
+     rebuilt for the new rung to show. Left out of the key, the column would
+     keep rendering the old value until something else happened to change the
+     shape -- and the number in the CRF column is exactly what the operator
+     would check to confirm the click landed. */
+  const a = arriving(1 * GIB, 8e6); a.crf = 16; a.crf_set = false;
+  const b = Object.assign({}, a, { crf: 12, crf_set: true });
+  return key(api.qShape(a)) !== key(api.qShape(b));
+})());
+check('pinning the default rung still moves qShape', (() => {
+  /* 16-by-default and 16-by-choice render differently (muted vs solid), so
+     the flag has to be in the key even when the number does not move. */
+  const a = arriving(1 * GIB, 8e6); a.crf = 16; a.crf_set = false;
+  const b = Object.assign({}, a, { crf_set: true });
+  return key(api.qShape(a)) !== key(api.qShape(b));
+})());
 check('a queue position change moves qShape', (() => {
   const a = Object.assign(arriving(null, 0), { arriving_bytes: null, stage_queued: 1 });
   const b = Object.assign({}, a, { stage_queued: 2 });

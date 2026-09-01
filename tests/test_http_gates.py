@@ -141,9 +141,17 @@ class WriteGate(unittest.TestCase):
         with mock.patch.object(server, "LAN_WRITES", False):
             h = handler(peer="192.168.1.50", local="192.168.1.9")
             for route in ("/api/queue/skip", "/api/queue/order",
+                          "/api/queue/crf",
                           "/api/encode/start", "/api/encode/abort",
                           "/api/stage/start", "/api/stage/cancel"):
                 self.assertFalse(h._writes_ok(route), route)
+
+    def test_the_crf_picker_is_NOT_lan_writable(self):
+        """It looks like a preference and is not. A CRF chosen too high
+        produces an encode the verdict legitimately calls `good`, which syncs
+        and replaces a ~90 GB original with a worse picture -- the same class
+        of consequence as un-skipping, not the same class as pausing."""
+        self.assertNotIn("/api/queue/crf", server.LAN_WRITE_ROUTES)
 
     def test_an_unnamed_route_gets_the_STRICT_answer(self):
         """A caller that forgets the route must not fall through to the loose

@@ -168,7 +168,7 @@ class OfflineRootKeepsStagedRows(unittest.TestCase):
         core.offline_roots = lambda: [root]
         core.live_encodes = lambda: []
         core.ledger = lambda: []
-        core.load_overrides = lambda: {"skip": [], "priority": [],
+        core.load_overrides = lambda: {"skip": [], "priority": [], "crf": {},
                                        "corrupt": False}
         core.load_index = lambda: [
             {"path": root + "/A/Alpha (2001)/Alpha (2001) Remux-2160p.mkv",

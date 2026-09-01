@@ -22,6 +22,7 @@ on a `good` verdict. It calls this repo on every cycle.
 | `pipeline/core.py` | **YES** — the verdict and queue logic | no |
 | `pipeline/verdict.py` | **YES** — exit code decides sync-or-halt | no |
 | `pipeline/next_title.py` | **YES** — picks what encodes next | no |
+| `pipeline/crf.py` | **YES** — picks the CRF the next encode starts at | no |
 | `pipeline/record.py` | **YES** — writes the ledger | no |
 | `dashboard/server.py` | no — never imported by the decision path (but see below: it now spawns/kills encodes) | mostly |
 | `dashboard/sysmon.py` | no — imported only by `server.py` | mostly |
@@ -38,6 +39,7 @@ Repo layout:
 
 ```
 smeltr              launcher — the only interface `.autopilot.sh` calls
+                    (`next` · `verdict` · `record` · `crf`)
 pipeline/           DECISION PATH. pause the driver before editing
 dashboard/          server, resource sampler, terminal report
 web/                index.html · app.css · theme.js · app.js
@@ -253,6 +255,39 @@ ledger.jsonl        the irreplaceable record, beside the launcher
    client-side. A start in flight renders through the same
    unsettled-intent pattern as the switch (`driverWant`), so a refused
    start snaps back instead of lying.
+6. Per-title start CRF (2026-09-01): `POST /api/queue/crf` writes a
+   `{"crf": {title: int}}` map into `queue_overrides.json`, and **the DRIVER
+   reads it** — `.autopilot.sh` asks `smeltr crf "$title"` for the start rung
+   immediately before it spawns HandBrake, in place of the hard-coded 16.
+   That is the whole point: the dashboard starts at most one encode by hand,
+   so a picker only the dashboard honoured would be a lie on every row the
+   driver starts, which is nearly all of them. It is the FIRST override the
+   driver reads for anything other than *which* title runs.
+
+   **The menu IS the ladder, and `core.CRF_CHOICES` is where it lives** —
+   10·12·14·16·18·20·22, imported by `dashboard/server.py` rather than
+   duplicated. It used to be 16/18/20/22/24 in `server.py` alone; 24 was a
+   rung `.watch-encode.sh` maps from nowhere, so a blowup there was killed
+   and never retried — a dead end wearing the costume of a choice. Now that
+   core owns it, a value the page offers is one the driver will accept.
+
+   **Consequence the operator gets, accepted:** the watcher cannot tell
+   "started at 20 by hand" from "laddered up to 20", so the
+   opposite-direction rule still applies — a hand-picked 20 that projects
+   TOO SMALL exhausts straight to `none-too-small` (the ERROR state) instead
+   of stepping back down. Picking a rung narrows the ladder to one direction.
+
+   The ladder still OUTRANKS the plan: a `KILLED|` line in the watch log wins,
+   because a retry after a measured, rejected projection is not something a
+   choice made hours earlier should override. `smeltr crf` always prints one
+   integer and exits 0 — a missing override, an unreadable file, an unknown
+   title and a broken checkout all answer 16, because its stdout becomes `-q`
+   and there is no failure here worth idling the CPU over. NOT in
+   `LAN_WRITE_ROUTES`: it looks like a preference and is not. A CRF chosen too
+   high produces an encode the verdict legitimately calls `good`, which syncs
+   and replaces a ~90 GB original with a worse picture — the same class of
+   consequence as un-skipping, not the same class as pausing.
+   `tests/test_planned_crf.py` and `tests/test_crf_picker.js` pin it.
 
 ### The driver is CONCURRENT as of 2026-08-22
 
@@ -442,6 +477,25 @@ skips is a suite nobody notices has stopped running:
   recalibration was reasoned about, frozen. `FixtureIntegrity` replays the
   frozen rows on EVERY machine, so the fixture cannot rot unnoticed on the one
   box that has a live ledger.
+
+Two suites landed 2026-09-01 with the per-title CRF picker:
+
+- `test_planned_crf.py` — the override round-trip and the `smeltr crf`
+  process contract. The one it exists for is
+  `test_a_skip_does_not_drop_the_crf_map`: a two-argument `save_overrides`
+  erasing every hand-picked CRF is silent and only shows up hours later as
+  an encode at the wrong rung.
+- `test_crf_picker.js` — drives the real `crfPicker`/`rowActions` out of
+  `web/app.js`: the menu is the ladder and nothing else, `auto` sends
+  `crf: null` rather than pinning the default, the encoding row gets no
+  control, and there is exactly ONE CRF control per row.
+
+  The pointer half is manual, the way the pause toggle's is, and was run:
+  `document.elementFromPoint` at the cell centre lands on the `<select>`
+  under both a fine and a coarse pointer, and a real `Input.dispatchKeyEvent`
+  type-ahead on the live page wrote the override end to end. (`ArrowDown`
+  does NOT work for this on macOS — it opens the popup instead of moving the
+  value; type-ahead is what fires a genuine `change`.)
 
 Three suites were added 2026-08-28 to cover the highest-stakes gaps:
 
@@ -664,14 +718,24 @@ fails in whichever path was missed:
 `.replenish-queue.sh` and `.ssh-xfer.sh` are root-agnostic (index paths and
 prefix mapping) and need no edit when a root is added.
 
-## Queue overrides (skip + drag-to-reorder)
+## Queue overrides (skip + drag-to-reorder + per-title CRF)
 
 `queue_overrides.json` lives beside the ledger:
-`{"skip": [titles], "priority": [titles]}` — exact folder names, matched
-case-insensitively. Written ONLY by `core.save_overrides()` (atomic
-`os.replace`, so the driver can never see a torn file); the dashboard's
-`POST /api/queue/skip` and `POST /api/queue/order` are the only callers, and
-they accept only titles the queue itself just reported — never a path.
+`{"skip": [titles], "priority": [titles], "crf": {title: int}}` — exact
+folder names, matched case-insensitively. Written ONLY by
+`core.save_overrides()` (atomic `os.replace`, so the driver can never see a
+torn file); the dashboard's `POST /api/queue/skip`, `/api/queue/order` and
+`/api/queue/crf` are the only callers, and they accept only titles the queue
+itself just reported — never a path.
+
+**`save_overrides(skip, priority, crf=None)` carries the CRF map forward when
+it is omitted.** Three callers predate the map and pass two arguments; making
+them pass a third they do not care about is how a skip click silently resets
+every hand-picked CRF, with no error and no sign until an encode starts at
+16. The read-modify-write is safe because every caller runs under the
+server's `_ov_lock`. A CRF that is not in `core.CRF_CHOICES` is DROPPED on
+read, never clamped: the value becomes `-q`, and guessing a neighbouring rung
+on the operator's behalf is a multi-hour encode nobody asked for.
 
 Who honours it:
 
@@ -701,8 +765,26 @@ Who honours it:
 - A skipped title stays **in place** in the queue — faded, title struck
   through, rank "—", with a restore button. A skip that vanished (or sank out
   of view) would read as "finished".
-- There is no dedicated skip column any more: skip/restore, the CRF picker +
-  "start encode" (only on the single `ready` row, only while `can_start`),
+- `core.planned_crf()` answers the start rung, and `core.queue()` puts it on
+  every row as `crf` + `crf_set` (the value AND whether a human chose it —
+  the page renders a hand-picked 16 differently from a default 16, and only
+  the flag can tell them apart once the number is the same). Three consumers
+  read the one function: the queue cell, the dashboard's start button, and
+  `smeltr crf`, which is what `.autopilot.sh` asks.
+- **The CRF picker lives in the CRF COLUMN, on every unskipped row that is
+  not encoding** — that is what "select the CRF on anything that has not
+  started yet" means, and the column already existed to show the number. Its
+  `auto` option CLEARS the override rather than pinning the current default
+  as a choice; with no way back a row is opted out of a default that later
+  moves and nothing on screen says so. The encoding row is read-only text
+  (`-q` is fixed for the next several hours), skipped rows still claim no
+  number. `crf`/`crf_set` are in `qShape()` — they decide which option the
+  cell renders, so they are shape, not a live number.
+- There is no dedicated skip column any more: skip/restore,
+  "start encode" (only on the single `ready` row, only while `can_start`, and
+  it starts at the row's planned CRF — the hover actions carry NO second CRF
+  control, which was a rung that applied only to a hand-started encode
+  sitting one column away from a number that meant something else),
   "stage" (only on library-only rows: not staged, not arriving), and abort
   (only on the encoding row) all live in the title cell as hover
   actions — revealed on `:hover`/`:focus-within`, always visible on coarse

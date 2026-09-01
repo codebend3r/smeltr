@@ -720,6 +720,60 @@ function arm(b,acts,armedLabel,fire){
   },6000);
 }
 
+/* The CRF picker. It writes an override the DRIVER reads (core.planned_crf,
+   via `smeltr crf`), so this control decides -q for a title the driver may
+   not reach for hours -- not just for a hand-started encode.
+
+   "auto" is a real option, not decoration: it CLEARS the override so the row
+   goes back to tracking the pipeline default. Without it there is no way out
+   of a hand-picked value except picking the default and pinning it, which
+   silently opts the row out of a default that later moves.
+
+   A repaint while the menu is open would tear the <select> out from under
+   the pointer, so an open picker defers the rebuild the way an armed confirm
+   and an active drag already do (crfOpen), and releases it on blur. */
+var crfOpen=null;
+function crfPicker(r,s){
+  var choices=(s&&s.crf_choices)||[10,12,14,16,18,20,22];
+  var def=(s&&s.crf_default)||16;
+  var sel=el("select","crfsel crfcell"+(r.crf_set?" set":""));
+  sel.setAttribute("aria-label","Start CRF for "+r.title);
+  sel.title=r.crf_set
+    ? "Chosen by hand — this title's encode starts at CRF "+r.crf+
+      ". The auto-kill ladder may still step it from there."
+    : "Following the pipeline default (CRF "+def+"). Pick a value to fix "+
+      "this title's starting CRF; the ladder may still step it from there.";
+  var auto=el("option",null,def+" (auto)"); auto.value="";
+  sel.appendChild(auto);
+  choices.forEach(function(c){
+    var o=el("option",null,String(c)); o.value=String(c);
+    sel.appendChild(o);
+  });
+  sel.value=r.crf_set?String(r.crf):"";
+  /* Interacting with the picker must not start a drag on the row, and must
+     not arm/disarm anything in the title cell beside it. */
+  sel.addEventListener("mousedown",function(e){ e.stopPropagation(); });
+  sel.addEventListener("click",function(e){ e.stopPropagation(); });
+  sel.addEventListener("focus",function(){ crfOpen=r.title; });
+  sel.addEventListener("blur",function(){
+    if(crfOpen!==r.title) return;
+    crfOpen=null;
+    if(last.pending){ last.pending=false; last.key=null;
+      if(last.state) paint(last.state); }
+  });
+  sel.addEventListener("change",function(){
+    var v=sel.value===""?null:parseInt(sel.value,10);
+    /* Released on blur, not here: the response repaints the table and the
+       fresh <select> reads the committed value, so leaving it set would
+       wedge the deferral against a node that no longer exists. */
+    crfOpen=null;
+    sel.disabled=true;
+    api("/api/queue/crf",{title:r.title,crf:v})
+      .finally(function(){ sel.disabled=false; });
+  });
+  return sel;
+}
+
 function rowActions(r,s){
   var acts=el("span","rowacts");
   if(r.encoding){
@@ -738,25 +792,20 @@ function rowActions(r,s){
     return acts;
   }
   if(r.ready && s && s.can_start!==false){
-    var sel=el("select","crfsel");
-    sel.title="CRF for this encode — 16 is the pipeline default; 22 and 24 are "+
-      "outside the auto-retry ladder";
-    (s.crf_choices||[16,18,20,22,24]).forEach(function(c){
-      var o=el("option",null,"CRF "+c); o.value=String(c);
-      if(c===16) o.selected=true;
-      sel.appendChild(o);
-    });
-    /* Interacting with the select must not start a drag on the row. */
-    sel.addEventListener("mousedown",function(e){ e.stopPropagation(); });
+    /* No CRF control here any more. The picker lives in the CRF COLUMN, on
+       every queued row, and the driver honours it too -- a second picker in
+       the hover actions was a rung that applied only to a hand-started
+       encode, sitting one column away from a number that meant something
+       else. One control, one value, both consumers. */
     var go=el("button","act go","start encode");
     go.type="button"; go.dataset.title=r.title;
-    go.title="Start encoding this title now at the chosen CRF";
+    go.title="Start encoding this title now at CRF "+r.crf;
     go.addEventListener("click",function(){
-      arm(go,acts,"start at "+sel.options[sel.selectedIndex].text+"?",function(){
-        api("/api/encode/start",{title:r.title,crf:parseInt(sel.value,10)});
+      arm(go,acts,"start at CRF "+r.crf+"?",function(){
+        api("/api/encode/start",{title:r.title,crf:r.crf});
       });
     });
-    acts.appendChild(sel); acts.appendChild(go);
+    acts.appendChild(go);
   }
   if(!r.skipped && !r.staged && r.arriving_bytes==null){
     if(r.stage_queued!=null){
@@ -901,6 +950,7 @@ function updateProgress(s){
    decide which nodes exist. */
 function qShape(r){
   return [r.title,r.mbps,r.bytes,r.location,r.src_dir,
+          r.crf,!!r.crf_set,
           !!r.skipped,!!r.pinned,!!r.encoding,!!r.ready,!!r.staged,!!r.next_up,
           !!r.error,r.error_note||null,
           r.arriving_bytes!=null,!!r.arriving_stalled,
@@ -956,16 +1006,23 @@ function renderQueue(q, s, live, xfers, hist){
       tr.appendChild(el("td","n mono q-mbps "+band,r.mbps.toFixed(1)));
       tr.appendChild(el("td","n mono q-size",gib(r.bytes)));
       /* CRF: the encoding row shows the encoder's ACTUAL value (the ladder
-         may have stepped it down); everything else shows the planned start,
-         muted, because every encode begins at 16. Skipped rows will not
-         encode, so no number is claimed. */
+         may have stepped it down) and is READ-ONLY -- -q is fixed for the
+         next several hours, so an editable control there would be a promise
+         nothing can keep. Every other unskipped row is a PICKER: the driver
+         asks `smeltr crf` for this exact value before it spawns HandBrake,
+         so the choice holds whether the encode is started here or by the
+         driver hours from now. Skipped rows will not encode, so no number is
+         claimed. */
       var lc=liveCrf[r.title.toLowerCase()];
       var crfTd;
       if(r.skipped){ crfTd=el("td","n q-crf","—"); }
-      else if(r.encoding && lc!=null){ crfTd=el("td","n q-crf",String(lc)); }
+      else if(r.encoding){
+        crfTd=el("td","n q-crf",String(lc!=null?lc:r.crf));
+        crfTd.title="The CRF this encode is actually running at";
+      }
       else{
-        crfTd=el("td","n q-crf","16");
-        crfTd.title="Planned start — encodes begin at CRF 16 unless started by hand; the ladder may step down";
+        crfTd=el("td","n q-crf");
+        crfTd.appendChild(crfPicker(r,s));
       }
       tr.appendChild(crfTd);
       var titleTd=el("td","title-cell");
@@ -1262,11 +1319,12 @@ function paint(s){
     : [s.ledger, xk]);
   if(last.key!==key){
     /* An armed confirm or an active drag must survive the 2s SSE repaint. */
-    if(tab==="queue"&&(drag||armedTitle!==null)){ last.pending=true; }
+    if(tab==="queue"&&(drag||armedTitle!==null||crfOpen!==null)){ last.pending=true; }
     else{ last.key=key;
       (tab==="queue"?renderQueue(s.queue,
           Object.assign({},s.summary,
             {can_start:s.can_start,crf_choices:s.crf_choices,
+             crf_default:s.crf_default,
              /* A busy wire changes the button's PROMISE from "pull now" to
                 "wait in line"; saying "stage" while five titles queue ahead
                 would misstate what the click does. */

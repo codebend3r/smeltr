@@ -120,14 +120,35 @@ class EncodeFlagParity(unittest.TestCase):
             for flag in self.SHAPE:
                 self.assertTrue(flag in src, f"{rel} is missing {flag}")
 
-    def test_crf_menu_is_the_documented_set(self):
-        """16/18/20/22/24. 22 and 24 sit OUTSIDE the ladder on purpose.
+    def test_crf_menu_is_the_ladder(self):
+        """10..22 even -- the menu IS .watch-encode.sh's ladder, exactly.
 
-        .watch-encode.sh maps only 16->18->20, so a blowup at 22 or 24 is
-        auto-killed and never restarted. Widening this menu silently adds more
-        of those dead ends.
+        The old menu carried 24, which no ladder map reaches: a blowup there
+        was auto-killed and never restarted, a dead end wearing the costume of
+        a choice. Every rung offered here must be one the watcher can step
+        from, or the picker hands the operator a trap.
         """
-        self.assertEqual(server.CRF_CHOICES, (16, 18, 20, 22, 24))
+        self.assertEqual(core.CRF_CHOICES, (10, 12, 14, 16, 18, 20, 22))
+        self.assertEqual(server.CRF_CHOICES, core.CRF_CHOICES)
+        self.assertIn(core.CRF_DEFAULT, core.CRF_CHOICES)
+        watch = read("staging/watch-encode.sh")
+        for rung in core.CRF_CHOICES:
+            self.assertIn(str(rung), watch,
+                          f"CRF {rung} is on the menu but .watch-encode.sh's "
+                          f"ladder never mentions it")
+
+    def test_the_driver_asks_for_the_planned_crf(self):
+        """A picker the driver ignores is a lie on every row it starts.
+
+        The dashboard reaches HandBrake for at most one encode; .autopilot.sh
+        starts all the others. It must consult `smeltr crf` for the start rung
+        rather than hard-coding 16, or a CRF chosen in the queue applies only
+        to the one title the operator happens to launch by hand.
+        """
+        ap = read("staging/autopilot.sh")
+        self.assertIn('"$SMELTR" crf "$title"', ap)
+        self.assertIn('crf) shift; exec "$PY" "$DIR/pipeline/crf.py"',
+                      read("smeltr"))
 
 
 # ------------------------------------------------------------- library roots

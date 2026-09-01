@@ -63,6 +63,24 @@ STOP_MBPS = 70.0
 # and from every queue total; deleting the file restores stock behaviour.
 OVERRIDES = os.path.join(SMELTR_DIR, "queue_overrides.json")
 
+# The CRF menu. It lives HERE, not in the dashboard, because the driver now
+# reads a hand-picked CRF out of the overrides file (`smeltr crf <title>`) --
+# so the set of values a person may choose is a decision-path fact, and one
+# widened in server.py alone would let the page offer a rung the driver would
+# refuse. dashboard/server.py imports this tuple rather than keeping its own.
+#
+# The menu IS the ladder, exactly: .watch-encode.sh maps 16->18->20->22 when a
+# projection runs too big and 16->14->12->10 when it runs too small. Nothing
+# outside 10..22 belongs here -- a blowup at an off-ladder rung is auto-killed
+# and never retried, which is a dead end wearing the costume of a choice.
+#
+# Consequence of a hand-picked start rung, accepted: the watcher cannot tell
+# "started at 20 by hand" from "laddered up to 20", so the opposite-direction
+# rule still applies. A hand-picked 20 that comes in TOO SMALL exhausts to
+# none-too-small (the ERROR state) rather than stepping back down.
+CRF_CHOICES = (10, 12, 14, 16, 18, 20, 22)
+CRF_DEFAULT = 16
+
 # Pause-after-current, from the dashboard: an empty flag file beside the
 # ledger. While it exists next_title.py answers exit 3 -- the driver's
 # existing wait-and-recheck path -- so the running encode still finishes,
@@ -100,36 +118,84 @@ def set_paused(on: bool) -> None:
             pass
 
 
+_EMPTY_OV = {"skip": [], "priority": [], "crf": {}, "corrupt": False}
+
+
 def load_overrides() -> dict:
-    """{"skip": [titles], "priority": [titles]}. Tolerant of a missing or
-    malformed file -- the driver must never crash on a UI-written file."""
+    """{"skip": [titles], "priority": [titles], "crf": {title: int}}.
+    Tolerant of a missing or malformed file -- the driver must never crash on
+    a UI-written file."""
     try:
         with open(OVERRIDES, encoding="utf-8") as fh:
             raw = json.load(fh)
     except OSError:
-        return {"skip": [], "priority": [], "corrupt": False}
+        return dict(_EMPTY_OV)
     except ValueError:
         # Present but unparseable: fall back to stock order but SAY SO --
         # summary() carries the flag and both views raise a loud banner,
         # because silently dropping the user's skips is the worst failure.
-        return {"skip": [], "priority": [], "corrupt": True}
+        return dict(_EMPTY_OV, corrupt=True)
     if not isinstance(raw, dict):
-        return {"skip": [], "priority": [], "corrupt": True}
+        return dict(_EMPTY_OV, corrupt=True)
 
     def strs(key):
         v = raw.get(key)
         return [s for s in v if isinstance(s, str)] if isinstance(v, list) else []
-    return {"skip": strs("skip"), "priority": strs("priority"), "corrupt": False}
+
+    # A CRF the menu no longer offers is DROPPED, not clamped: the value is
+    # about to be handed to HandBrake as -q, and guessing a neighbour rung on
+    # the operator's behalf is a multi-hour encode nobody asked for. Falling
+    # back to CRF_DEFAULT is the same thing the row would have done with no
+    # override at all, which is the only safe reading of an unreadable one.
+    crf = raw.get("crf")
+    crfs = {}
+    if isinstance(crf, dict):
+        for title, value in crf.items():
+            if isinstance(title, str) and isinstance(value, int) \
+                    and not isinstance(value, bool) and value in CRF_CHOICES:
+                crfs[title] = value
+    return {"skip": strs("skip"), "priority": strs("priority"),
+            "crf": crfs, "corrupt": False}
 
 
-def save_overrides(skip: list[str], priority: list[str]) -> None:
+def planned_crf(title: str) -> int:
+    """The CRF this title's NEXT encode starts at -- the hand-picked value if
+    there is one, otherwise CRF_DEFAULT.
+
+    Three callers, and they must agree or the page lies: the queue row the
+    dashboard renders, the dashboard's own start button, and `smeltr crf`,
+    which is what .autopilot.sh asks before it spawns HandBrake. Matched
+    case-insensitively, like every other override key.
+
+    The CRF LADDER still outranks this. A retry after an auto-kill is the
+    watcher's call, not a plan made hours earlier against a projection that
+    has since been measured and rejected.
+    """
+    low = title.lower()
+    for key, value in load_overrides()["crf"].items():
+        if key.lower() == low:
+            return value
+    return CRF_DEFAULT
+
+
+def save_overrides(skip: list[str], priority: list[str],
+                   crf: Optional[dict] = None) -> None:
     """Atomic write via os.replace: the driver reads this file between
-    cycles, and a torn read must be impossible, not merely unlikely."""
+    cycles, and a torn read must be impossible, not merely unlikely.
+
+    `crf=None` means CARRY THE EXISTING MAP FORWARD. Three callers predate the
+    CRF map and pass two arguments; making them pass a third they do not care
+    about is how a skip click silently resets every hand-picked CRF. Every
+    caller runs under the server's _ov_lock, so the read-modify-write here
+    cannot interleave with another write.
+    """
+    if crf is None:
+        crf = load_overrides()["crf"]
     os.makedirs(SMELTR_DIR, exist_ok=True)
     tmp = OVERRIDES + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(json.dumps({"skip": skip, "priority": priority},
+        fh.write(json.dumps({"skip": skip, "priority": priority, "crf": crf},
                             ensure_ascii=False, indent=2) + "\n")
         # fsync before the replace: os.replace alone guarantees atomicity,
         # not durability, and a crash could leave a zero-length file that
@@ -801,10 +867,17 @@ def queue(min_mbps: float = STOP_MBPS, live: Optional[list] = None,
     ov = load_overrides()
     skips = {t.lower() for t in ov["skip"]}
     pri = {t.lower(): i for i, t in enumerate(ov["priority"])}
+    crfs = {t.lower(): v for t, v in ov["crf"].items()}
     for r in rows:
         low_t = r["title"].lower()
         r["skipped"] = low_t in skips
         r["pinned"] = (not r["skipped"]) and low_t in pri
+        # The row carries the planned START rung and whether a human chose
+        # it. Both, not just the number: the page renders a hand-picked 16
+        # differently from the default 16, and only the flag can tell them
+        # apart once the value is the same.
+        r["crf"] = crfs.get(low_t, CRF_DEFAULT)
+        r["crf_set"] = low_t in crfs
         # The ladder's ERROR state rides the row so every view (queue tab,
         # report, pick) reads ONE source. Checked regardless of staged: a
         # marker whose folder was hand-removed still needs its red row --
