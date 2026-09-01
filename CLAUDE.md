@@ -891,10 +891,20 @@ second request.
   by the same exactly-one bucket match as sync — never a first-letter guess.
   A `.partial` that stops growing for >120 s reports `stalled`, never
   progress; `done > total` means a stale leftover from an older attempt.
+  The measured rate is **held across no-growth frames** (SMB stat caching
+  makes many frames report no growth; the rate/ETA caption used to blink in
+  and out every few seconds) and cleared only by a stall or a shrunken
+  partial (a new attempt). `tests/test_transfers.py` pins it.
 - `server._arrivals()` marks staged folders holding only a replenish
   `.partial` as *arriving* — present on disk but not yet encodable.
-- Both tabs render transfer bars, and this has swung wrong in BOTH directions.
-  Transfers were once omitted from `paint()`'s repaint key entirely, and the
+- **A push renders on the History tab ONLY** (operator's call 2026-09-01): a
+  recorded title has left the queue, and the synthetic "transferring" row the
+  Queue tab used to draw up top read as work still waiting to encode. The
+  Queue tab keeps its *arrival* bars (replenish/stage pulls landing on the
+  X9); History draws the push as the full-width row under the ledger row.
+  Transfers therefore sit in the LEDGER repaint key only.
+- Transfer bars have swung wrong in BOTH directions. Transfers were once
+  omitted from `paint()`'s repaint key entirely, and the
   row painted a single still frame at ~0 bytes for a whole 45-minute push.
   Putting the raw byte counts IN the key fixed that and broke the other edge:
   the key then changed on every 2 s SSE frame, so the whole table was torn

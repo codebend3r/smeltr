@@ -154,23 +154,19 @@ check('a stalled pull draws no bar, ever',
 check('a stalled pull says it is not moving',
   api.refs()['arr|croods'].txt.textContent.indexOf('not moving') >= 0);
 
-console.log('captions keep their units and their destination');
-check('the queue tab names the NAS being copied to',
-  api.xferState(xfer(9 * GIB), false).text.indexOf('copied to Vhagar') >= 0);
-check('the History tab does not repeat it (the pills are on the row above)',
-  api.xferState(xfer(9 * GIB), true).text.indexOf('copied to') < 0 &&
-  api.xferState(xfer(9 * GIB), true).text.indexOf('copied') >= 0);
-check('BOTH tabs carry rate and ETA — the History row has a full row now',
+console.log('captions keep their units and do not repeat the destination');
+check('the caption does not repeat the destination (the pills are on the ledger row above)',
+  api.xferState(xfer(9 * GIB)).text.indexOf('copied to') < 0 &&
+  api.xferState(xfer(9 * GIB)).text.indexOf('copied') >= 0);
+check('a moving push carries rate and ETA',
   ['MB/s', 'left'].every(w =>
-    api.xferState(xfer(9 * GIB), true).text.indexOf(w) >= 0 &&
-    api.xferState(xfer(9 * GIB), false).text.indexOf(w) >= 0));
-check('a stalled push claims no rate and no ETA on either tab',
-  [true, false].every(t =>
-    api.xferState(xfer(9 * GIB, { stalled: true }), t).text.indexOf('MB/s') < 0));
+    api.xferState(xfer(9 * GIB)).text.indexOf(w) >= 0));
+check('a stalled push claims no rate and no ETA',
+  api.xferState(xfer(9 * GIB, { stalled: true })).text.indexOf('MB/s') < 0);
 check('both operands carry GiB',
-  (api.xferState(xfer(9 * GIB), false).text.match(/GiB/g) || []).length === 2);
+  (api.xferState(xfer(9 * GIB)).text.match(/GiB/g) || []).length === 2);
 check('a stalled push is never given a percentage bar',
-  api.xferState(xfer(9 * GIB, { stalled: true }), false).shape === 'stall');
+  api.xferState(xfer(9 * GIB, { stalled: true })).shape === 'stall');
 check('an over-large partial is a stale leftover, not 110% progress',
   api.arrState(Object.assign(arriving(80 * GIB, 8e6), {})).shape === 'stall');
 

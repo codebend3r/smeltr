@@ -302,18 +302,23 @@ def _transfers() -> list:
             continue
         seen.add(folder)
         rec = _xfer_track.get(folder)
-        rate = None
         if rec is None:
             rec = {"done": done, "t": now, "grew": now}
             _xfer_track[folder] = rec
         elif done > rec["done"]:
             dt = now - rec["t"]
             if dt > 0:
-                rate = (done - rec["done"]) / dt
+                # Mean over the gap since the last growth frame (SMB stat
+                # caching makes many frames report no growth at all), lightly
+                # smoothed so the ETA doesn't thrash between bursts.
+                inst = (done - rec["done"]) / dt
+                prev = rec.get("rate")
+                rec["rate"] = inst if prev is None else (prev + inst) / 2
             rec.update(done=done, t=now, grew=now)
         elif done < rec["done"]:
             # A smaller partial is a NEW attempt; restart tracking.
             rec.update(done=done, t=now, grew=now)
+            rec.pop("rate", None)
         try:
             fresh_mtime = (time.time() - os.path.getmtime(part)) < 120
         except OSError:
@@ -325,6 +330,12 @@ def _transfers() -> list:
             stalled = True
         pct = (round(done / total * 100, 1)
                if not stalled and total > 0 else None)
+        # The held rate is reported on EVERY non-stalled frame, not only the
+        # frames where growth was observed: a no-growth frame is a stat-cadence
+        # artifact, and a rate/ETA caption that blinked in and out every few
+        # seconds read as the page glitching. Stall (>120 s without growth) is
+        # what clears it -- that is a fact about the wire, not the sampling.
+        rate = None if stalled else rec.get("rate")
         rows.append({
             "title": folder,
             "nas": core.volume_name(root),

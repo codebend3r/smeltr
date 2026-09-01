@@ -870,9 +870,13 @@ function rowActions(r,s){
 }
 
 /* ---- live numbers, written IN PLACE ---------------------------------------
-   Three cells draw a growing transfer: an arriving queue row, the synthetic
-   "transferring" row above the queue, and the History tab's "Moved to" cell.
-   All three used to be redrawn by rebuilding the entire table once per SSE
+   Two places draw a growing transfer: an arriving queue row, and the History
+   tab's full-width row under its ledger row. (A push used to render on the
+   Queue tab too, as a synthetic "transferring" row up top — removed
+   2026-09-01, operator's call: a recorded title has left the queue, and a
+   row there read as work still waiting to encode. History is the one tab
+   that draws a push.) All of these used to be redrawn by rebuilding the
+   entire table once per SSE
    frame, because paint()'s repaint key carried their byte counts and those
    change on every frame. That rebuild replayed the pane's fade-in and reset
    the scroll position, so the page visibly blinked every two seconds for the
@@ -924,15 +928,12 @@ function arrState(r){
        dur((r.bytes-r.arriving_bytes)/r.arriving_rate_bps)+" left";
   return {shape:"bar",pull:true,label:"arriving",pct:p,text:t};
 }
-/* Both operands carry their unit and the queue-tab sentence names the file
-   being moved — three sizes share that row and only labels keep them apart.
-   The History tab's pair still carries the destination on the row above, so
-   it does not repeat it. Rate and ETA are on BOTH tabs: the History row that
-   once had to omit them for want of space now owns a full row of its own. */
-function xferState(t,ledger){
+/* Both operands carry their unit. The destination is NOT repeated in the
+   caption: the ledger row directly above carries the NAS and folder pills.
+   Rate and ETA fit because the transfer owns a full row of its own. */
+function xferState(t){
   var stall=!!t.stalled;
-  var moved=gib(t.done_bytes)+" of "+gib(t.total_bytes)+
-            (ledger?" copied":" copied to "+t.nas);
+  var moved=gib(t.done_bytes)+" of "+gib(t.total_bytes)+" copied";
   var txt = stall ? "no progress — "+moved
           : t.pct!=null ? pct(t.pct)+" · "+moved : moved;
   if(!stall && t.rate_bps>0)
@@ -947,11 +948,9 @@ function updateProgress(s){
       if(r.skipped||r.encoding||r.arriving_bytes==null) return;
       progWrite("arr|"+r.title.toLowerCase(), arrState(r));
     });
+  }else if(tab==="ledger"){
     (s.transfers||[]).forEach(function(t){
-      progWrite("xfer|"+t.title, xferState(t,false)); });
-  }else{
-    (s.transfers||[]).forEach(function(t){
-      progWrite("led|"+t.title, xferState(t,true)); });
+      progWrite("led|"+t.title, xferState(t)); });
   }
 }
 
@@ -971,20 +970,19 @@ function xShape(t){
   return [t.title,t.nas,t.src_dir,!!t.stalled,t.total_bytes,t.pct!=null];
 }
 
-function renderQueue(q, s, live, xfers, hist){
+function renderQueue(q, s, live){
   progRefs={};
   var liveCrf={};
   (live||[]).forEach(function(e){
     if(e.crf!=null) liveCrf[(e.folder||e.title).toLowerCase()]=e.crf;
   });
   var pane=document.getElementById("pane"); pane.replaceChildren();
-  /* The offline warning renders even when transfers keep the table
-     non-empty: an unmounted NAS must never look like a finished job. */
+  /* An unmounted NAS must never look like a finished job. */
   if(s && s.library_complete===false)
     pane.appendChild(el("div","empty",
       "Library not fully mounted — "+(s.roots_offline||[]).join(", ")+
       " offline. This list is PARTIAL, not empty."));
-  if(!q.length && !(xfers&&xfers.length)){
+  if(!q.length){
     if(!(s && s.library_complete===false))
       pane.appendChild(el("div","empty","Nothing left above the stop threshold."));
     return; }
@@ -1106,36 +1104,12 @@ function renderQueue(q, s, live, xfers, hist){
         tr.classList.add("pin-end");
       return tr;
     }));
-  /* A recorded title leaves the queue before its file has finished travelling
-     back to the NAS. While the .partial grows in the library folder the title
-     gets a synthetic, non-draggable row up top: "transferring" plus a small
-     bar. Src size and CRF come from the row just written to the ledger; the
-     bitrate column is not on a ledger row, so it stays an honest em dash. */
-  var tbl=pane.querySelector("table");
-  (xfers||[]).forEach(function(t,ix){
-    var led=null;
-    (hist||[]).forEach(function(r){ if(r.title===t.title) led=r; });
-    var tr=el("tr","rowxfer");
-    tr.appendChild(el("td","gripcol"));
-    tr.appendChild(el("td","n muted","—"));
-    tr.appendChild(el("td","n muted","—"));
-    /* Ledger sizes migrated by hand carry exact:false; show them with the
-       same "~" the History tab uses rather than as a measurement. */
-    tr.appendChild(el("td","n mono",
-      led&&led.source_bytes!=null
-        ?(led.exact===false?"~":"")+gib(led.source_bytes):"—"));
-    var crfTd=el("td","n muted", led&&led.crf!=null?String(led.crf):"—");
-    crfTd.title="CRF this encode was recorded at";
-    tr.appendChild(crfTd);
-    tr.appendChild(el("td","title-cell",t.title));
-    var nasTd=el("td"); nasTd.appendChild(nasMark(t.nas)); tr.appendChild(nasTd);
-    tr.appendChild(srcDirTd(t.src_dir,t.title,t.nas));
-    var st=el("td");
-    progSlot("xfer|"+t.title, st);
-    tr.appendChild(st);
-    tbl.tBodies[0].insertBefore(tr, tbl.tBodies[0].rows[ix]||null);
-  });
-  wireDrag(tbl, q);
+  /* A recorded title has LEFT the queue — its push renders on the History
+     tab only, as the full-width row under its ledger row. It used to get a
+     synthetic "transferring" row up top here as well; the operator's call
+     (2026-09-01) is that a row on this tab reads as work still waiting to
+     encode, which a recorded title is not. */
+  wireDrag(pane.querySelector("table"), q);
 }
 
 /* Drag semantics: dropping a row at position K pins the first K+1 visible
@@ -1325,21 +1299,23 @@ function paint(s){
   var nextUp=(s.queue||[]).filter(function(r){ return r.next_up; })[0];
   renderLive(s.live, s.summary, s.driver_alive===true,
     nextUp ? nextUp.title : null);
-  /* The key must cover EVERYTHING the pane's STRUCTURE depends on — both tabs
-     draw live transfers, so transfers belong in BOTH keys. They were once
-     omitted entirely, and the transferring row painted a single still frame
-     (at ~0 bytes) that never advanced for the whole 45-minute push. The fix
-     for that put raw byte counts in the key, which swung the bug the other
-     way: the key then changed every frame and rebuilt the whole table twice a
+  /* The key must cover EVERYTHING the pane's STRUCTURE depends on — and
+     nothing more. Transfers are in the LEDGER key only: History is the one
+     tab that draws a push (2026-09-01 — the queue's synthetic transferring
+     row is gone, so transfers in the queue key would rebuild that table for
+     a row it no longer renders). They were once omitted from the key
+     entirely, and the transferring row painted a single still frame (at ~0
+     bytes) that never advanced for the whole 45-minute push. The fix for
+     that put raw byte counts in the key, which swung the bug the other way:
+     the key then changed every frame and rebuilt the whole table twice a
      second. Now the key carries only shape (qShape/xShape) and the byte
      counts reach the DOM through updateProgress() below — a bar that moves
      every frame, inside a table that is left alone. */
-  var xk=(s.transfers||[]).map(xShape);
   var key=tab+"|"+JSON.stringify(tab==="queue"
     ? [s.queue.map(qShape), s.live.map(function(e){ return [e.folder, e.crf]; }),
-       xk, s.summary.library_complete, s.summary.roots_offline,
+       s.summary.library_complete, s.summary.roots_offline,
        s.can_start, s.encode_note, s.summary.paused, s.stage_active]
-    : [s.ledger, xk]);
+    : [s.ledger, (s.transfers||[]).map(xShape)]);
   if(last.key!==key){
     /* An armed confirm or an active drag must survive the 2s SSE repaint. */
     if(tab==="queue"&&(drag||armedTitle!==null||crfOpen!==null)){ last.pending=true; }
@@ -1352,8 +1328,8 @@ function paint(s){
                 "wait in line"; saying "stage" while five titles queue ahead
                 would misstate what the click does. */
              stage_busy:s.stage_active!=null||(s.stage_queue||[]).length>0}),
-          s.live, s.transfers, s.ledger)
-                    :renderLedger(s.ledger, s.transfers)); }
+          s.live)
+       :renderLedger(s.ledger, s.transfers)); }
   }
   /* EVERY frame, rebuilt or not: this is what keeps the bars moving now that
      their numbers are out of the key. It runs after a skipped rebuild too —
