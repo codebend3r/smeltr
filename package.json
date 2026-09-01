@@ -12,6 +12,7 @@
     "test": "bash tests/run-all.sh",
     "test:py": "python3 -m unittest discover -s tests",
     "lint": "bash tests/lint.sh",
+    "hooks": "bash ops/install-hooks.sh",
     "visual": "node tests/visual/shoot.mjs",
     "format": "uvx ruff format .",
     "format:check": "uvx ruff format --check .",

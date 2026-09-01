@@ -542,6 +542,31 @@ silently. Config is `ruff.toml` + `.editorconfig`.
 `compileall`. A release therefore cannot be cut while the repo's
 `staging/autopilot.sh` differs from what the X9 is actually running.
 
+### Git hooks
+
+`ops/hooks/` holds tracked `pre-commit` and `pre-push`; `bash ops/install-hooks.sh`
+(`npm run hooks`) points `core.hooksPath` at it. **Per clone** — `.git/hooks` is
+not versioned, and `core.hooksPath` REPLACES it, so every hook must live in
+`ops/hooks/`. Both are shellchecked by `lint.sh`, which lists them separately
+because git requires bare names with no `.sh`.
+
+- **pre-commit (~1 s)** refuses a staged runtime artifact (`token`, `url`,
+  `server.log`, `ledger.jsonl`, …) and then runs `tests/lint.sh`. The artifact
+  check duplicates `test_repo_invariants.py::RuntimeArtifacts` on purpose:
+  that test reads `git ls-files`, so a `git add -f token` only trips it once
+  the commit already exists — this reads the INDEX and refuses first.
+  `lint.sh` reads the **working tree, not the index**. Deliberate: stashing
+  unstaged work to lint a partial commit exactly is how a hook loses somebody's
+  edits, and lint is a whole-tree check anyway.
+- **pre-push (~10 s)** runs `tests/run-all.sh` — the same gate `npm version`
+  uses, so a push and a release are held to one standard. A push that only
+  DELETES refs skips it (an all-zero local sha on stdin): there is no tree to
+  test, and running the suite there would only be a way to refuse a branch
+  cleanup.
+
+Neither touches the NAS, the staging drive, or the running driver. Bypass with
+`--no-verify` or `SMELTR_SKIP_HOOKS=1`.
+
 ### CI
 
 `.github/workflows/ci.yml`, on every push to `main` and every PR. Five jobs
