@@ -1550,6 +1550,40 @@ function monBuckets(tsArr,valArr,t0,t1,cols){
   }
   return {lo:lo,hi:hi,avg:avg,n:n};
 }
+/* The drawn mean line is lightly smoothed -- a weighted average over the two
+   buckets either side -- purely so 1 Hz noise reads as a curve instead of
+   sawteeth. Honesty rules, in force:
+   - drawMon only smooths where the min-max shade is REAL (4+ samples per
+     bucket). With ~one sample per bucket the shade collapses to a 1 px rect
+     at 16% alpha, the line is the only evidence on screen, and averaging it
+     redrew a measured 98 MiB/s burst at 33 -- so the narrow stops draw the
+     raw mean.
+   - the window is SYMMETRIC: the radius is the smaller of what the two
+     sides hold, stopping at a gap or the array edge. An asymmetric window
+     drags the value sideways -- a trailing-only average at the right edge
+     drew a CPU that had just pinned at 92% as 50% -- and it means the tip
+     of the line and the point beside a gap are always the raw bucket mean.
+   - a bucket with no samples stays NaN, so the path still breaks and no
+     smoothed segment ever bridges a sampler outage.
+   The band, legend and tooltip stay raw; the header discloses the rest. */
+var MON_SMOOTH_W=[3,2,1];
+function monSmooth(avg,cols){
+  var R=MON_SMOOTH_W.length-1,
+      out=new Float64Array(cols),c,d,v,s,n,la,ra,r;
+  for(c=0;c<cols;c++){
+    v=avg[c];
+    if(v!==v){ out[c]=NaN; continue; }
+    la=0; while(la<R&&c-la-1>=0&&avg[c-la-1]===avg[c-la-1]) la++;
+    ra=0; while(ra<R&&c+ra+1<cols&&avg[c+ra+1]===avg[c+ra+1]) ra++;
+    r=Math.min(la,ra);
+    s=v*MON_SMOOTH_W[0]; n=MON_SMOOTH_W[0];
+    for(d=1;d<=r;d++){
+      s+=(avg[c-d]+avg[c+d])*MON_SMOOTH_W[d]; n+=2*MON_SMOOTH_W[d];
+    }
+    out[c]=s/n;
+  }
+  return out;
+}
 function monFmtPct(v){ return v==null||v!==v?"—":Math.round(v)+"%"; }
 function monFmtMibs(v){
   if(v==null||v!==v) return "—";
@@ -1739,8 +1773,13 @@ function drawMon(ch,t0,t1,css){
   var bkey=t0+"|"+t1+"|"+cols+"|"+monDataV, bks;
   if(ch._bkey===bkey){ bks=ch._bks; }
   else{
+    /* Smooth only where the shade is real -- see monSmooth(). Below 4
+       samples per bucket b.sm stays unset and the line draws b.avg raw. */
+    var smOk=(t1-t0)/cols>=4;
     bks=ch.series.map(function(se){
-      return monBuckets(monTs,monV[se.k],t0,t1,cols); });
+      var b=monBuckets(monTs,monV[se.k],t0,t1,cols);
+      if(smOk) b.sm=monSmooth(b.avg,cols);
+      return b; });
     ch._bkey=bkey; ch._bks=bks;
   }
   var ymax;
@@ -1789,9 +1828,14 @@ function drawMon(ch,t0,t1,css){
     }
   }
   ctx.strokeStyle=css.grid; ctx.fillStyle=css.ink; ctx.lineWidth=1;
-  [0,0.5,1].forEach(function(f){
+  /* Quarter rules everywhere: the taller plots leave 0/50/100 too far apart
+     to read a level against. The % chart labels all five; value axes label
+     only the halves -- axLab prints a quarter of a niceMax 5 as 1.3, and a
+     mislabelled rule is worse than a bare one. */
+  [0,0.25,0.5,0.75,1].forEach(function(f){
     var y=Math.round(Y(ymax*f))+0.5;
     ctx.beginPath(); ctx.moveTo(x0,y); ctx.lineTo(x1,y); ctx.stroke();
+    if(!ch.pctAxis&&f%0.5!==0) return;
     ctx.textAlign="right"; ctx.textBaseline="middle";
     ctx.fillText(String(ch.pctAxis?Math.round(100*f):axLab(ymax*f/ch.scale)),
                  x0-6,Math.max(y0+4,Math.min(y1-4,y)));
@@ -1815,7 +1859,8 @@ function drawMon(ch,t0,t1,css){
       ctx.fillRect(x0+c*cw,yh,Math.max(1,cw),Math.max(1,yl-yh));
     }
     ctx.globalAlpha=1;
-    ctx.strokeStyle=colr; ctx.lineWidth=1.6; ctx.lineJoin="round";
+    ctx.strokeStyle=colr; ctx.lineWidth=2; ctx.lineJoin="round";
+    ctx.lineCap="round";
     ctx.beginPath();
     var pen=false;
     /* BEFORE the oldest held sample the line rides the 0 baseline. Nothing
@@ -1830,7 +1875,7 @@ function drawMon(ch,t0,t1,css){
       ctx.moveTo(x0,Y(0)); ctx.lineTo(x0+preCols*cw,Y(0)); pen=true;
     }
     for(c=preCols;c<cols;c++){
-      var v=b.avg[c];
+      var v=(b.sm||b.avg)[c];
       if(v!==v){ pen=false; continue; }   /* gap: break, never bridge */
       var y=Y(v);
       if(pen) ctx.lineTo(x0+(c+0.5)*cw,y);
@@ -1907,8 +1952,9 @@ function monTipDraw(t0,t1){
   var st=monSampleAt(monHover.t,tol);
   monTipEl.replaceChildren();
   /* The tooltip is ONE 1-second sample; the line under the cursor is a
-     bucket mean. Scope it explicitly so the two cannot be read as the
-     same number disagreeing. */
+     bucket mean (smoothed at wide zooms, raw at the narrow stops). Scope
+     it explicitly so the two cannot be read as the same number
+     disagreeing. */
   var when=st||monHover.t, d=new Date(when*1000);
   monTipEl.appendChild(el("div","t",
     "1 s sample · "+stampLab(when)+":"+String(d.getSeconds()).padStart(2,"0")));

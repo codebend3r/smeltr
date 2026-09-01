@@ -23,6 +23,12 @@
  *     bridge a second the sampler missed
  *   - gridlines stay legible at every stop (3..16 of them) and no two tick
  *     labels collide, which is what forces the weekday past 24 h
+ *   - the mean line is smoothed ONLY where a bucket aggregates 4+ samples:
+ *     at the narrow stops the min-max shade collapses to ~1 px of 16% alpha,
+ *     the line is the only evidence on screen, and smoothing it redrew a
+ *     measured 98 MiB/s burst at a third of its height. And where smoothing
+ *     IS on, the window is symmetric and stops at gaps/edges, so the line's
+ *     tip is always the raw bucket mean.
  */
 'use strict';
 const fs = require('fs');
@@ -59,14 +65,15 @@ const code = [
   'var monTs, monV, monDataV=0, monHover=null;',
   'function monCss(name){ return name; }',
   fn('monSpan'), fn('spanLabel'), fn('niceMax'), fn('monTicks'),
-  fn('monBuckets'), fn('hhmm'), decl(/var MON_DAYS=\[[^\]]*\];/),
+  fn('monBuckets'), decl(/var MON_SMOOTH_W=\[[^\]]*\];/), fn('monSmooth'),
+  fn('hhmm'), decl(/var MON_DAYS=\[[^\]]*\];/),
   fn('tickLab'), fn('axLab'), fn('drawMon'),
   'function setRing(ts,v,dv){ monTs=ts; monV=v; monDataV=dv; }',
 ].join('\n');
 /* eslint-disable no-new-func */
 const api = new Function(code + `
-  return {drawMon, setRing, monSpan, spanLabel, monTicks, MON_STOPS,
-          MON_GUT, MON_PADT, MON_AXIS};`)();
+  return {drawMon, setRing, monSpan, spanLabel, monTicks, monBuckets,
+          MON_STOPS, MON_GUT, MON_PADT, MON_AXIS};`)();
 
 let failures = 0;
 function ok(cond, msg) {
@@ -176,11 +183,12 @@ console.log('gridlines and tick labels');
 for (const span of STOPS) {
   const d = draw(NOW, span, NOW - SLOTS + 1);
   const label = api.spanLabel(span);
-  /* Three horizontal rules (0 / 50 / 100) plus one vertical per tick. */
+  /* Five horizontal rules (0 / 25 / 50 / 75 / 100) plus one vertical per
+     tick. Value axes draw the same five but label only the halves. */
   const vertical = d.grid.filter(o => o.pts[0].x === o.pts[1].x);
   ok(vertical.length >= 3 && vertical.length <= 16,
     `${label}: ${vertical.length} vertical gridlines (3..16)`);
-  eq(d.grid.length - vertical.length, 3, `${label}: three horizontal rules`);
+  eq(d.grid.length - vertical.length, 5, `${label}: five horizontal rules`);
   /* Time labels sit below the plot; the y-axis numbers sit left of it. */
   const ticks = d.labels.filter(o => o.y > Y1);
   eq(ticks.length, vertical.length, `${label}: every gridline is labelled`);
@@ -280,6 +288,69 @@ console.log('a missing second inside the history');
   eq(d.washes.length, 0, 'and it draws no wash: this window IS covered by the ring');
   ok(!s0.some(p => p.m === 'L' && p.y === Y1 && p.x > X0 + 10),
     'nothing is drawn at 0 across the outage');
+}
+
+/* ---- 7. smoothing is gated on the min-max shade being real --------------- */
+console.log('');
+console.log('smoothing: raw where the shade is not real, honest where it is');
+/* A flat 20 with one 1-second spike to 100, plus a step to 80 over the last
+ * 10 seconds so the line's tip has something to lag behind. */
+function flatRing(now, depth, spikeAt) {
+  const ts = new Float64Array(SLOTS);
+  const v = [];
+  for (let k = 0; k < 7; k++) v.push(new Float32Array(SLOTS).fill(NaN));
+  for (let s = now - depth + 1; s <= now; s++) {
+    const i = ((s % SLOTS) + SLOTS) % SLOTS;
+    ts[i] = s;
+    const val = s === spikeAt ? 100 : (s > now - 10 ? 80 : 20);
+    for (let k = 0; k < 7; k++) v[k][i] = val;
+  }
+  api.setRing(ts, v, ++ringVersion);
+  return { ts, v };
+}
+{
+  /* 15 min stop on a wide canvas: exactly one sample per bucket, so the
+   * shade is a 1 px rect and the gate must draw the mean RAW -- the spike
+   * reaches the top of the plot instead of a third of the way up. */
+  const WIDE = 1240;
+  flatRing(NOW, SLOTS, NOW - 450);
+  const rec = recorder(WIDE, H);
+  const ch = chart(rec);
+  api.drawMon(ch, NOW + 1 - 900, NOW + 1,
+    Object.assign({}, CSS, { histStart: NOW - SLOTS }));
+  const line = rec.ops.filter(o => o.op === 'stroke' && String(o.stroke).startsWith('--ch-'))[0];
+  const YV = v => Y1 - (Math.min(v, 100) / 100) * (Y1 - Y0);
+  const peak = Math.min(...line.pts.map(p => p.y));
+  near(peak, YV(100), 0.5,
+    '1 sample per bucket: the 100% spike draws at 100, not smoothed to 47');
+}
+{
+  /* 2 h stop on the 800 px canvas: 9.6 samples per bucket, the shade is a
+   * real envelope, so the line MAY smooth -- but by the documented kernel,
+   * and its tip must stay the raw bucket mean. */
+  const SPIKE = NOW - 3600;
+  const { ts, v } = flatRing(NOW, SLOTS, SPIKE);
+  const t1 = NOW + 1, t0 = t1 - 7200;
+  const cols = Math.min(COLS, 7200);
+  const raw = api.monBuckets(ts, v[0], t0, t1, cols);
+  const rec = recorder(W, H);
+  const ch = chart(rec);
+  api.drawMon(ch, t0, t1, Object.assign({}, CSS, { histStart: NOW - SLOTS }));
+  const line = rec.ops.filter(o => o.op === 'stroke' && String(o.stroke).startsWith('--ch-'))[0];
+  const YV = vv => Y1 - (Math.min(vv, 100) / 100) * (Y1 - Y0);
+  const cSpike = Math.floor((SPIKE - t0) * cols / 7200);
+  ok(raw.avg[cSpike] > 25, 'the spike second landed in the expected bucket');
+  const want = (3 * raw.avg[cSpike]
+    + 2 * raw.avg[cSpike - 1] + 2 * raw.avg[cSpike + 1]
+    + raw.avg[cSpike - 2] + raw.avg[cSpike + 2]) / 9;
+  near(line.pts[cSpike].y, YV(want), 0.5,
+    'a real-shade stop smooths by exactly the [3,2,1] kernel');
+  ok(line.pts[cSpike].y > YV(raw.avg[cSpike]) + 1,
+    'so the smoothed peak sits visibly below the raw bucket mean the shade carries');
+  near(line.pts[cols - 1].y, YV(raw.avg[cols - 1]), 0.5,
+    'the tip of the line is the RAW last bucket mean -- no trailing-only lag');
+  ok(raw.avg[cols - 1] > 60,
+    'and that tip really is the fresh 80% step, not old baseline');
 }
 
 console.log('');

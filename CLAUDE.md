@@ -851,7 +851,13 @@ second request.
   `tests/test_sysmon_ui.js`: a missing second is a line GAP, never an
   interpolation; unreadable metrics are NaN → absent line and `—`, never 0;
   decimation is min/max band + mean line so a 1 s spike survives a 7 d
-  window (the header says "shade = min–max · line = mean"); the window
+  window (the header says "shade = min–max · line = mean (smoothed at wide
+  zooms)"); the mean line is lightly smoothed (2026-09-01) ONLY where a
+  bucket aggregates 4+ samples — at the narrow stops the band collapses to
+  ~1 px of 16% alpha, the line is the only evidence on screen, and smoothing
+  it redrew a measured 98 MiB/s burst at 33; the smoothing window is
+  symmetric and stops at a gap or the edge, so the line's tip and the points
+  beside a gap are always the raw bucket mean; the window
   before the oldest held sample rides a flat 0 baseline UNDER a `--nodata`
   wash, a `--nodata-bd` rule at the boundary and an inline "no samples
   before HH:MM" — **the zeros and the disclosure ship together or neither

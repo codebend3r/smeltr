@@ -612,8 +612,8 @@ footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3)
   margin-right:5px}
 .sw.ch1{background:var(--ch-1)} .sw.ch2{background:var(--ch-2)} .sw.ch3{background:var(--ch-3)}
 .monleg b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
-.monchart canvas{display:block;width:100%;height:96px;touch-action:pan-y}
-.monchart.tall canvas{height:118px}
+.monchart canvas{display:block;width:100%;height:150px;touch-action:pan-y}
+.monchart.tall canvas{height:180px}
 .montip{position:absolute;z-index:5;background:var(--panel-2);
   border:1px solid var(--line);border-radius:8px;padding:8px 10px;
   font-size:11.5px;pointer-events:none;min-width:150px}
@@ -634,8 +634,8 @@ footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3)
   #monZoom{width:100%;min-width:0}
   .monzoom{width:100%;margin-left:0}
   .monleg{gap:9px}
-  .monchart canvas{height:80px}
-  .monchart.tall canvas{height:96px}
+  .monchart canvas{height:110px}
+  .monchart.tall canvas{height:132px}
   .kv{grid-template-columns:repeat(auto-fit,minmax(104px,1fr))}
   /* 60vh, floored so portrait phones keep a useful table, capped so the
      floor cannot exceed a short landscape viewport. */
