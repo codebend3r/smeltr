@@ -45,7 +45,7 @@ if command -v shellcheck >/dev/null 2>&1; then
   # ops/hooks/* carry no .sh extension (git requires the bare hook names), so
   # they are listed separately -- a git hook is exactly the kind of script
   # nobody reads again after it starts working.
-  if shellcheck -x -S warning smeltr ops/*.sh ops/hooks/* tests/*.sh; then
+  if shellcheck -x -S warning smeltr ops/*.sh ops/hooks/* tests/*.sh tools/*.sh; then
     echo "PASS no shellcheck findings in repo-owned scripts"
   else
     rc=1

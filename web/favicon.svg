@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <!-- Smeltr: a hot ingot on the page's dark panel. The colours are the
+       dashboard's own tokens (panel, hot, hot-soft, ch-1, tip) written out,
+       because an SVG cannot read app.css. Four elements (tile, glow, ingot,
+       sheen) and no more: it has to read at 16px in a tab strip. -->
+  <defs>
+    <radialGradient id="glow">
+      <stop offset="0" stop-color="#ff7a2f" stop-opacity=".55"/>
+      <stop offset="1" stop-color="#ff7a2f" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ingot" x1="0" y1="9" x2="0" y2="22" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff9a5c"/>
+      <stop offset="1" stop-color="#e05e12"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="7" fill="#0f1116"/>
+  <ellipse cx="16" cy="18" rx="14" ry="9.5" fill="url(#glow)"/>
+  <path d="M9 10H23L27 21H5Z" fill="url(#ingot)" stroke="url(#ingot)" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M10.5 10.6H21.5" stroke="#ffe2c4" stroke-width="1.5" stroke-linecap="round" opacity=".9"/>
+</svg>

@@ -45,7 +45,7 @@ dashboard/          server, resource sampler, terminal report
 web/                index.html · app.css · theme.js · app.js
 ops/                watchdog.sh · com.smeltr.watchdog.plist
 staging/            byte-for-byte mirrors of the live X9 scripts
-tools/              one-off maintenance (`seed_ledger.py`)
+tools/              one-off maintenance (`seed_ledger.py` · `render_favicon.sh`)
 tests/              run-all.sh · lint.sh · suites
 ledger.jsonl        the irreplaceable record, beside the launcher
 ```
@@ -576,8 +576,8 @@ silently. Config is `ruff.toml` + `.editorconfig`.
   replacement field (PEP 701) and was a `SyntaxError` there; it was fixed, not
   declared away. Nothing may assume newer syntax or newer stdlib signatures —
   `zip(strict=)` is 3.10+ and is spelled as a bare `zip()` in `sysmon.py`.
-- **shellcheck** gates `smeltr`, `ops/*.sh` and `tests/*.sh` at `-S
-  warning`. `staging/*.sh` is **advisory only** — those are byte-for-byte
+- **shellcheck** gates `smeltr`, `ops/*.sh`, `tests/*.sh` and `tools/*.sh`
+  at `-S warning`. `staging/*.sh` is **advisory only** — those are byte-for-byte
   mirrors of the live X9 scripts, so a finding must be fixed on the drive
   during a pause window and copied back. Editing the mirror alone
   manufactures the drift `test_staging_in_sync.sh` exists to catch.
@@ -977,6 +977,8 @@ The page is four real files in `web/`, read once at import by
 | `web/app.css` | `:root` dark tokens **start here**, `:root[data-theme="light"]` overrides, typography, panels, `.proj` strip, tables, `prefers-reduced-motion`, ≤700px |
 | `web/theme.js` | the pre-paint theme block — must stay in `<head>` |
 | `web/app.js` | `renderAlert` `renderStats` `renderLive`+`projBlock`/`updateProj` `renderQueue`+`wireDrag` `renderLedger` `paint()` repaint keys, SSE wiring, the `mon` charts |
+| `web/favicon.svg` | the tab icon: a hot ingot on the panel tile, in the page's own colours written out as literals. THE drawing; edit this one |
+| `web/favicon.png` · `web/apple-touch-icon.png` | rendered FROM the SVG by `tools/render_favicon.sh` (headless Chrome, nothing installed). Re-run it after editing the SVG and commit all three together |
 
 Until 2026-08-28 all of this was one 2383-line `_PAGE` r-string inside
 `server.py`, which is why the UI suites still pull functions out by
@@ -986,6 +988,25 @@ brace-matching. They now read `web/app.js` instead of a Python string, and
 **This is still not a build step.** The files are inlined at import, so the
 browser receives one self-contained document and CSP stays `default-src
 'none'`. Adding a `<link>` or `<script src>` would break it.
+
+**The favicon is the one thing the page fetches (2026-09-01).** Three
+`<link>` tags in `<head>` point at `/favicon.ico`, `/favicon.svg` and
+`/apple-touch-icon.png`, served from the `ICONS` table in `server.py`.
+Safari (the iPad) cannot use an SVG favicon, so the SVG is rendered to a
+32 px PNG that ships inside a 22-byte ICO wrapper (`_ico()`, built at
+import) and to an opaque 180 px PNG for the iOS home screen (iOS paints
+black under transparent pixels, then applies its own corner mask). Two
+deliberate choices: the icon routes answer BEFORE the token gate, beside
+`/healthz`, because browsers probe `/favicon.ico` and
+`/apple-touch-icon.png` on their own with no query string (bookmarking,
+the start page, add-to-home-screen) and a 403 there is a blank icon on
+exactly the surfaces an icon is for; it is a closed list, so a neighbouring
+path stays 403. And CSP `img-src` is `'self'`, not `'none'`, because
+Firefox applies `img-src` to the favicon fetch; the page still names no
+other image. `tests/test_favicon.py` pins the routes, the gate's closed
+list, the sizes, the corner alpha of each PNG, and that an ingot actually
+got drawn (a Chrome that failed to load the SVG screenshots a blank page,
+which is still a valid PNG of the right size).
 
 `_asset()` raises `SystemExit` when a file is missing rather than serving a
 page with no stylesheet — a blank screen behind HTTP 200 is the failure the

@@ -34,6 +34,7 @@ import secrets
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -1303,11 +1304,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Cache-Control", "no-store")
+        # img-src 'self' exists for the favicon and nothing else: Firefox
+        # applies img-src to the <link rel="icon"> fetch, so 'none' there is
+        # a blank tab. Same origin only -- the page still names no other
+        # image, and nothing external can be loaded.
         self.send_header(
             "Content-Security-Policy",
             "default-src 'none'; "
             f"style-src 'nonce-{NONCE}'; script-src 'nonce-{NONCE}'; "
-            "connect-src 'self'; img-src 'none'; font-src 'none'; "
+            "connect-src 'self'; img-src 'self'; font-src 'none'; "
             "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
         )
         for k, v in (extra or {}).items():
@@ -1338,6 +1343,17 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/healthz":
             return self._send(200, "text/plain; charset=utf-8", b"ok")
+        if route in ICONS:
+            # Before the token gate, like /healthz. The <link> hrefs could
+            # carry the token, but browsers also probe /favicon.ico and
+            # /apple-touch-icon.png on their OWN -- bookmarking, the start
+            # page, add-to-home-screen -- with no query string, and a 403
+            # there is a blank icon on exactly the surfaces an icon is for.
+            # It is a static picture of an ingot: no state, no secret, and
+            # the Host allowlist above still applies. A CLOSED list: a path
+            # not in it stays behind the token.
+            ctype, body = ICONS[route]
+            return self._send(200, ctype, body)
         if not self._token_ok(query):
             return self._deny(403, "missing or invalid token")
         if route == "/":
@@ -1902,8 +1918,8 @@ def free_port(preferred: int = 8787) -> int:
 # This is NOT a build step and NOT a CDN. The files are read once at import and
 # inlined into the same nonce'd <style>/<script> blocks the string used to
 # carry, so the browser still receives ONE self-contained document. CSP stays
-# `default-src 'none'` -- nothing is fetched over the network, and there is
-# still no dependency to install.
+# `default-src 'none'` -- nothing but the favicon (ICONS, below) is fetched
+# over the network, and there is still no dependency to install.
 _WEB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                     "web")
 
@@ -1928,6 +1944,48 @@ _PAGE = (_asset("index.html")
          .replace("__APP_CSS__", _asset("app.css"))
          .replace("__THEME_JS__", _asset("theme.js"))
          .replace("__APP_JS__", _asset("app.js")))
+
+
+def _asset_bytes(name: str) -> bytes:
+    """One binary web/ file (the icons), or the same hard failure as _asset."""
+    path = os.path.join(_WEB, name)
+    try:
+        with open(path, "rb") as fh:
+            return fh.read()
+    except OSError as e:
+        raise SystemExit(f"smeltr: cannot read {path} ({e}); the dashboard "
+                         f"assets are missing from this checkout") from e
+
+
+def _ico(png: bytes) -> bytes:
+    """Wrap one PNG in an ICO container: a 22-byte header, then the PNG.
+
+    Every browser probes /favicon.ico on its own, with no <link> involved
+    (bookmarking, the start page, a 404 page), and Safari -- the iPad --
+    cannot use an SVG favicon at all, so the tab icon is also served as a
+    real .ico. A PNG payload inside ICO has been valid since Vista and every
+    browser reads it, so this is the same 32 px rendering and not a second
+    one. Width/height are 0 in the directory entry for 256 px; ours is 32.
+    """
+    w, h = struct.unpack(">II", png[16:24])  # IHDR
+    entry = struct.pack("<BBBBHHII", w % 256, h % 256, 0, 0, 1, 32,
+                        len(png), 22)
+    return struct.pack("<HHH", 0, 1, 1) + entry + png
+
+
+# The favicon: three routes, one drawing. web/favicon.svg is the source;
+# tools/render_favicon.sh renders the two PNGs from it with headless Chrome,
+# and all three are checked in so the server never needs a rasteriser.
+# Chrome and Firefox take the SVG; Safari takes the .ico (the 32 px PNG in
+# the wrapper above); the 180 px PNG is the iOS home-screen icon, rendered
+# OPAQUE because iOS paints black under transparent pixels and then applies
+# its own corner mask. Served BEFORE the token gate -- see do_GET.
+ICONS = {
+    "/favicon.svg": ("image/svg+xml", _asset_bytes("favicon.svg")),
+    "/favicon.ico": ("image/x-icon", _ico(_asset_bytes("favicon.png"))),
+    "/apple-touch-icon.png": ("image/png",
+                              _asset_bytes("apple-touch-icon.png")),
+}
 
 
 # The footer states the page's actual exposure; a LAN-bound page claiming

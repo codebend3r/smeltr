@@ -5,6 +5,13 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <title>Smeltr</title>
+<!-- The favicon. Same-origin routes served token-free (ICONS in
+     dashboard/server.py). Safari cannot use an SVG favicon and takes the
+     .ico; Chrome and Firefox take the SVG. The .ico is listed FIRST so a
+     browser that keeps the last icon it can use ends up on the vector. -->
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <style nonce="__NONCE__">__APP_CSS__</style>
 <script nonce="__NONCE__">__THEME_JS__</script>
 </head>
