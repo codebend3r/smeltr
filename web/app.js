@@ -1316,6 +1316,92 @@ function renderLedger(rows, xfers){
   }
 }
 
+/* ---- the Events tab -------------------------------------------------------
+   The driver/watcher timeline, for debugging: every stamped line of
+   .autopilot.log plus the band ladder's KILLED/COMPLETE verdicts, newest
+   first. The timeline does NOT ride the 2 s SSE frames — the state payload
+   carries only events_rev (log mtimes), and the page refetches /api/events
+   when that moves while this tab is open. A row with no time really has
+   none (an old KILLED line in a re-used watch log); it is never guessed. */
+var evData=null, evRev=null, evTotal=0, evFetching=false, evFetchedFor=null,
+    evErr=false;
+function fetchEvents(){
+  if(evFetching) return; evFetching=true;
+  fetch("/api/events"+(token?"?t="+encodeURIComponent(token):""))
+    .then(function(r){ if(!r.ok) throw 0; return r.json(); })
+    .then(function(j){
+      evFetching=false; evErr=false;
+      evData=j.events; evRev=j.rev; evTotal=j.total||j.events.length;
+      if(tab==="events"&&last.state) paint(last.state);
+    })
+    .catch(function(){
+      /* A dropped request must not freeze the tab on "Loading events…"
+         forever: clearing evFetchedFor lets the next 2 s frame retry, and
+         evErr puts the failure on screen instead of a spinner. */
+      evFetching=false; evFetchedFor=null; evErr=true;
+      if(tab==="events"&&last.state){ last.key=null; paint(last.state); }
+    });
+}
+/* Severity only — an unlisted kind renders as a plain pill, never an error.
+   "exhausted" and "failed" are deliberately distinct labels from "killed":
+   a routine ladder retry heals itself; those two need a human. */
+var EV_CLS={halted:"bad",killed:"bad",failed:"bad",exhausted:"bad",
+            stale:"warn",defer:"warn",cycle:"good",complete:"good"};
+function renderEvents(x9on){
+  progRefs={};
+  var pane=document.getElementById("pane"); pane.replaceChildren();
+  if(evData===null){
+    pane.appendChild(el("div","empty", evErr
+      ? "Could not load events — retrying on the next update"
+      : "Loading events…"));
+    return; }
+  if(!evData.length){
+    pane.appendChild(el("div","empty", x9on===false
+      ? "No events — the staging drive is offline"
+      : "No events recorded yet."));
+    return; }
+  pane.appendChild(table(
+    [{label:"Time"},{label:"Event"}],
+    evData, function(e){
+      var tr=el("tr");
+      var td=el("td","muted nowrap mono evtime");
+      var d=e.ts
+        ? e.ts.slice(5,7)+"-"+e.ts.slice(8,10)+"-"+e.ts.slice(2,4)
+        : null;
+      if(!e.ts){
+        td.textContent="—";
+        td.title="time unknown — an earlier line of a re-used watch log";
+      }else if(e.approx){
+        /* Inferred from the watch log's mtime, so it wears the page's
+           estimate marker and claims minutes, never seconds. */
+        td.textContent="~"+d+" "+e.ts.slice(11,16);
+        td.title="time inferred from the watch log's file mtime — "+
+                 "the watcher wrote this line and exited";
+      }else{
+        td.textContent=d+" "+e.ts.slice(11,19);
+      }
+      tr.appendChild(td);
+      var ev=el("td");
+      var cls=EV_CLS[e.kind];
+      ev.appendChild(el("span","mark"+(cls?" ev-"+cls:""),
+                        e.kind==="up"?"driver up":e.kind));
+      ev.appendChild(el("span","evtext",e.text));
+      if(e.count>1){
+        var c=el("span","evcount","× "+e.count);
+        c.title="this line repeated "+e.count+" times in a row — "+
+                "newest occurrence shown";
+        ev.appendChild(c);
+      }
+      if(e.detail) ev.appendChild(el("div","evdetail",e.detail));
+      tr.appendChild(ev);
+      return tr;
+    }));
+  if(evTotal>evData.length)
+    pane.appendChild(el("div","lnotes",
+      "newest "+evData.length+" of "+evTotal+" events — older history "+
+      "stays in .autopilot.log on the staging drive"));
+}
+
 function paint(s){
   renderAlert(s.summary, s.encode_note);
   renderStats(s.summary);
@@ -1334,6 +1420,12 @@ function paint(s){
      second. Now the key carries only shape (qShape/xShape) and the byte
      counts reach the DOM through updateProgress() below — a bar that moves
      every frame, inside a table that is left alone. */
+  /* Refetch the timeline at most once per events_rev move, and only while
+     the tab is open — evFetchedFor is the rev a fetch was already started
+     for, so a stale state cache can never refetch in a loop. */
+  if(tab==="events"&&evFetchedFor!==s.events_rev){
+    evFetchedFor=s.events_rev; fetchEvents();
+  }
   /* The queue key carries the transfer COUNT (it decides the empty-state
      sentence), never the transfers themselves — their bytes and shape belong
      to the ledger key alone. */
@@ -1342,7 +1434,8 @@ function paint(s){
        s.summary.library_complete, s.summary.roots_offline,
        s.can_start, s.encode_note, s.summary.paused, s.stage_active,
        (s.transfers||[]).length]
-    : [s.ledger, (s.transfers||[]).map(xShape)]);
+    : tab==="ledger" ? [s.ledger, (s.transfers||[]).map(xShape)]
+    : [evRev, evData===null, evErr]);
   if(last.key!==key){
     /* An armed confirm or an active drag must survive the 2s SSE repaint. */
     if(tab==="queue"&&(drag||armedTitle!==null||crfOpen!==null)){ last.pending=true; }
@@ -1357,7 +1450,8 @@ function paint(s){
              stage_busy:s.stage_active!=null||(s.stage_queue||[]).length>0,
              xfer_count:(s.transfers||[]).length}),
           s.live)
-       :renderLedger(s.ledger, s.transfers)); }
+       :tab==="ledger"?renderLedger(s.ledger, s.transfers)
+       :renderEvents(s.summary.x9_online)); }
   }
   /* EVERY frame, rebuilt or not: this is what keeps the bars moving now that
      their numbers are out of the key. It runs after a skipped rebuild too —
@@ -1384,6 +1478,13 @@ function paint(s){
   document.getElementById("tabQueue").textContent="Queue ("+nq+
     (s.summary.queue_skipped ? " · "+s.summary.queue_skipped+" skipped" : "")+")";
   document.getElementById("tabLedger").textContent="History ("+s.ledger.length+")";
+  /* "(250 of 266)" — a bare "(250)" read as a count of everything that
+     exists, while both a row limit and the log-tail window cut it. */
+  document.getElementById("tabEvents").textContent=
+    "Events"+(evData
+      ? " ("+(evTotal>evData.length
+              ? evData.length+" of "+evTotal : evData.length)+")"
+      : "");
   var anyPin=s.queue.some(function(r){ return r.pinned&&!r.skipped; });
   document.getElementById("resetOrder").hidden=!(tab==="queue"&&anyPin);
   document.getElementById("gen").textContent="updated "+s.summary.generated_at;
@@ -1397,10 +1498,12 @@ function setTab(name){
   if(tw&&tw.classList.contains("collapsed")&&tableFold) tableFold.click();
   document.getElementById("tabQueue").setAttribute("aria-selected", String(name==="queue"));
   document.getElementById("tabLedger").setAttribute("aria-selected", String(name==="ledger"));
+  document.getElementById("tabEvents").setAttribute("aria-selected", String(name==="events"));
   if(last.state) paint(last.state);
 }
 document.getElementById("tabQueue").addEventListener("click",function(){setTab("queue");});
 document.getElementById("tabLedger").addEventListener("click",function(){setTab("ledger");});
+document.getElementById("tabEvents").addEventListener("click",function(){setTab("events");});
 document.getElementById("resetOrder").addEventListener("click",function(){
   api("/api/queue/order",{order:[]});
 });
