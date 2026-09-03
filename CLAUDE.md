@@ -1199,6 +1199,15 @@ same names; a hex written anywhere below `:root` is a colour the light theme
 cannot reach, which is exactly how the page stayed half-dark before. If you add
 a colour, add it to both `:root` blocks.
 
+**Every clock on the page is 12-hour** (operator's pick 2026-09-03): the
+History stamp, the Events timeline, the live card's start line, the monitor's
+axis and stamps, and the footer. `clock12()` in `web/app.js` REWRITES the
+`HH:MM[:SS]` inside a string and never re-parses the string as a date —
+`finished_at`, `generated_at`, an event `ts` and HandBrake's own header line
+are all local wall-clock carrying no offset, so handing one to `Date()` lets a
+browser running in another zone shift every row (the +4h that once moved the
+monitor's axis labels). `smeltr report` is a terminal view and keeps 24-hour.
+
 **Units survive CSS.** `th{text-transform:uppercase}` turns Mb/s into MB/S — an
 8× lie on the column whose unit confusion already corrupted the old state file.
 Any header carrying a unit gets `class="unit"` (`th.unit{text-transform:none}`).

@@ -66,6 +66,7 @@ const code = [
   'function monCss(name){ return name; }',
   fn('monSpan'), fn('spanLabel'), fn('niceMax'), fn('monTicks'),
   fn('monBuckets'), decl(/var MON_SMOOTH_W=\[[^\]]*\];/), fn('monSmooth'),
+  decl(/var CLOCK_RE=[^\n]*;/), fn('clock12'),
   fn('hhmm'), decl(/var MON_DAYS=\[[^\]]*\];/),
   fn('tickLab'), fn('axLab'), fn('drawMon'),
   'function setRing(ts,v,dv){ monTs=ts; monV=v; monDataV=dv; }',

@@ -16,6 +16,31 @@ function pctLive(v){ return v==null ? "—" : v.toFixed(2)+"%"; }
 function dur(s){ if(s==null) return "—";
   var h=Math.floor(s/3600), m=Math.floor(s%3600/60);
   return h ? h+"h "+String(m).padStart(2,"0")+"m" : m+"m"; }
+/* EVERY clock the page prints is 12-hour (operator's pick 2026-09-03):
+   the History stamp, the Events timeline, the live card's start line, the
+   monitor's axis, and the footer.
+
+   `clock12` REWRITES the HH:MM[:SS] inside a string; it never re-parses the
+   string as a date. Most of these stamps are local wall-clock carrying no
+   offset -- `finished_at`, `generated_at`, an event `ts`, HandBrake's own
+   header line -- and handing one to Date() lets a browser running in another
+   zone re-interpret it and shift every row, the same +4h that once moved the
+   monitor's axis labels. Anything that is not a clock is passed through. */
+var CLOCK_RE=/\b([01]?\d|2[0-3]):([0-5]\d)(:[0-5]\d)?\b/g;
+function clock12(s){
+  if(s==null) return s;
+  return String(s).replace(CLOCK_RE,function(_,h,m,sec){
+    return ((h%12)||12)+":"+m+(sec||"")+" "+(h<12?"am":"pm");
+  });
+}
+/* HandBrake's header reads "Wed Sep  2 21:14:37 2026". The year moves ahead
+   of the clock so the am/pm suffix is not stranded in the middle of the
+   line; a line that does not match is still clock-converted in place. */
+function startedText(s){
+  var m=/^(.*?)\s+(\d{1,2}:\d{2}:\d{2})\s+(\d{4})$/.exec(s);
+  return m ? m[1].replace(/\s+/g," ")+" "+m[3]+" "+clock12(m[2]) : clock12(s);
+}
+
 function el(tag,cls,text){ var n=document.createElement(tag);
   if(cls) n.className=cls; if(text!=null) n.textContent=text; return n; }
 
@@ -255,7 +280,7 @@ function liveFields(e){
   return [["ETA", dur(e.eta_s)],
     ["Speed", e.avg_fps==null?"—":e.avg_fps.toFixed(1)+" fps avg"],
     ["Written", gib(e.output_bytes)],
-    ["Started", e.started_text||"—"],
+    ["Started", e.started_text?startedText(e.started_text):"—"],
     ["PID", String(e.pid)]];
 }
 
@@ -1205,17 +1230,6 @@ function wireDrag(tbl,q){
   });
 }
 
-/* "21:16" -> "9:16 pm". SLICED out of the recorded string, never parsed
-   through Date(): finished_at is local wall-clock with no offset, and handing
-   it to Date() lets a browser running in another zone re-interpret it and
-   shift every row -- the same +4h that once moved the sysmon axis labels.
-   Anything that does not start with two digits is passed through unchanged. */
-function hm12(hm){
-  var h=parseInt(hm.slice(0,2),10);
-  if(isNaN(h)||h<0||h>23) return hm;
-  return ((h%12)||12)+":"+hm.slice(3,5)+" "+(h<12?"am":"pm");
-}
-
 function renderLedger(rows, xfers){
   progRefs={};
   var pane=document.getElementById("pane"); pane.replaceChildren();
@@ -1286,7 +1300,7 @@ function renderLedger(rows, xfers){
         /* A REAL space in the text, not just the margin: the cell is copied
            and read aloud as its textContent, and a CSS gap alone yielded
            "2026-08-3109:27" to both. */
-        if(hm) fin.appendChild(el("span","fin-t"," "+hm12(hm)));
+        if(hm) fin.appendChild(el("span","fin-t"," "+clock12(hm)));
       }else fin.appendChild(el("span",null,"—"));
       tr.appendChild(fin);
       /* The "Source of record" COLUMN is gone, not the disclosure. Every row
@@ -1385,11 +1399,11 @@ function renderEvents(x9on){
       }else if(e.approx){
         /* Inferred from the watch log's mtime, so it wears the page's
            estimate marker and claims minutes, never seconds. */
-        td.textContent="~"+d+" "+e.ts.slice(11,16);
+        td.textContent="~"+d+" "+clock12(e.ts.slice(11,16));
         td.title="time inferred from the watch log's file mtime — "+
                  "the watcher wrote this line and exited";
       }else{
-        td.textContent=d+" "+e.ts.slice(11,19);
+        td.textContent=d+" "+clock12(e.ts.slice(11,19));
       }
       tr.appendChild(td);
       var ev=el("td");
@@ -1498,7 +1512,8 @@ function paint(s){
       : "");
   var anyPin=s.queue.some(function(r){ return r.pinned&&!r.skipped; });
   document.getElementById("resetOrder").hidden=!(tab==="queue"&&anyPin);
-  document.getElementById("gen").textContent="updated "+s.summary.generated_at;
+  document.getElementById("gen").textContent=
+    "updated "+clock12(s.summary.generated_at);
   document.getElementById("stopnote").textContent=
     "pausing below "+s.summary.stop_mbps+" Mb/s";
 }
@@ -1737,8 +1752,8 @@ function monFmtMibs(v){
 }
 function axLab(v){ return v>=10?Math.round(v):Math.round(v*10)/10; }
 function hhmm(t){ var d=new Date(t*1000);
-  return String(d.getHours()).padStart(2,"0")+":"
-        +String(d.getMinutes()).padStart(2,"0"); }
+  return clock12(String(d.getHours()).padStart(2,"0")+":"
+                +String(d.getMinutes()).padStart(2,"0")); }
 var MON_DAYS=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 /* Past 24 h the window crosses midnight, and a bare "06:00" on the axis --
    or in the tooltip -- names three different mornings at the 7 d stop.
