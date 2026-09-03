@@ -293,6 +293,45 @@ class UnitsSurviveCSS(unittest.TestCase):
         self.assertTrue("th.unit{text-transform:none}" in PAGE)
 
 
+class StickyHeaderOutranksTheTitleColumn(unittest.TestCase):
+    """`th{position:sticky}` is one element selector -- a class beats it.
+
+    `.title-cell{position:relative}` (0,1,0) silently un-stuck the TITLE
+    header while every other header kept sticking, so the rows of that one
+    column scrolled through the gap and painted over the header band. Any
+    `position` handed to a bare `.title-cell` outside the pinned-column
+    media query re-opens that; qualify it (`td.title-cell`) instead.
+    """
+
+    def test_no_bare_title_cell_sets_position(self):
+        css = re.sub(r"/\*.*?\*/", " ", read("web/app.css"), flags=re.S)
+        # Drop every @media block: inside the <=700px one `.title-cell`
+        # legitimately pins, and both halves are named there so the td rule
+        # cannot outrank it.
+        while "@media" in css:
+            i = css.index("@media")
+            j = css.index("{", i)
+            depth = 0
+            for k in range(j, len(css)):
+                if css[k] == "{":
+                    depth += 1
+                elif css[k] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+            css = css[:i] + css[k + 1:]
+        for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+            if not re.search(r"(^|[\s,>+~])\.title-cell\b", sel):
+                continue
+            self.assertNotIn("position:", body,
+                             f"bare `.title-cell` sets position in `{sel.strip()}` "
+                             f"-- it outranks th{{position:sticky}} and unsticks "
+                             f"the TITLE header")
+
+    def test_the_rule_it_protects_still_exists(self):
+        self.assertIn("th{position:sticky;top:0;z-index:1", PAGE)
+
+
 class ThemeTokens(unittest.TestCase):
     """Both themes are token sets with the same names.
 

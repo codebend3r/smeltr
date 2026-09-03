@@ -1205,6 +1205,17 @@ function wireDrag(tbl,q){
   });
 }
 
+/* "21:16" -> "9:16 pm". SLICED out of the recorded string, never parsed
+   through Date(): finished_at is local wall-clock with no offset, and handing
+   it to Date() lets a browser running in another zone re-interpret it and
+   shift every row -- the same +4h that once moved the sysmon axis labels.
+   Anything that does not start with two digits is passed through unchanged. */
+function hm12(hm){
+  var h=parseInt(hm.slice(0,2),10);
+  if(isNaN(h)||h<0||h>23) return hm;
+  return ((h%12)||12)+":"+hm.slice(3,5)+" "+(h<12?"am":"pm");
+}
+
 function renderLedger(rows, xfers){
   progRefs={};
   var pane=document.getElementById("pane"); pane.replaceChildren();
@@ -1261,7 +1272,7 @@ function renderLedger(rows, xfers){
       tr.appendChild(destTd);
       /* Date AND time — "2026-08-31" alone could not answer "when did this
          one actually land". Format is the operator's pick (2026-09-01):
-         MM-DD-YY HH:MM, minutes precision. finished_at still records
+         MM-DD-YY h:mm am/pm, minutes precision. finished_at still records
          seconds; the row tooltip is not asked to repeat them. The eight
          rows hand-migrated from the old state file carry no timestamp at
          all and still say "—": a missing time is never back-filled from
@@ -1275,7 +1286,7 @@ function renderLedger(rows, xfers){
         /* A REAL space in the text, not just the margin: the cell is copied
            and read aloud as its textContent, and a CSS gap alone yielded
            "2026-08-3109:27" to both. */
-        if(hm) fin.appendChild(el("span","fin-t"," "+hm));
+        if(hm) fin.appendChild(el("span","fin-t"," "+hm12(hm)));
       }else fin.appendChild(el("span",null,"—"));
       tr.appendChild(fin);
       /* The "Source of record" COLUMN is gone, not the disclosure. Every row

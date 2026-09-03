@@ -477,7 +477,12 @@ td.q-crf .crfcell.set{font-style:normal;font-weight:640;color:var(--ink-2);
    this dashboard is bound to the LAN specifically so phones can reach it.
    Hover-only here would mean the feature does not exist on the devices the
    firewall was opened for. ---- */
-.title-cell{position:relative}
+/* td, NOT .title-cell: `.title-cell{position:relative}` (0,1,0) outranks
+   `th{position:sticky}` (0,0,1), so the bare selector silently un-stuck the
+   TITLE header while every other header kept sticking. The column's rows then
+   scrolled through the gap where that header should have been -- the title of
+   the row passing under the head rendered ON TOP of the header band. */
+td.title-cell{position:relative}
 .tcell{display:flex;align-items:center;gap:9px;justify-content:space-between}
 .tname{min-width:0}
 .rowacts{display:flex;align-items:center;gap:6px;flex:0 0 auto;
@@ -660,7 +665,10 @@ footer{margin-top:22px;font-family:var(--mono);font-size:11px;color:var(--ink-3)
      column arithmetic is needed and left:0 is the only constant. Until the
      scroll reaches it the title sits in its natural column; from then on it
      docks at the left edge and the rest slides beneath it. */
-  .title-cell{min-width:190px;position:sticky;left:0;z-index:1;
+  /* Both halves are named so this outranks `td.title-cell{position:relative}`
+     above; a bare `.title-cell` here loses to it on the td and the pinned
+     column stops pinning. */
+  th.title-cell,td.title-cell{min-width:190px;position:sticky;left:0;z-index:1;
     background:inherit;border-right:1px solid var(--line)}
   /* Headers float above the pinned title cells; the pinned corner above both. */
   th{z-index:2}
