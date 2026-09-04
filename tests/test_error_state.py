@@ -117,6 +117,41 @@ class DriverContract(unittest.TestCase):
         # that a dead ladder costs one title, never the pipeline.
         self.assertNotIn("pathological source", src)
 
+    def test_the_driver_has_no_halt_left(self):
+        """A non-good verdict is the TITLE's error state, never a halt.
+
+        Operator's standing rule (2026-09-04): the only sanctioned gap
+        between encodes is the pause toggle. A halt on a decoder-error
+        verdict idled the encoder for five hours with nine staged titles
+        waiting. Every per-title failure -- verdict 2/3/4, no source file,
+        track mismatch, an unresolvable library original -- must write the
+        marker and move on, so `halt` may not exist as a callable at all.
+        """
+        src = open(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "staging", "autopilot.sh"), encoding="utf-8").read()
+        self.assertNotIn("halt()", src)
+        self.assertNotIn('halt "', src)
+        self.assertIn("error_out()", src)
+        # Each of the old halt sites now goes through error_out.
+        for needle in ("needs a human:", "no source file", "track mismatch:",
+                       "cannot locate the library original"):
+            line = next(ln for ln in src.splitlines() if needle in ln)
+            self.assertIn("error_out", line, needle)
+
+    def test_finished_folder_passes_over_an_errored_title(self):
+        """The errored folder keeps source AND finished output for a human.
+
+        Without this guard finished_folder() re-finds it every 30 s pass and
+        re-judges it forever -- and with the marker present that is the one
+        folder the loop must never touch again until a human clears it.
+        """
+        src = open(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "staging", "autopilot.sh"), encoding="utf-8").read()
+        body = src.split("finished_folder() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn('[ -e "$X9/.error-$b" ] && continue', body)
+
     def test_watcher_ladders_both_ways_from_the_default_rung(self):
         """The ladder PIVOTS on core.CRF_DEFAULT, and both arms leave from it.
 

@@ -6,13 +6,16 @@
 # missing; every prior "autonomous" run still needed a human to notice a
 # COMPLETE and type the next command.
 #
-# IT HALTS RATHER THAN GUESSING. The only path that deletes a library original
-# is a `good` verdict. suspect / thin / downscale / decoder-errors all stop the
-# loop with the output left intact on the staging drive, because those are
-# exactly the cases where size alone is not evidence. Flight (2012) projected
-# 9.4% of source and was genuinely fine -- but that took an SSIM measurement to
-# establish, not a size comparison, and no unattended process should make that
-# call.
+# IT NEVER GUESSES, AND IT NEVER STOPS (operator's standing rule, 2026-09-04).
+# The only path that deletes a library original is a `good` verdict. suspect /
+# thin / downscale / decoder-errors / an unresolvable library original all put
+# THAT TITLE into the ERROR state -- `$X9/.error-<title>` marker, output and
+# source left intact on the staging drive, red row on the dashboard -- and the
+# loop moves on to the next title. Flight (2012) projected 9.4% of source and
+# was genuinely fine, but that took an SSIM measurement to establish, not a
+# size comparison, so the CALL stays with a human; the CPU does not wait for
+# it. A halt on The Little Mermaid at 04:05 on 2026-09-04 idled the encoder
+# for five hours with nine staged titles waiting; that is the last one.
 #
 # Usage:  nohup ./.autopilot.sh          >> .autopilot.log 2>&1 &
 #         ./.autopilot.sh --dry-run      # decide and print, change nothing
@@ -28,7 +31,17 @@ DRY=false
 # Write to stdout only; the caller redirects into $LOG. Using tee AND a stdout
 # redirect wrote every line twice.
 log() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
-halt() { log "HALTED: $*"; log "Nothing was deleted. Staging drive left as-is for review."; exit 2; }
+# The ERROR state. One title, never the pipeline: write the marker core.py
+# reads (error_marker), log it, and let the caller move on. finished_folder()
+# and next_title.py both pass over a marked title, so a folder holding a
+# source AND a finished output is neither re-judged every pass nor re-encoded.
+# Nothing here deletes anything; a human ends the state by deleting the marker.
+error_out() {
+  local title="$1"; shift
+  printf '%s: %s at %s\n' "$title" "$*" "$(date '+%Y-%m-%d %H:%M:%S')" > "$X9/.error-$title"
+  log "ERROR $title: $* - marked for review, moving on"
+  log "  Nothing was deleted. Delete $X9/.error-$title after review."
+}
 
 # Single instance. Two drivers would both pick "the next title" and both start it.
 LOCK="$X9/.autopilot.lock"
@@ -92,6 +105,9 @@ finished_folder() {
   while IFS= read -r d; do
     b=$(basename "$d")
     ls "$d"/*"2160p HEVC"*.mkv >/dev/null 2>&1 || continue
+    # An ERROR-state title keeps its finished output beside the source for a
+    # human to look at; re-judging it every 30 s pass would just re-fail it.
+    [ -e "$X9/.error-$b" ] && continue
     encoding_this "$b" && continue
     sync_in_flight "$b" && continue
     printf '%s\n' "$b"
@@ -212,7 +228,7 @@ start_encode() {
   local title="$1" crf="${2:-16}" slug src out
   slug=$(slug_of "$title")
   src=$(find "$X9/$title" -maxdepth 1 -name '*.mkv' ! -name '._*' ! -name '*2160p HEVC*' | head -1)
-  [ -z "$src" ] && halt "no source file in $title"
+  [ -z "$src" ] && { error_out "$title" "no source file"; return 1; }
   # Named after the FOLDER, not the source file. An earlier version derived it
   # from the source basename with a sed strip and was overwritten on the very
   # next line -- a dead store that read like it was doing the naming.
@@ -240,7 +256,8 @@ start_encode() {
   ss=$(ffprobe -v error -show_streams "$src" | grep -c '^codec_type=subtitle')
   if [ "$oa" != "$sa" ] || [ "$os" != "$ss" ]; then
     kill "$pid" 2>/dev/null; rm -f "$out"
-    halt "track mismatch on $title: source ${sa}a/${ss}s but job writes ${oa}a/${os}s"
+    error_out "$title" "track mismatch: source ${sa}a/${ss}s but job writes ${oa}a/${os}s"
+    return 1
   fi
   log "  tracks OK ${oa}a/${os}s"
 
@@ -283,23 +300,33 @@ while true; do
       log "JUDGE $done_folder"
       vjson=$("$SMELTR" verdict "$done_folder"); vrc=$?
       log "  $vjson"
+      # Anything but `good` is this title's ERROR state, never a halt: the
+      # marker goes on, the output stays beside the source for a human, and
+      # the loop carries on to step 2 in this same pass.
+      judged=ok
       case $vrc in
         0) ;;
-        2) halt "$done_folder needs a human: $(echo "$vjson" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("verdict"))')" ;;
-        3) halt "$done_folder returned a ladder verdict after finishing - unexpected" ;;
-        4) halt "$done_folder could not be evaluated" ;;
+        2) error_out "$done_folder" "needs a human: $(echo "$vjson" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("verdict"),"-",d.get("note",""))')"; judged=error ;;
+        3) error_out "$done_folder" "returned a ladder verdict after finishing - unexpected"; judged=error ;;
+        4) error_out "$done_folder" "could not be evaluated (verdict exit 4)"; judged=error ;;
       esac
 
       # Roots reachable and still no (or no unique) match: that is the real
-      # "needs a human" -- deleting depends on exactly-one match.
-      [ -z "$srcpath" ] && halt "cannot locate the library original for $done_folder (roots ARE reachable - zero or multiple matches)"
-      letter=$(echo "$done_folder" | cut -c1 | tr '[:lower:]' '[:upper:]')
-      nas=$(echo "$srcpath" | cut -d/ -f3)
+      # "needs a human" -- deleting depends on exactly-one match. Still one
+      # title's problem, not the pipeline's.
+      if [ "$judged" = ok ] && [ -z "$srcpath" ]; then
+        error_out "$done_folder" "cannot locate the library original (roots ARE reachable - zero or multiple matches)"
+        judged=error
+      fi
+      if [ "$judged" = ok ]; then
+        letter=$(echo "$done_folder" | cut -c1 | tr '[:lower:]' '[:upper:]')
+        nas=$(echo "$srcpath" | cut -d/ -f3)
 
-      if $DRY; then
-        log "(dry run) would record + sync $done_folder -> $nas/$letter"
-      else
-        sync_async "$done_folder" "$srcpath" "$nas/$letter"
+        if $DRY; then
+          log "(dry run) would record + sync $done_folder -> $nas/$letter"
+        else
+          sync_async "$done_folder" "$srcpath" "$nas/$letter"
+        fi
       fi
     fi
   fi

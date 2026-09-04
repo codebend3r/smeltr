@@ -363,7 +363,27 @@ Minions 17.2%) will now ladder DOWN and may end red at CRF 10 —
 ### No gap between encodes — the operator's standing requirement (2026-08-31)
 
 **The only sanctioned gap between one encode finishing and the next starting
-is the dashboard's pause toggle.** Everything below exists because a NAS blip
+is the dashboard's pause toggle.**
+
+**The driver no longer halts on anything (2026-09-04).** `halt()` is gone
+from `.autopilot.sh`; `error_out()` replaced every call site. A non-`good`
+verdict (2/3/4 from `verdict.py`), a folder with no source file, a track
+mismatch at the 120 s gate, and an unresolvable library original (roots
+reachable, zero-or-multiple matches) all put THAT TITLE into the ERROR
+state — `$X9/.error-<title>` marker, finished output left beside the source,
+red ❗ row — and the same pass goes on to step 2 and starts the next encode.
+`finished_folder()` passes over a folder whose marker exists, so the errored
+folder (source + output, both kept) is never re-judged and never re-encoded;
+`pick_next` already passed it over. The Little Mermaid halted at 04:05 on
+2026-09-04 (`halt-decoder-errors`, 2 HEVC decoder errors) and idled the
+encoder for five hours with nine staged titles waiting — the operator's rule
+is that they check the error by hand while the queue keeps moving. Deletion
+safety is untouched: only `good` still reaches `sync_async`. The watchdog's
+`HALTED:` rule stays for old logs but can no longer fire.
+`tests/test_error_state.py::DriverContract` pins that no `halt` remains and
+that `finished_folder()` skips the marker.
+
+Everything below exists because a NAS blip
 at 05:11 on 2026-08-31 hit the exact second the judge block ran
 `library_path_of()`, the empty find was treated as "needs a human", and the
 HALT idled the CPU for 4h16m while an already-staged title sat unencoded.
@@ -411,8 +431,8 @@ red, so the driver ran the racy version CLAUDE.md described as fixed.
 ### The watchdog, and why it may be blind
 
 `ops/watchdog.sh` relaunches the driver when it is merely absent. It NEVER restarts
-past an unreviewed `HALTED:` line — a halt is the thing standing between a bad
-verdict and a deleted original.
+past an unreviewed `HALTED:` line — a rule that only old logs can trigger now
+that the driver writes error markers instead of halting (2026-09-04).
 
 **A LaunchAgent cannot read `/Volumes` without Full Disk Access, and the failure
 is silent.** `[ -d ]` succeeds, `test -r` on a file inside returns true, and

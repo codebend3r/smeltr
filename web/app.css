@@ -484,7 +484,9 @@ td.q-crf .crfcell.set{font-style:normal;font-weight:640;color:var(--ink-2);
    the row passing under the head rendered ON TOP of the header band. */
 td.title-cell{position:relative}
 .tcell{display:flex;align-items:center;gap:9px;justify-content:space-between}
-.tname{min-width:0}
+/* flex:1 keeps the name hard left when the ❗ emoji is a third child --
+   space-between alone centred an errored title between emoji and actions. */
+.tname{min-width:0;flex:1 1 auto}
 .rowacts{display:flex;align-items:center;gap:6px;flex:0 0 auto;
          opacity:0;transition:opacity .12s}
 tr:hover .rowacts,tr:focus-within .rowacts,.rowacts.armed{opacity:1}
