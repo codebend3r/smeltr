@@ -77,10 +77,10 @@ function check(name, cond, detail) {
 }
 
 const LADDER = [10, 12, 14, 16, 18, 20, 22];
-const S = { crf_choices: LADDER, crf_default: 16, can_start: true, stage_busy: false };
+const S = { crf_choices: LADDER, crf_default: 14, can_start: true, stage_busy: false };
 const row = o => Object.assign({
   title: 'Kubo (2016)', mbps: 91.2, bytes: 70 * 1073741824,
-  crf: 16, crf_set: false, skipped: false, pinned: false, encoding: false,
+  crf: 14, crf_set: false, skipped: false, pinned: false, encoding: false,
   ready: false, staged: true, next_up: false, arriving_bytes: null,
   stage_queued: null,
 }, o || {});
@@ -96,8 +96,8 @@ console.log('the menu is the ladder');
   check('no off-ladder rung is offered (24 was a dead end)',
     values.indexOf('24') < 0);
   check('the auto option names the default it follows',
-    sel.children[0].textContent === '16 (auto)', sel.children[0].textContent);
-  check('an untouched row sits on auto, not on a pinned 16',
+    sel.children[0].textContent === '14 (auto)', sel.children[0].textContent);
+  check('an untouched row sits on auto, not on a pinned 14',
     sel.value === '', JSON.stringify(sel.value));
   check('it is labelled for a screen reader',
     /Kubo/.test(sel.attrs['aria-label'] || ''), sel.attrs['aria-label']);
@@ -117,7 +117,7 @@ console.log('a hand-picked value reads back');
   check('an untouched row does NOT claim a human chose it',
     !/ set$| set /.test(sel.className), sel.className);
   check('its tooltip names the default it is following',
-    /default \(CRF 16\)/.test(sel.title), sel.title);
+    /default \(CRF 14\)/.test(sel.title), sel.title);
 }
 
 console.log('what a change actually sends');
@@ -164,7 +164,7 @@ console.log('one CRF control per row');
     selects.length === 0, 'found ' + selects.length);
   const go = acts.children.filter(c => /\bgo\b/.test(c.className))[0];
   check('start encode is still offered on the ready row', !!go);
-  check('and it names the row\'s planned CRF', go && /CRF 16/.test(go.title),
+  check('and it names the row\'s planned CRF', go && /CRF 14/.test(go.title),
     go && go.title);
 }
 {
@@ -173,7 +173,7 @@ console.log('one CRF control per row');
   const go = acts.children.filter(c => /\bgo\b/.test(c.className))[0];
   go.fire('click');   // arms
   go.fire('click');   // fires
-  check('starting by hand uses the row\'s planned CRF, not a hard-coded 16',
+  check('starting by hand uses the row\'s planned CRF, not a hard-coded default',
     posted.length === 1 && posted[0][0] === '/api/encode/start' &&
     posted[0][1].crf === 20, JSON.stringify(posted));
 }

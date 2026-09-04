@@ -9,7 +9,7 @@ guards the two ways that becomes a lie:
     shows up hours later as an encode at the wrong rung;
   * `smeltr crf` failing loudly. The driver substitutes its stdout straight
     into -q, so anything but an integer on stdout is a HandBrake that dies at
-    startup or, worse, an empty -q. It must answer 16 to every failure.
+    startup or, worse, an empty -q. It must answer CRF_DEFAULT to every failure.
 """
 import json
 import os
@@ -55,7 +55,7 @@ class OverrideRoundTrip(unittest.TestCase):
 
         Three callers still pass two arguments. If the third defaulted to {},
         every hand-picked CRF would be erased by the next skip click -- with
-        no error, no banner, and no sign until an encode started at 16.
+        no error, no banner, and no sign until an encode started at the default.
         """
         core.save_overrides([], [], {"Kubo (2016)": 10})
         core.save_overrides(["Shrek (2001)"], [])
@@ -135,7 +135,7 @@ class TheLauncherEntryPoint(unittest.TestCase):
         self.assertEqual(int(r.stdout.strip()), core.CRF_DEFAULT)
 
     def test_an_unreadable_overrides_file_is_the_default(self):
-        """Exit 0 with 16, never a non-zero the driver would have to handle:
+        """Exit 0 with the default, never a non-zero the driver would handle:
         the alternative is idling the CPU over a preference."""
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "queue_overrides.json"), "w",

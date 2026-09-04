@@ -258,7 +258,7 @@ ledger.jsonl        the irreplaceable record, beside the launcher
 6. Per-title start CRF (2026-09-01): `POST /api/queue/crf` writes a
    `{"crf": {title: int}}` map into `queue_overrides.json`, and **the DRIVER
    reads it** — `.autopilot.sh` asks `smeltr crf "$title"` for the start rung
-   immediately before it spawns HandBrake, in place of the hard-coded 16.
+   immediately before it spawns HandBrake, in place of a hard-coded rung.
    That is the whole point: the dashboard starts at most one encode by hand,
    so a picker only the dashboard honoured would be a lie on every row the
    driver starts, which is nearly all of them. It is the FIRST override the
@@ -281,7 +281,8 @@ ledger.jsonl        the irreplaceable record, beside the launcher
    because a retry after a measured, rejected projection is not something a
    choice made hours earlier should override. `smeltr crf` always prints one
    integer and exits 0 — a missing override, an unreadable file, an unknown
-   title and a broken checkout all answer 16, because its stdout becomes `-q`
+   title and a broken checkout all answer `core.CRF_DEFAULT` (14 since
+   2026-09-03), because its stdout becomes `-q`
    and there is no failure here worth idling the CPU over. NOT in
    `LAN_WRITE_ROUTES`: it looks like a preference and is not. A CRF chosen too
    high produces an encode the verdict legitimately calls `good`, which syncs
@@ -335,10 +336,20 @@ encode over a momentary unreadable stat deletes hours of work), and TWO
 consecutive ticks must agree on the same violation before the kill fires.
 
 On a kill the partial is deleted and the driver retries at the next rung —
-**up 16→18→20→22 when too big, down 16→14→12→10 when too small**. A
-violation OPPOSITE to the rung's own direction (too small at 18/20/22, too
-big at 14/12/10) exhausts immediately — a projection that flips sides
-between adjacent rungs would oscillate forever. Exhaustion (`none-too-big` /
+**up 14→16→18→20→22 when too big, down 14→12→10 when too small**. A
+violation OPPOSITE to the rung's own direction (too small at 16/18/20/22, too
+big at 12/10) exhausts immediately — a projection that flips sides
+between adjacent rungs would oscillate forever.
+
+**The ladder pivots on `core.CRF_DEFAULT` and the two must move together**
+(the pivot went 16 → 14 on 2026-09-03). The pivot is the one rung both arms
+leave from; every other rung is one-directional. Moving the constant alone
+would make the default a DOWN-ONLY rung, so the first too-big kill of a
+default encode would exhaust to `none-too-big` with no rung left to try —
+and a lower CRF makes a BIGGER file, so too-big is exactly the direction
+the move to 14 makes more likely. Moving the pivot also means a hand-picked
+16 that comes in too small now exhausts rather than stepping to 14, which is
+the same "picking a rung narrows the ladder" rule applied one rung up. Exhaustion (`none-too-big` /
 `none-too-small`) is the **ERROR state**: `.autopilot.sh` writes
 `$X9/.error-<title>` and MOVES ON — never a halt, never a skip, never a
 deletion. `core.error_marker()` puts `error`/`error_note` on the queue row;

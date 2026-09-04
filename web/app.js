@@ -771,7 +771,7 @@ function arm(b,acts,armedLabel,fire){
 var crfOpen=null;
 function crfPicker(r,s){
   var choices=(s&&s.crf_choices)||[10,12,14,16,18,20,22];
-  var def=(s&&s.crf_default)||16;
+  var def=(s&&s.crf_default)||14;
   var sel=el("select","crfsel crfcell"+(r.crf_set?" set":""));
   sel.setAttribute("aria-label","Start CRF for "+r.title);
   sel.title=r.crf_set

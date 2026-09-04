@@ -69,17 +69,26 @@ OVERRIDES = os.path.join(SMELTR_DIR, "queue_overrides.json")
 # widened in server.py alone would let the page offer a rung the driver would
 # refuse. dashboard/server.py imports this tuple rather than keeping its own.
 #
-# The menu IS the ladder, exactly: .watch-encode.sh maps 16->18->20->22 when a
-# projection runs too big and 16->14->12->10 when it runs too small. Nothing
+# The menu IS the ladder, exactly: .watch-encode.sh maps 14->16->18->20->22 when
+# a projection runs too big and 14->12->10 when it runs too small. Nothing
 # outside 10..22 belongs here -- a blowup at an off-ladder rung is auto-killed
 # and never retried, which is a dead end wearing the costume of a choice.
+#
+# THE LADDER PIVOTS ON CRF_DEFAULT, so the two move together (2026-09-03,
+# 16 -> 14). The pivot is the one rung both arms leave from; every other rung
+# is one-directional. Moving this constant without re-anchoring
+# .watch-encode.sh makes the default a DOWN-ONLY rung, so the first too-big
+# kill of a default encode exhausts to none-too-big with nothing left to try
+# -- and a lower CRF makes a BIGGER file, which is exactly the direction the
+# move to 14 makes more likely.
 #
 # Consequence of a hand-picked start rung, accepted: the watcher cannot tell
 # "started at 20 by hand" from "laddered up to 20", so the opposite-direction
 # rule still applies. A hand-picked 20 that comes in TOO SMALL exhausts to
-# none-too-small (the ERROR state) rather than stepping back down.
+# none-too-small (the ERROR state) rather than stepping back down -- and since
+# the pivot moved, a hand-picked 16 that comes in too small does too.
 CRF_CHOICES = (10, 12, 14, 16, 18, 20, 22)
-CRF_DEFAULT = 16
+CRF_DEFAULT = 14
 
 # Pause-after-current, from the dashboard: an empty flag file beside the
 # ledger. While it exists next_title.py answers exit 3 -- the driver's
@@ -568,7 +577,7 @@ def _verdict(ratio: Optional[float], hist: Optional[list[float]] = None,
     if below_floor or below_base:
         detail = (f"the typical encode in this job keeps {base:.1f}% "
                   f"(median of {len(hist)})" if base is not None
-                  else "implausibly small for 4K at CRF 16")
+                  else f"implausibly small for 4K at CRF {CRF_DEFAULT}")
         if below_floor:
             detail = (f"under the {OUTLIER_FLOOR_NORM:.0f}% floor, below which this "
                       f"job does not delete an original unattended; " + detail)
@@ -768,8 +777,8 @@ def error_marker(title: str) -> Optional[str]:
     """First line of $X9/.error-<title>, or None when the title is fine.
 
     Written by .autopilot.sh when the CRF ladder exhausts (projection outside
-    the 30-80% band at every rung -- up 16-18-20-22 for too-big, down
-    16-14-12-10 for too-small). The marker is the title's ERROR state: never
+    the 30-80% band at every rung -- up 14-16-18-20-22 for too-big, down
+    14-12-10 for too-small). The marker is the title's ERROR state: never
     deleted, never skipped (a skip is the operator's click, 2026-08-31),
     just unpickable and rendered red until a human deletes the marker file.
     """

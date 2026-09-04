@@ -1,7 +1,7 @@
 """The ladder-exhausted ERROR state (2026-08-31).
 
-When .watch-encode.sh has killed a title at every rung (up 16-18-20-22 for a
-too-big projection, down 16-14-12-10 for too-small), .autopilot.sh writes
+When .watch-encode.sh has killed a title at every rung (up 14-16-18-20-22 for
+a too-big projection, down 14-12-10 for too-small), .autopilot.sh writes
 $X9/.error-<title> and moves on. That marker must make the title unpickable
 -- re-picking would loop the same doomed encode forever -- while never
 deleting or skipping anything: the row stays in the queue, red, until a human
@@ -117,14 +117,37 @@ class DriverContract(unittest.TestCase):
         # that a dead ladder costs one title, never the pipeline.
         self.assertNotIn("pathological source", src)
 
-    def test_watcher_ladders_both_ways_and_only_from_16(self):
+    def test_watcher_ladders_both_ways_from_the_default_rung(self):
+        """The ladder PIVOTS on core.CRF_DEFAULT, and both arms leave from it.
+
+        Every other rung is one-directional, so the pivot is the only rung
+        with a step in each direction. Move CRF_DEFAULT without re-anchoring
+        .watch-encode.sh and the new default becomes a one-way rung: the
+        first kill in the unsupported direction exhausts to none-* with
+        nothing left to try. That is silent -- it shows up hours later as a
+        title gone red on its first auto-kill -- so it is pinned here.
+        """
         src = open(os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "staging", "watch-encode.sh"), encoding="utf-8").read()
-        for rung in ("16) NEXTCRF=18", "18) NEXTCRF=20", "20) NEXTCRF=22",
-                     "16) NEXTCRF=14", "14) NEXTCRF=12", "12) NEXTCRF=10",
-                     "none-too-big", "none-too-small"):
-            self.assertIn(rung, src)
+        ladder = sorted(core.CRF_CHOICES)
+        pivot = ladder.index(core.CRF_DEFAULT)
+        up = ladder[pivot:]          # too big  -> coarser, starting at the pivot
+        down = ladder[:pivot + 1][::-1]   # too small -> finer, starting at the pivot
+        self.assertGreater(len(up), 1, "the pivot has nowhere to go when too big")
+        self.assertGreater(len(down), 1, "the pivot has nowhere to go when too small")
+        for a, b in zip(up, up[1:]):
+            self.assertIn("%d) NEXTCRF=%d" % (a, b), src)
+        for a, b in zip(down, down[1:]):
+            self.assertIn("%d) NEXTCRF=%d" % (a, b), src)
+        # The far ends exhaust rather than wrapping, and the watcher's own
+        # default argument is the pivot too (a caller that omits [crf] must
+        # not land on a rung the ladder cannot leave).
+        self.assertIn("none-too-big", src)
+        self.assertIn("none-too-small", src)
+        self.assertNotIn("%d) NEXTCRF=" % up[-1], src)
+        self.assertNotIn("%d) NEXTCRF=" % down[-1], src)
+        self.assertIn('CRF="${6:-%d}"' % core.CRF_DEFAULT, src)
 
 
 if __name__ == "__main__":

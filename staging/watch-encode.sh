@@ -27,10 +27,15 @@
 #     so a single noisy sample (studio logos, black frames) cannot kill on its own.
 #
 # THE LADDER RUNS BOTH WAYS (operator's rule, 2026-08-31):
-#   projection > 80%  (too big)  -> next CRF UP:   16-18-20-22, then none-too-big
-#   projection < 30%  (too small)-> next CRF DOWN: 16-14-12-10, then none-too-small
+#   projection > 80%  (too big)  -> next CRF UP:   14-16-18-20-22, then none-too-big
+#   projection < 30%  (too small)-> next CRF DOWN: 14-12-10, then none-too-small
+# The ladder PIVOTS on the default start rung, which moved 16 -> 14 on 2026-09-03.
+# Both arms have to move with it: leaving the pivot at 16 makes 14 a down-only rung,
+# so every default encode that came in too big would exhaust to none-too-big on its
+# first kill with no rung left to try -- and CRF 14 makes a BIGGER file than 16, so
+# too big is exactly the direction the default change makes more likely.
 # A violation in the OPPOSITE direction of a rung already laddered to (too small at
-# 18/20/22, too big at 14/12/10) is "none-*" immediately: a source whose projection
+# 16/18/20/22, too big at 12/10) is "none-*" immediately: a source whose projection
 # flips sides between adjacent rungs would otherwise oscillate forever. "none-*"
 # tells .autopilot.sh to mark the title's ERROR state and move on — never delete,
 # never skip, never halt.
@@ -38,7 +43,7 @@
 # Set SMELTR_NO_AUTOKILL=1 to return to report-only behaviour.
 # (SMELTER_NO_AUTOKILL is still honoured -- the app was renamed 2026-08-21 and a
 #  watcher launched before the rename is still running against the old name.)
-SLUG="$1"; FOLDER="$2"; SRCNAME="$3"; OUTNAME="$4"; HBPID="$5"; CRF="${6:-16}"
+SLUG="$1"; FOLDER="$2"; SRCNAME="$3"; OUTNAME="$4"; HBPID="$5"; CRF="${6:-14}"
 LOG="/tmp/handbrake-${SLUG}.log"
 # X9 log override: HandBrake logs now live on the X9 too, so /tmp cleanup can't
 # strand the watcher against a vanished log. Prefer it when present.
@@ -97,12 +102,12 @@ while true; do
     if [ -n "$DIR" ] && [ "$STRIKES" -ge 2 ]; then
       if [ "$DIR" = "big" ]; then
         case "$CRF" in
-          16) NEXTCRF=18 ;; 18) NEXTCRF=20 ;; 20) NEXTCRF=22 ;;
+          14) NEXTCRF=16 ;; 16) NEXTCRF=18 ;; 18) NEXTCRF=20 ;; 20) NEXTCRF=22 ;;
           *)  NEXTCRF=none-too-big ;;
         esac
       else
         case "$CRF" in
-          16) NEXTCRF=14 ;; 14) NEXTCRF=12 ;; 12) NEXTCRF=10 ;;
+          14) NEXTCRF=12 ;; 12) NEXTCRF=10 ;;
           *)  NEXTCRF=none-too-small ;;
         esac
       fi
