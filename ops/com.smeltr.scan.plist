@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.smeltr.scan</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/snowball/Developer/git/smeltr/ops/scan-bitrates.sh</string>
+  </array>
+  <!-- launchd, not cron. A Mac asleep at 03:00 never runs a cron line at all;
+       launchd runs a missed StartCalendarInterval job on wake. Same reason the
+       watchdog is a LaunchAgent. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>3</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+  <!-- NOT RunAtLoad: the scan is a ~4 min, 8-way ffprobe over both NAS mounts,
+       and firing it on every login/reload buys nothing the nightly run doesn't. -->
+  <key>RunAtLoad</key><false/>
+  <!-- NOT on the staging drive: launchd cannot create a log on a volume that
+       may be unmounted, and fails the job with EX_CONFIG (78) before it runs. -->
+  <key>StandardOutPath</key><string>/Users/snowball/Library/Logs/smeltr/scan.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/snowball/Library/Logs/smeltr/scan.err.log</string>
+</dict>
+</plist>
