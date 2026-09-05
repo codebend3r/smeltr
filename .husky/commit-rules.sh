@@ -1,8 +1,9 @@
 # shellcheck shell=sh
 # The `SMLTR:` commit-subject rules -- ONE copy, sourced by commit-msg (every
 # commit as it is written) and by pre-push (every commit about to leave this
-# machine). They mirror the `commits` job in .github/workflows/pr.yml, which
-# only ever sees a pull request: `bun run release` and a plain `git push` land
+# machine). They mirror the `commits` job in
+# .github/workflows/pull-request-format-checker.yml, which only ever sees a
+# pull request: `bun run release` and a plain `git push` land
 # on main with no PR, so before 2026-09-05 a direct-to-main commit was checked
 # nowhere. The rules themselves are .claude/skills/commit-format.
 #
@@ -20,7 +21,7 @@ check_message() {
   body=$(printf '%s\n' "$msg" | awk 'f { print } !f && NF { f = 1 }')
   case "$subject" in
     "") return 0 ;;          # git refuses an empty message on its own
-    "Merge "*) return 0 ;;   # merge commits are exempt, as in pr.yml (--no-merges)
+    "Merge "*) return 0 ;;   # merge commits are exempt, as in the PR format checker (--no-merges)
     "fixup! "* | "squash! "*)
       [ "${2:-}" = "allow_fixup" ] && return 0
       problems="'fixup!'/'squash!' is for autosquash -- rebase it away before pushing"

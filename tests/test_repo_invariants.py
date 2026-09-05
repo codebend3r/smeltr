@@ -411,8 +411,8 @@ class BunIsTheOnlyRunner(unittest.TestCase):
 
     def test_hooks_and_ci_spell_bun(self):
         for rel in HOOKS + (
-            ".github/workflows/ci.yml",
-            ".github/workflows/pr.yml",
+            ".github/workflows/pull-request-checks.yml",
+            ".github/workflows/pull-request-format-checker.yml",
             ".github/dependabot.yml",
         ):
             with self.subTest(file=rel):
@@ -420,7 +420,7 @@ class BunIsTheOnlyRunner(unittest.TestCase):
                     code = line.split("#", 1)[0]
                     self.assertIsNone(self.NPM_ISH.search(code), f"{rel}:{n}: {line}")
                     self.assertIsNone(self.NODE_CALL.search(code), f"{rel}:{n}: {line}")
-        self.assertNotIn("setup-node", read(".github/workflows/ci.yml"))
+        self.assertNotIn("setup-node", read(".github/workflows/pull-request-checks.yml"))
         # No `bun` ecosystem either, for now: Dependabot's bun updater cannot
         # parse the lockfileVersion 2 that bun 1.4 writes, and the entry made
         # every update run fail (dependabot/dependabot-core#16026). The guard
@@ -434,8 +434,8 @@ class BunIsTheOnlyRunner(unittest.TestCase):
 class HooksCoverTheGaps(unittest.TestCase):
     """The 2026-09-05 hook audit, pinned so it cannot quietly un-happen.
 
-    Each of these is a check that was found MISSING: a commit-msg hook (pr.yml
-    only sees a PR; `bun run release` pushes straight to main), actionlint
+    Each of these is a check that was found MISSING: a commit-msg hook (the PR
+    format checker only sees a PR; `bun run release` pushes straight to main), actionlint
     outside CI, a rename onto `token` slipping past `--diff-filter=AM`, a
     hand-written shellcheck file list CI did not share, staging scripts that
     CI blocked on and the hook did not, and nothing at all enforcing
@@ -495,7 +495,7 @@ class HooksCoverTheGaps(unittest.TestCase):
         )
 
     def test_ci_installs_the_pinned_actionlint_for_bun_run_lint(self):
-        ci = read(".github/workflows/ci.yml")
+        ci = read(".github/workflows/pull-request-checks.yml")
         self.assertRegex(
             ci, r"go install github\.com/rhysd/actionlint/cmd/actionlint@v\d+\.\d+\.\d+"
         )
@@ -503,7 +503,7 @@ class HooksCoverTheGaps(unittest.TestCase):
 
 
 class CiRunsThroughBun(unittest.TestCase):
-    """Every check in ci.yml is `bun run <script>`, one script per step.
+    """Every check in pull-request-checks.yml is `bun run <script>`, one script per step.
 
     A step that ran `shellcheck ...` or `python -m unittest ...` by hand was a
     SECOND rendition of the gate the hooks run, and two renditions drift the
@@ -526,7 +526,7 @@ class CiRunsThroughBun(unittest.TestCase):
 
     def runs(self):
         """(job id, run text) for every `run:` step, block runs joined."""
-        out, job, lines = [], None, read(".github/workflows/ci.yml").splitlines()
+        out, job, lines = [], None, read(".github/workflows/pull-request-checks.yml").splitlines()
         i = lines.index("jobs:")  # `defaults: run:` above it is not a job
         while i < len(lines):
             line = lines[i]
@@ -776,7 +776,8 @@ class TypeCheckingIsNotABuildStep(unittest.TestCase):
 class CommitRules(unittest.TestCase):
     """Runs the REAL `check_message` out of .husky/commit-rules.sh.
 
-    The rules are pr.yml's `commits` job transcribed into POSIX sh; the
+    The rules are the PR format checker's `commits` job transcribed into POSIX
+    sh; the
     messages here are the ones that job would reject, plus the exemptions it
     grants (merges) and the one the hook adds (fixup!/squash! at commit time
     only). A string assertion on the hook could not tell a working regex from
