@@ -2412,7 +2412,11 @@
 
   var monCard = document.getElementById("sysmon"),
     monTipEl = document.getElementById("monTip"),
-    monZoomEl = document.getElementById("monZoom"),
+    /* The slider is the one element read back for a VALUE rather than
+       written to, so it is annotated: getElementById answers HTMLElement,
+       which has no .value, and index.html declares this one an
+       <input type="range">. */
+    monZoomEl = /** @type {HTMLInputElement} */ (document.getElementById("monZoom")),
     monLblEl = document.getElementById("monSpanLbl"),
     monSinceEl = document.getElementById("monSince"),
     monHover = null,
@@ -2467,7 +2471,7 @@
       localStorage.removeItem("smeltr.monspan");
     }
   } catch (_) {}
-  monZoomEl.value = monPos;
+  monZoomEl.value = String(monPos);
   monLblEl.textContent = spanLabel(monSpan(monPos));
   monZoomEl.addEventListener("input", function () {
     monPos = Math.round(+monZoomEl.value);

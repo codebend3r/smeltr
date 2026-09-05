@@ -672,6 +672,7 @@ class LintStagedMirrorsLint(unittest.TestCase):
         self.assertIn("shellcheck -x -S warning", flat)
         self.assertIn("shellcheck -x -S error", flat)
         self.assertIn("bun build --no-bundle", flat)
+        self.assertIn(s["lint:ts"], flat)  # tsc --noEmit -p tsconfig.json
         self.assertIn("tests/check_page.py", flat)
         self.assertIn("py_compile", flat)
         # staging/ blocks at error and is advisory above it, as lint:sh:staging.
@@ -690,6 +691,86 @@ class LintStagedMirrorsLint(unittest.TestCase):
         self.assertIn("dashboard/server.py", pg)
         wf = next(g for g in globs if cmds[g] == "actionlint")
         self.assertEqual(wf, ".github/workflows/*.yml")
+
+
+# --------------------------------------------------------------- typescript
+
+
+class TypeCheckingIsNotABuildStep(unittest.TestCase):
+    """TypeScript checks this repo; it never compiles it.
+
+    CLAUDE.md's "no runtime dependencies, no build step, no CDN" is what lets
+    `./smeltr restart` be `python3 dashboard/server.py` against a bare
+    checkout, and what lets CSP stay `default-src 'none'` -- server.py inlines
+    web/*.js at import, so the browser gets one self-contained document. A
+    transpile step would put a generated artifact between the file a person
+    edits and the file the page runs, and a stale one renders as a page that
+    is quietly a version behind, behind a working HTTP 200.
+
+    So the gate is `tsc --noEmit`: web/*.js is checked WHERE IT LIES through
+    checkJs, and the bun suites are real .ts that bun runs directly. This
+    pins the difference, because the two are one flag apart.
+    """
+
+    def cfg(self):
+        # tsconfig.json is JSON here on purpose -- oxfmt formats it as JSON,
+        # and a `//` comment would make it unparseable by both.
+        return json.loads(read("tsconfig.json"))
+
+    def scripts(self):
+        return json.loads(read("package.json"))["scripts"]
+
+    def test_the_compiler_never_emits(self):
+        opts = self.cfg()["compilerOptions"]
+        self.assertIs(opts.get("noEmit"), True)
+        for emitting in ("outDir", "outFile", "declarationDir", "emitDeclarationOnly"):
+            self.assertNotIn(emitting, opts, "tsconfig.json would write files")
+        self.assertIn("--noEmit", self.scripts()["lint:ts"])
+
+    def test_the_page_is_checked_where_it_lies(self):
+        opts = self.cfg()["compilerOptions"]
+        # allowJs+checkJs is what makes web/app.js checkable without renaming
+        # it. Rename it to .ts and the page needs something to strip the types.
+        self.assertIs(opts.get("allowJs"), True)
+        self.assertIs(opts.get("checkJs"), True)
+        self.assertIn("web/*.js", self.cfg()["include"])
+        for name in ("app.js", "theme.js"):
+            self.assertIn("web/" + name, tracked())
+        self.assertEqual(
+            [p for p in committable() if p.startswith("web/") and p.endswith(".ts")],
+            [],
+            "web/ is served verbatim; a .ts there needs a build step",
+        )
+
+    def test_the_gate_is_a_member_of_lint(self):
+        members = self.scripts()["lint"].split()[3:]
+        self.assertIn("lint:ts", members)
+
+    def test_typescript_is_tooling_and_nothing_ships(self):
+        pkg = json.loads(read("package.json"))
+        # There is no runtime dependency in this repo AT ALL, and that is the
+        # rule the whole no-build posture rests on: the attack surface of a
+        # server whose POSTs spawn HandBrake and re-arm a ~90 GB deletion is
+        # the code in this checkout.
+        self.assertEqual(pkg.get("dependencies", {}), {})
+        self.assertIn("typescript", pkg["devDependencies"])
+
+    def test_no_generated_javascript_is_tracked(self):
+        for path in committable():
+            with self.subTest(path=path):
+                self.assertFalse(path.endswith(".js.map"), path)
+                self.assertFalse(path.endswith(".d.ts"), path)
+
+    def test_every_bun_suite_is_typescript(self):
+        js = {k: v for k, v in self.scripts().items() if k.startswith("test:js:")}
+        for name, cmd in js.items():
+            with self.subTest(script=name):
+                self.assertTrue(cmd.endswith(".ts"), cmd)
+        self.assertTrue(self.scripts()["visual"].endswith(".mts"))
+        # And the checker actually looks at them.
+        inc = self.cfg()["include"]
+        self.assertIn("tests/*.ts", inc)
+        self.assertIn("tests/visual/*.mts", inc)
 
 
 class CommitRules(unittest.TestCase):

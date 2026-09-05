@@ -47,7 +47,7 @@ function fn(name) {
 /* Minimal DOM. Options carry `value` and the select records assignment, which
    is all the picker's own logic touches. Listeners are kept so a test can
    fire `change` and see the request that goes out. */
-function node(tag, cls, text) {
+function node(tag, cls?, text?) {
   return {
     tagName: tag,
     className: cls || "",
@@ -115,7 +115,7 @@ const sect = (s) => {
   section = s;
 };
 let failed = 0;
-function check(name, cond, detail) {
+function check(name, cond, detail?) {
   if (cond) {
     process.stdout.write(".");
   } else {
@@ -126,7 +126,7 @@ function check(name, cond, detail) {
 
 const LADDER = [10, 12, 14, 16, 18, 20, 22];
 const S = { crf_choices: LADDER, crf_default: 14, can_start: true, stage_busy: false };
-const row = (o) =>
+const row = (o?) =>
   Object.assign(
     {
       title: "Kubo (2016)",

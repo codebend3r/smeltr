@@ -68,7 +68,7 @@ const sect = (s) => {
   section = s;
 };
 let failures = 0;
-function ok(cond, msg) {
+function ok(cond, msg?) {
   if (cond) {
     process.stdout.write(".");
   } else {
@@ -76,7 +76,7 @@ function ok(cond, msg) {
     console.log("\nFAIL [" + section + "] " + msg);
   }
 }
-function eq(a, b, msg) {
+function eq(a, b, msg?) {
   ok(Object.is(a, b), msg + ` (got ${a}, want ${b})`);
 }
 

@@ -38,7 +38,22 @@ function arg(name, fallback) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /* ---- CDP: request/response over one WebSocket, flat-session mode --------- */
+/* One in-flight request. `res` takes `unknown` because the reply is whatever
+   the browser sent; `send<T>` is where a caller states the shape it expects. */
+type PendingCall = {
+  res: (v: unknown) => void;
+  rej: (e: Error) => void;
+  method: string;
+};
+
 class CDP {
+  /* Declared, not just assigned in the constructor: a TS class has no
+     implicit fields. `declare` erases at build time, so the emitted class is
+     byte-for-byte the one this file has always run. */
+  declare ws: WebSocket;
+  declare id: number;
+  declare pending: Map<number, PendingCall>;
+
   constructor(ws) {
     this.ws = ws;
     this.id = 0;
@@ -61,13 +76,20 @@ class CDP {
     };
     return cdp;
   }
-  send(method, params = {}, sessionId) {
+  /* T is the caller's claim about the reply shape -- the protocol's, not
+     something inferable here. The one cast is that claim meeting the
+     `unknown` the socket actually delivers. */
+  send<T = unknown>(method, params = {}, sessionId?): Promise<T> {
     const id = ++this.id;
-    const msg = { id, method, params };
+    const msg: { id: number; method: string; params: object; sessionId?: string } = {
+      id,
+      method,
+      params,
+    };
     if (sessionId) msg.sessionId = sessionId;
     this.ws.send(JSON.stringify(msg));
-    return new Promise((res, rej) => {
-      this.pending.set(id, { res, rej, method });
+    return new Promise<T>((res, rej) => {
+      this.pending.set(id, { res: res as (v: unknown) => void, rej, method });
       setTimeout(() => {
         if (this.pending.delete(id)) rej(new Error(method + " timed out"));
       }, 30000);
@@ -211,8 +233,13 @@ if (!devPort) die("Chrome never opened a DevTools port\n" + browserErr);
 
 const version = await (await fetch(`http://127.0.0.1:${devPort}/json/version`)).json();
 const cdp = await CDP.attach(version.webSocketDebuggerUrl);
-const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
-const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
+const { targetId } = await cdp.send<{ targetId: string }>("Target.createTarget", {
+  url: "about:blank",
+});
+const { sessionId } = await cdp.send<{ sessionId: string }>("Target.attachToTarget", {
+  targetId,
+  flatten: true,
+});
 await cdp.send("Page.enable", {}, sessionId);
 await cdp.send("Runtime.enable", {}, sessionId);
 await cdp.send(
@@ -282,7 +309,7 @@ for (const theme of ["dark", "light"]) {
       return {x:r.x,y:r.y,width:r.width,height:r.height};
     })()`,
     );
-    const shot = await cdp.send(
+    const shot = await cdp.send<{ data: string }>(
       "Page.captureScreenshot",
       {
         format: "png",

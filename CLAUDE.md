@@ -6,8 +6,13 @@ to a NAS — replacing an ~80 GB original with an ~30 GB file that keeps every
 audio and subtitle track.
 
 Python 3 stdlib + vanilla JS. **No runtime dependencies, no build step, no
-CDN.** The only `devDependencies` are lint/format tooling (oxlint, oxfmt,
-husky, lint-staged) — nothing the app imports or serves. **bun is the only JS runtime,
+CDN.** The only `devDependencies` are lint/format/type tooling (oxlint, oxfmt,
+typescript, `@types/bun`, husky, lint-staged) — nothing the app imports or
+serves, and `dependencies` is empty
+(`test_repo_invariants.py::TypeCheckingIsNotABuildStep`). TypeScript is a
+CHECKER here and never a compiler: `tsconfig.json` is `noEmit`, `web/*.js`
+stays `.js` and is checked where it lies through `checkJs`, and only the bun
+test suites are `.ts`. See *TypeScript — checked, never compiled*. **bun is the only JS runtime,
 package manager and task runner** (`packageManager` pins it; a `preinstall`
 guard turns `npm install`/`yarn`/`pnpm` away; `bun.lock` is the lockfile,
 there is no `package-lock.json` and no `.npmrc`). No `node`, no `npm`,
@@ -55,7 +60,9 @@ ops/                watchdog.sh · com.smeltr.watchdog.plist
 .husky/             pre-commit (lint) · commit-msg (subject) · pre-push (subjects + full suite) — installed by `bun install`
 staging/            byte-for-byte mirrors of the live X9 scripts
 tools/              one-off maintenance (`seed_ledger.py` · `render_favicon.sh`)
-tests/              check_page.py · suites (run via `bun run test`)
+tests/              check_page.py · suites (run via `bun run test`); the bun
+                    halves are `.ts`, the visual harness `.mts`
+tsconfig.json       the type-check gate — `noEmit`, `checkJs` over `web/*.js`
 ledger.jsonl        the irreplaceable record, beside the launcher
 ```
 
@@ -502,7 +509,9 @@ exit code). They pin the log-matching and downscale gates, the
 concurrency markers, the watchdog's corpse/finished boundary, the projection
 band's boundaries and wording, the stage pull queue's hold-vs-drop split, and
 repo/live drift. The projection and repaint-key suites run under `bun`
-against the functions pulled straight out of `web/app.js`.
+against the functions pulled straight out of `web/app.js`. Every bun suite is
+TypeScript since 2026-09-05 (`tests/*.ts`, `tests/visual/shoot.mts`); bun runs
+them directly, and `bun run lint:ts` is what type-checks them.
 
 Two suites used to need the X9 mounted and now do not, because a suite that
 skips is a suite nobody notices has stopped running:
@@ -600,6 +609,52 @@ no runtime artifact carrying the auth token is in the index; unit-bearing
 table headers still carry `class="unit"`; every colour token exists in both
 themes; and the three CSP nonces are still there.
 
+### TypeScript — checked, never compiled
+
+Adopted 2026-09-05, in the one shape that costs the no-build posture nothing.
+
+**`tsconfig.json` is `noEmit`, and that is the whole design.** `web/app.js`
+and `web/theme.js` stay `.js` and are type-checked WHERE THEY LIE, through
+`allowJs` + `checkJs`. `dashboard/server.py` still inlines the same bytes at
+import, so the browser still receives one self-contained document and CSP
+stays `default-src 'none'`. Rename `web/app.js` to `.ts` and something has to
+strip the annotations before a browser can run it — either a generated file
+committed beside the source, or a `bun build` inside `_asset()`. Both are the
+build step this repo does not have, and both put a stale artifact between the
+file a person edits and the file the page runs, which renders as a page
+quietly one version behind a working HTTP 200.
+`test_repo_invariants.py::TypeCheckingIsNotABuildStep` pins it: `noEmit` on,
+no `outDir`, no `.ts` under `web/`, no tracked `.js.map` or `.d.ts`, and
+`dependencies` empty.
+
+**The bun suites ARE TypeScript** (`tests/*.ts`, `tests/visual/shoot.mts`).
+They are the half nothing serves, so nothing has to strip anything: bun runs
+`.ts` directly. The rename is runtime-neutral — they stay CommonJS-shaped
+(`require`, `__dirname`), which bun honours in a `.ts` file, so the diff is
+the extension plus type annotations and nothing else.
+`moduleDetection: "force"` is what keeps each one its own scope; without it
+they are global scripts and every `const fs` collides with the next file's.
+
+What the conversion actually surfaced, all of it type-only:
+
+- `monZoomEl.value` — `getElementById` answers `HTMLElement`, which has no
+  `.value`. Annotated `HTMLInputElement` (index.html declares it an
+  `<input type="range">`), and the assignment beside it now writes
+  `String(monPos)` where it wrote a number. Runtime-identical: the DOM
+  coerces, and the line under it already spelled `String(monPos)`.
+- Trailing test-helper parameters that call sites omit (`check(name, cond,
+  detail?)`, `node(tag, cls?, text?)`, `ok(cond, msg?)`, …). A `.js` file
+  lets TS infer those as optional; a `.ts` file does not.
+- `shoot.mts`'s CDP client got field declarations (`declare`, so they erase
+  and the emitted class is unchanged) and a generic `send<T>`, where the
+  caller states the reply shape the DevTools protocol promises. The single
+  `as` cast inside it is that claim meeting the `unknown` a socket delivers;
+  there is no `any` and no double cast anywhere in the repo.
+
+The visual harness was run end to end after the rename — 24 shots, both
+themes, all twelve stops — because `bun build --no-bundle` proves it parses
+and nothing else does.
+
 ### Linting and formatting
 
 `bun run lint` is the whole gate — `bun run verify` and CI's `lint` job run
@@ -608,7 +663,7 @@ files only (`bun run lint:staged`, see *Git hooks*). It is
 `bun run --sequential` (built into bun — no `npm-run-all`) over these scripts
 in order, stopping at the first failure: `lint:js` (oxlint) · `lint:js:syntax`
 (`bun build --no-bundle`, which parses and fails on a syntax error) ·
-`lint:py` (`uvx ruff@<pinned>`) · `lint:py:syntax` (compileall) · `lint:sh`
+`lint:ts` (`tsc --noEmit`) · `lint:py` (`uvx ruff@<pinned>`) · `lint:py:syntax` (compileall) · `lint:sh`
 (shellcheck) · `lint:sh:staging` (blocks at `-S error`, advisory above it) ·
 `lint:ci` (actionlint over `.github/workflows/`) · `format:js:check`
 (oxfmt) · `lint:page` (`tests/check_page.py`). Each is runnable alone. Output
@@ -616,7 +671,7 @@ is label-prefixed tool output only; there is no wrapper script and no
 summary line. There is still no build step: `ruff` is reached through `uvx`,
 `shellcheck` and `actionlint` are system tools (`brew install shellcheck
 actionlint`; CI `go install`s the same actionlint version), `bun` is the
-runtime, oxlint/oxfmt come from `bun install`. A missing tool now FAILS the
+runtime, oxlint/oxfmt/tsc come from `bun install`. A missing tool now FAILS the
 script rather than skipping — the old
 `tests/lint.sh` skipped loudly, and that was replaced 2026-09-04 because a
 gate with an optional half is a gate nobody can compare across machines.
@@ -655,8 +710,21 @@ Config is `ruff.toml`, `.oxlintrc.json`, `.oxfmtrc.json` + `.editorconfig`.
   asserts the page assembles with no `__PLACEHOLDER__` left, because a
   missing asset would otherwise render as a blank screen behind a working
   HTTP 200.
+- **tsc** (`bun run lint:ts`, `tsc --noEmit -p tsconfig.json`) is the type
+  gate. Same TIGHT-set reasoning as ruff, and the numbers made the case: full
+  `strict` reports 612 findings across `web/` and `tests/`, `noImplicitAny`
+  alone 563 and `strictNullChecks` alone 160, and a gate that is red on day
+  one is a gate that gets ignored. What is ON is everything that was already
+  green: `alwaysStrict`, `noImplicitThis`, `useUnknownInCatchVariables`,
+  `strictFunctionTypes`, `strictBindCallApply`, `noImplicitReturns`,
+  `noFallthroughCasesInSwitch`, `allowUnreachableCode: false`,
+  `allowUnusedLabels: false`. Widen it only in a commit that also fixes what
+  it surfaces. `noUnusedLocals`/`noUnusedParameters` are deliberately OFF
+  even though they are green — oxlint's `no-unused-vars` already owns that,
+  with an `^_` ignore pattern tsc has no equivalent for, and two renditions
+  of one gate drift the moment one is edited alone.
 - **oxlint** (`bun run lint:js`, `oxlint --deny-warnings`) lints every
-  `.js`/`.mjs` at its default `correctness` category — the same TIGHT-set
+  `.js`/`.mjs`/`.ts`/`.mts` at its default `correctness` category — the same TIGHT-set
   reasoning as ruff. `.oxlintrc.json` allows unused `catch (e)` bindings and
   ternaries-as-statements, both of which `web/app.js` uses on purpose.
 - **oxfmt** (`bun run format:js`, checked by `bun run format:js:check`) formats
@@ -723,7 +791,11 @@ command allowed to fail carries `|| true`. All four are shellchecked by
   (`git apply --unidiff-zero` on it is the recovery). The per-glob commands are
   check-only (`oxfmt --check`, never `oxfmt`): the hook never writes and
   nothing is silently re-added. `web/*` and `dashboard/server.py` trigger
-  the page-assembly check; `.github/workflows/*.yml` triggers actionlint;
+  the page-assembly check; a staged `web/*.js`, `tests/*.ts`,
+  `tests/visual/*.mts` or `tsconfig.json` triggers the whole-program
+  `tsc --noEmit`, because a type check has no per-file form — the program is
+  the unit, the same way page assembly is;
+  `.github/workflows/*.yml` triggers actionlint;
   `staging/*.sh` blocks at `-S error` and everything else at `-S warning`,
   the same line `lint:sh`/`lint:sh:staging` draw.
   `test_repo_invariants.py::LintStagedMirrorsLint` pins the parity — the
@@ -766,7 +838,7 @@ behind one required `ci` check:
 
 | Job | Runner | What it proves |
 |---|---|---|
-| `lint` | ubuntu | `bun run lint` unrolled — one step per member (`lint:js` … `lint:page`) |
+| `lint` | ubuntu | `bun run lint` unrolled — one step per member (`lint:js` · `lint:ts` … `lint:page`) |
 | `python` | ubuntu 3.9/3.11/3.12/3.13 + macOS 3.13 | `lint:py:syntax` + `test:py` |
 | `browser-logic` | ubuntu | one step per `test:js:*` script |
 | `shell` | **macOS** | one step per `test:sh:*` script, with `ffmpeg` installed |

@@ -47,7 +47,7 @@ function fn(name) {
 /* Minimal DOM: enough for progWrite's create-once/write-many path, and it
    RECORDS rebuilds so a test can prove the slot was not torn down. */
 let builds = 0;
-function node(tag, cls, text) {
+function node(tag, cls?, text?) {
   return {
     tagName: tag,
     className: cls || "",
@@ -88,7 +88,7 @@ const sect = (s) => {
   section = s;
 };
 let failed = 0;
-function check(name, cond, detail) {
+function check(name, cond, detail?) {
   if (cond) {
     process.stdout.write(".");
   } else {
@@ -99,7 +99,30 @@ function check(name, cond, detail) {
 const key = (v) => JSON.stringify(v);
 
 const GIB = 1073741824;
-const arriving = (done, rate) => ({
+/* The shape core.queue() puts on a row, as the key's projection sees it.
+   `crf`/`crf_set` are optional because the CRF cases below add them to a row
+   that arrives without them -- exactly as a row that has never been given a
+   hand-picked rung reaches paint(). */
+type QRow = {
+  title: string;
+  mbps: number;
+  bytes: number;
+  location: string;
+  src_dir: string;
+  skipped: boolean;
+  pinned: boolean;
+  encoding: boolean;
+  ready: boolean;
+  staged: boolean;
+  next_up: boolean;
+  arriving_bytes: number | null;
+  arriving_rate_bps: number | null;
+  arriving_stalled: boolean;
+  crf?: number;
+  crf_set?: boolean;
+};
+
+const arriving = (done, rate): QRow => ({
   title: "Croods, The (2013)",
   mbps: 97.4,
   bytes: 67 * GIB,
@@ -115,7 +138,7 @@ const arriving = (done, rate) => ({
   arriving_rate_bps: rate,
   arriving_stalled: false,
 });
-const xfer = (done, opts) =>
+const xfer = (done, opts?) =>
   Object.assign(
     {
       title: "Kubo (2016)",

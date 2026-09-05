@@ -99,7 +99,7 @@ const sect = (s) => {
   section = s;
 };
 let failures = 0;
-function ok(cond, msg) {
+function ok(cond, msg?) {
   if (cond) {
     process.stdout.write(".");
   } else {
@@ -107,10 +107,10 @@ function ok(cond, msg) {
     console.log("\nFAIL [" + section + "] " + msg);
   }
 }
-function eq(a, b, msg) {
+function eq(a, b, msg?) {
   ok(Object.is(a, b), msg + ` (got ${a}, want ${b})`);
 }
-function near(a, b, tol, msg) {
+function near(a, b, tol, msg?) {
   ok(Math.abs(a - b) <= tol, msg + ` (got ${a}, want ~${b} +-${tol})`);
 }
 
@@ -189,7 +189,7 @@ const SLOTS = 604800;
 let ringVersion = 0;
 /* A ring holding `depth` seconds of samples ending at `now`. `hole` drops a
  * stretch of seconds so the gap rule can be tested against real history. */
-function ring(now, depth, hole) {
+function ring(now, depth, hole?) {
   const ts = new Float64Array(SLOTS);
   const v = [];
   for (let k = 0; k < 7; k++) v.push(new Float32Array(SLOTS).fill(NaN));
@@ -203,7 +203,7 @@ function ring(now, depth, hole) {
   return { earliest: now - depth + 1 };
 }
 
-function draw(now, span, earliest) {
+function draw(now, span, earliest?) {
   const rec = recorder(W, H);
   const ch = chart(rec);
   const t1 = now + 1,
@@ -378,7 +378,7 @@ sect("a missing second inside the history");
 sect("smoothing: raw where the shade is not real, honest where it is");
 /* A flat 20 with one 1-second spike to 100, plus a step to 80 over the last
  * 10 seconds so the line's tip has something to lag behind. */
-function flatRing(now, depth, spikeAt) {
+function flatRing(now, depth, spikeAt?) {
   const ts = new Float64Array(SLOTS);
   const v = [];
   for (let k = 0; k < 7; k++) v.push(new Float32Array(SLOTS).fill(NaN));

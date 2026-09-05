@@ -55,7 +55,7 @@ function fn(name) {
 /* Minimal DOM. The one behaviour that matters: a disabled button swallows
    the click without running a handler -- which is exactly how the old switch
    lost them. */
-function node(tag, cls, text) {
+function node(tag, cls?, text?) {
   return {
     tagName: tag,
     className: cls || "",
@@ -133,7 +133,7 @@ const sect = (s) => {
   section = s;
 };
 let failed = 0;
-function check(name, cond, detail) {
+function check(name, cond, detail?) {
   if (cond) process.stdout.write(".");
   else {
     failed++;

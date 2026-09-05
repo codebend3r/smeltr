@@ -69,7 +69,7 @@ defaults:
 
 jobs:
   # ---------------------------------------------------------------- static
-  # `bun run lint` is `bun run --sequential` over the nine `lint:*` /
+  # `bun run lint` is `bun run --sequential` over the ten `lint:*` /
   # `format:js:check` scripts. Each one is its own step here, in the same
   # order, so a red step names the tool. The hook runs the same scripts over
   # the staged files (`bun run lint:staged`).
@@ -118,6 +118,12 @@ jobs:
 
       - name: 🔤 lint:js:syntax — bun build --no-bundle every web/*.js
         run: bun run lint:js:syntax
+
+      # Type checking, never transpiling: tsconfig.json is noEmit, and web/*.js
+      # is checked WHERE IT LIES through checkJs. The browser still receives
+      # the same file server.py inlines, so this adds a gate, not a build step.
+      - name: 🧾 lint:ts — tsc --noEmit over web/*.js and the bun suites
+        run: bun run lint:ts
 
       - name: 🐍 lint:py — ruff (F, E9, B, PLE)
         env:
@@ -190,7 +196,9 @@ jobs:
   # ------------------------------------------------------------------- bun
   # The projection strip, the repaint key, the pause toggle, the CRF picker and
   # the sysmon charts are pulled straight out of web/app.js and executed under
-  # bun. No install step: the suites have no dependencies. One step per
+  # bun. The suites are TypeScript since 2026-09-05 and bun runs them with no
+  # transpile step of ours; the types are CHECKED in the lint job, never here.
+  # No install step: the suites have no dependencies. One step per
   # `test:js:*` script -- the invariant suite fails if a script has no step.
   browser-logic:
     name: 🌐 browser logic (bun)
