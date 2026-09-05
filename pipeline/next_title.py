@@ -12,6 +12,7 @@ Exit codes: 0 a title was printed | 1 stop condition | 2 library incomplete
             3 wait, don't exit: paused from the dashboard, staged candidates
               hand-skipped, or a replenish pull still landing
 """
+
 from __future__ import annotations
 
 import os
@@ -36,9 +37,11 @@ def main() -> int:
     if core.paused():
         msg = "paused from the dashboard; waiting"
         if offline:
-            msg += (" (and library incomplete: "
-                    f"{', '.join(core.volume_name(r) for r in offline)}"
-                    " not mounted)")
+            msg += (
+                " (and library incomplete: "
+                f"{', '.join(core.volume_name(r) for r in offline)}"
+                " not mounted)"
+            )
         print(msg, file=sys.stderr)
         return 3
 
@@ -60,8 +63,11 @@ def main() -> int:
     # having finished -- so with nothing staged to encode, report blindness,
     # never the stop condition.
     if offline:
-        print(f"library incomplete: {', '.join(core.volume_name(r) for r in offline)} "
-              f"not mounted", file=sys.stderr)
+        print(
+            f"library incomplete: {', '.join(core.volume_name(r) for r in offline)} "
+            f"not mounted",
+            file=sys.stderr,
+        )
         return 2
 
     if waits:
@@ -72,12 +78,16 @@ def main() -> int:
         # waits -- a KeyError would exit non-zero, which the driver reads as
         # the stop condition. No universal quantifiers: the reasons compose,
         # and "every title is skipped" is false beside an arriving one.
-        msgs = {"arriving": "a replenish pull is still landing",
-                "skipped": "staged titles are hand-skipped",
-                "errored": "staged titles are in an error state "
-                           "(CRF ladder exhausted) awaiting review"}
-        print("; ".join(msgs.get(w, w) for w in sorted(waits)) + " -- waiting",
-              file=sys.stderr)
+        msgs = {
+            "arriving": "a replenish pull is still landing",
+            "skipped": "staged titles are hand-skipped",
+            "errored": "staged titles are in an error state "
+            "(CRF ladder exhausted) awaiting review",
+        }
+        print(
+            "; ".join(msgs.get(w, w) for w in sorted(waits)) + " -- waiting",
+            file=sys.stderr,
+        )
         return 3
     print(f"stop condition: nothing staged above {threshold:.0f} Mb/s", file=sys.stderr)
     return 1

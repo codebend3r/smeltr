@@ -6,6 +6,7 @@ points core.X9 at it, so nothing here depends on what is on the staging drive.
 
     python3 -m unittest discover -s tests -v
 """
+
 import os
 import sys
 import tempfile
@@ -16,23 +17,28 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pipeline import core
 
 
-def fake_log(out_path, src_geom=(3840, 2160), out_geom=(3840, 2076),
-             autocrop=(42, 42, 0, 0), crf=16.0):
+def fake_log(
+    out_path,
+    src_geom=(3840, 2160),
+    out_geom=(3840, 2076),
+    autocrop=(42, 42, 0, 0),
+    crf=16.0,
+):
     """The handful of lines core.parse_log() actually reads."""
     t, b, l, r = autocrop
     return (
-        f'[10:00:00] scan: 10 previews, {src_geom[0]}x{src_geom[1]}, 24.000 fps, '
-        f'autocrop = {t}/{b}/{l}/{r}, aspect 16:9, PAR 1:1\n'
-        f'  + autocrop: {t}/{b}/{l}/{r}\n'
-        f'[10:00:01] Starting work at: Sat Aug 22 10:00:01 2026\n'
+        f"[10:00:00] scan: 10 previews, {src_geom[0]}x{src_geom[1]}, 24.000 fps, "
+        f"autocrop = {t}/{b}/{l}/{r}, aspect 16:9, PAR 1:1\n"
+        f"  + autocrop: {t}/{b}/{l}/{r}\n"
+        f"[10:00:01] Starting work at: Sat Aug 22 10:00:01 2026\n"
         f'"File": "{out_path}"\n'
-        f'[10:00:01] job configuration:\n'
-        f'[10:00:01]  * audio track 1\n'
-        f'[10:00:01]  * subtitle track 1\n'
-        f'[10:00:01]      + Rate Control / qCompress    : CRF-{crf}\n'
-        f'[10:00:01]      + storage dimensions: {out_geom[0]} x {out_geom[1]}\n'
-        f'[11:00:00] Finished work at: Sat Aug 22 11:00:00 2026\n'
-        f'Encode done!\n'
+        f"[10:00:01] job configuration:\n"
+        f"[10:00:01]  * audio track 1\n"
+        f"[10:00:01]  * subtitle track 1\n"
+        f"[10:00:01]      + Rate Control / qCompress    : CRF-{crf}\n"
+        f"[10:00:01]      + storage dimensions: {out_geom[0]} x {out_geom[1]}\n"
+        f"[11:00:00] Finished work at: Sat Aug 22 11:00:00 2026\n"
+        f"Encode done!\n"
     )
 
 
@@ -54,8 +60,10 @@ class LogLookup(unittest.TestCase):
 
     def test_matches_full_path_o_against_bare_basename(self):
         # The regression that halted the driver after a five-hour Shrek encode.
-        self.write("shrek2001", "/Volumes/Crucial X9/4K Movies/Shrek (2001)/"
-                                "Shrek (2001) 2160p HEVC.mkv")
+        self.write(
+            "shrek2001",
+            "/Volumes/Crucial X9/4K Movies/Shrek (2001)/Shrek (2001) 2160p HEVC.mkv",
+        )
         got = core.log_for_output("Shrek (2001) 2160p HEVC.mkv")
         self.assertTrue(got, "full-path -o log must match a bare basename")
         self.assertEqual(got["crf"], 16.0)
@@ -76,8 +84,9 @@ class LogLookup(unittest.TestCase):
 
     def test_autocrop_is_captured(self):
         self.write("k", "/x/K/K 2160p HEVC.mkv", autocrop=(278, 278, 0, 2))
-        self.assertEqual(core.log_for_output("K 2160p HEVC.mkv")["autocrop"],
-                         (278, 278, 0, 2))
+        self.assertEqual(
+            core.log_for_output("K 2160p HEVC.mkv")["autocrop"], (278, 278, 0, 2)
+        )
 
 
 class Downscale(unittest.TestCase):

@@ -11,6 +11,7 @@ guards the two ways that becomes a lie:
     into -q, so anything but an integer on stdout is a HandBrake that dies at
     startup or, worse, an empty -q. It must answer CRF_DEFAULT to every failure.
 """
+
 import json
 import os
 import subprocess
@@ -65,16 +66,22 @@ class OverrideRoundTrip(unittest.TestCase):
     def test_an_off_menu_value_is_dropped_not_clamped(self):
         """The value becomes -q. Guessing a neighbouring rung on the
         operator's behalf is a multi-hour encode nobody asked for."""
-        self.write({"skip": [], "priority": [], "crf": {"A (1)": 17,
-                                                        "B (2)": 40,
-                                                        "C (3)": 0}})
+        self.write(
+            {"skip": [], "priority": [], "crf": {"A (1)": 17, "B (2)": 40, "C (3)": 0}}
+        )
         self.assertEqual(core.load_overrides()["crf"], {})
         self.assertEqual(core.planned_crf("A (1)"), core.CRF_DEFAULT)
 
     def test_junk_shapes_never_raise(self):
         """The driver must never crash on a UI-written file."""
-        for junk in ([], "nope", {"crf": []}, {"crf": {"A": "16"}},
-                     {"crf": {"A": True}}, {"crf": {"A": 16.0}}):
+        for junk in (
+            [],
+            "nope",
+            {"crf": []},
+            {"crf": {"A": "16"}},
+            {"crf": {"A": True}},
+            {"crf": {"A": 16.0}},
+        ):
             self.write(junk)
             self.assertEqual(core.planned_crf("A"), core.CRF_DEFAULT)
 
@@ -109,15 +116,18 @@ class TheLauncherEntryPoint(unittest.TestCase):
         e = dict(os.environ)
         if env:
             e.update(env)
-        return subprocess.run([sys.executable,
-                               os.path.join(ROOT, "pipeline", "crf.py"),
-                               *args],
-                              capture_output=True, text=True, env=e)
+        return subprocess.run(
+            [sys.executable, os.path.join(ROOT, "pipeline", "crf.py"), *args],
+            capture_output=True,
+            text=True,
+            env=e,
+        )
 
     def test_prints_one_integer_and_exits_zero(self):
         with tempfile.TemporaryDirectory() as d:
-            with open(os.path.join(d, "queue_overrides.json"), "w",
-                      encoding="utf-8") as fh:
+            with open(
+                os.path.join(d, "queue_overrides.json"), "w", encoding="utf-8"
+            ) as fh:
                 json.dump({"skip": [], "priority": [], "crf": {"Kubo": 14}}, fh)
             r = self.run_crf("Kubo", env={"SMELTR_DIR": d})
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -138,8 +148,9 @@ class TheLauncherEntryPoint(unittest.TestCase):
         """Exit 0 with the default, never a non-zero the driver would handle:
         the alternative is idling the CPU over a preference."""
         with tempfile.TemporaryDirectory() as d:
-            with open(os.path.join(d, "queue_overrides.json"), "w",
-                      encoding="utf-8") as fh:
+            with open(
+                os.path.join(d, "queue_overrides.json"), "w", encoding="utf-8"
+            ) as fh:
                 fh.write("{ truncated")
             r = self.run_crf("Kubo", env={"SMELTR_DIR": d})
         self.assertEqual(r.returncode, 0, r.stderr)

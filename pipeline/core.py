@@ -16,6 +16,7 @@ Authority order matters. A log that ends at "99.9 %" proves nothing if the pid
 is gone; a ledger row is history, never live state. Never infer liveness from
 a log tail alone -- that bug shipped twice in the shell version of this job.
 """
+
 from __future__ import annotations
 
 import json
@@ -36,8 +37,9 @@ HOME = os.path.expanduser("~")
 # and `queue_overrides.json` all live beside `smeltr`. Resolving this to
 # `dirname(__file__)` after the move to `pipeline/` would silently relocate
 # the ledger -- the one irreplaceable file here.
-SMELTR_DIR = (os.environ.get("SMELTR_DIR")
-              or os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SMELTR_DIR = os.environ.get("SMELTR_DIR") or os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))
+)
 LEDGER = os.path.join(SMELTR_DIR, "ledger.jsonl")
 
 X9 = os.environ.get("SMELTR_X9", "/Volumes/Crucial X9/4K Movies")
@@ -160,11 +162,19 @@ def load_overrides() -> dict:
     crfs = {}
     if isinstance(crf, dict):
         for title, value in crf.items():
-            if isinstance(title, str) and isinstance(value, int) \
-                    and not isinstance(value, bool) and value in CRF_CHOICES:
+            if (
+                isinstance(title, str)
+                and isinstance(value, int)
+                and not isinstance(value, bool)
+                and value in CRF_CHOICES
+            ):
                 crfs[title] = value
-    return {"skip": strs("skip"), "priority": strs("priority"),
-            "crf": crfs, "corrupt": False}
+    return {
+        "skip": strs("skip"),
+        "priority": strs("priority"),
+        "crf": crfs,
+        "corrupt": False,
+    }
 
 
 def planned_crf(title: str) -> int:
@@ -187,8 +197,9 @@ def planned_crf(title: str) -> int:
     return CRF_DEFAULT
 
 
-def save_overrides(skip: list[str], priority: list[str],
-                   crf: Optional[dict] = None) -> None:
+def save_overrides(
+    skip: list[str], priority: list[str], crf: Optional[dict] = None
+) -> None:
     """Atomic write via os.replace: the driver reads this file between
     cycles, and a torn read must be impossible, not merely unlikely.
 
@@ -204,14 +215,21 @@ def save_overrides(skip: list[str], priority: list[str],
     tmp = OVERRIDES + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(json.dumps({"skip": skip, "priority": priority, "crf": crf},
-                            ensure_ascii=False, indent=2) + "\n")
+        fh.write(
+            json.dumps(
+                {"skip": skip, "priority": priority, "crf": crf},
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n"
+        )
         # fsync before the replace: os.replace alone guarantees atomicity,
         # not durability, and a crash could leave a zero-length file that
         # fails open to "nothing is skipped".
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, OVERRIDES)
+
 
 # ---------------------------------------------------------------- log parsing
 
@@ -342,7 +360,9 @@ def _ps_handbrake() -> list[dict]:
     try:
         raw = subprocess.run(
             ["ps", "-axo", "pid=,command="],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return []
@@ -369,12 +389,14 @@ def _ps_handbrake() -> list[dict]:
         if not io:
             continue
         q = PS_Q_RE.search(cmd)
-        procs.append({
-            "pid": pid,
-            "source_name": io.group(1).strip(),
-            "output_name": io.group(2).strip(),
-            "crf": float(q.group(1)) if q else None,
-        })
+        procs.append(
+            {
+                "pid": pid,
+                "source_name": io.group(1).strip(),
+                "output_name": io.group(2).strip(),
+                "crf": float(q.group(1)) if q else None,
+            }
+        )
     return procs
 
 
@@ -397,8 +419,11 @@ def _find_in_staging(filename: str) -> Optional[str]:
         folders = os.listdir(X9)
     except OSError:
         return None
-    hits = [os.path.join(X9, f, filename) for f in folders
-            if not f.startswith(".") and os.path.isfile(os.path.join(X9, f, filename))]
+    hits = [
+        os.path.join(X9, f, filename)
+        for f in folders
+        if not f.startswith(".") and os.path.isfile(os.path.join(X9, f, filename))
+    ]
     # Duplicate basenames genuinely exist in this library. Guessing one would put
     # the wrong file's size in the denominator of a deletion decision.
     return hits[0] if len(hits) == 1 else None
@@ -445,8 +470,9 @@ def crop_factor(src_geom: Optional[str], out_geom: Optional[str]) -> float:
     return sa / oa
 
 
-def is_downscale(src_geom: Optional[str], out_geom: Optional[str],
-                 autocrop: Optional[tuple] = None) -> bool:
+def is_downscale(
+    src_geom: Optional[str], out_geom: Optional[str], autocrop: Optional[tuple] = None
+) -> bool:
     """True only if width was lost to RESAMPLING rather than to cropping.
 
     A narrower frame usually means resolution was thrown away, but HandBrake's
@@ -469,7 +495,7 @@ def is_downscale(src_geom: Optional[str], out_geom: Optional[str],
     cropped_w = 0
     if autocrop and len(autocrop) == 4:
         try:
-            cropped_w = int(autocrop[2]) + int(autocrop[3])   # left + right
+            cropped_w = int(autocrop[2]) + int(autocrop[3])  # left + right
         except (TypeError, ValueError):
             cropped_w = 0
     return out_w < src_w - cropped_w
@@ -504,7 +530,7 @@ def is_downscale(src_geom: Optional[str], out_geom: Optional[str],
 #
 # 6.0 normalised is a little under half of Flight's 12.6, i.e. "less than half
 # the bitrate of the thinnest encode this job has ever legitimately produced".
-OUTLIER_FACTOR = 0.40      # this far under the median is not routine
+OUTLIER_FACTOR = 0.40  # this far under the median is not routine
 # Raised 6.0 -> 15.0 on 2026-08-30, and the meaning changed with it: 6.0 asked
 # "is this physically possible for 4K at CRF 16", 15.0 asks "is this a
 # reduction this job is willing to make unattended". Flight (2012) kept 12.6%
@@ -520,10 +546,12 @@ OUTLIER_FACTOR = 0.40      # this far under the median is not routine
 # encode this library has produced that IS wanted (Croods, 17.05%). Replaying
 # all 23 measured ledger rows moves exactly one verdict.
 OUTLIER_FLOOR_NORM = 15.0  # per retained pixel; below this, ask a human
-MIN_HISTORY = 3            # below this there is no distribution to speak of
+MIN_HISTORY = 3  # below this there is no distribution to speak of
 
 
-def history_ratios(normalised: bool = False, hist: Optional[list] = None) -> list[float]:
+def history_ratios(
+    normalised: bool = False, hist: Optional[list] = None
+) -> list[float]:
     """output/source as a percentage, for every fully measured past encode.
 
     normalised=True scales each row by its own crop factor where the ledger
@@ -543,9 +571,12 @@ def history_ratios(normalised: bool = False, hist: Optional[list] = None) -> lis
     return sorted(out)
 
 
-def _verdict(ratio: Optional[float], hist: Optional[list[float]] = None,
-             norm_ratio: Optional[float] = None,
-             downscaled: bool = False) -> tuple[str, str]:
+def _verdict(
+    ratio: Optional[float],
+    hist: Optional[list[float]] = None,
+    norm_ratio: Optional[float] = None,
+    downscaled: bool = False,
+) -> tuple[str, str]:
     """The CRF ladder, a downscale check, and an outlier check.
 
     ratio      -- projected output / source, by bytes
@@ -553,18 +584,26 @@ def _verdict(ratio: Optional[float], hist: Optional[list[float]] = None,
                   figure compared against history
     """
     if downscaled:
-        return "downscale", ("RESOLUTION LOST: the output frame is narrower than the "
-                             "source. This is not letterbox cropping. Do not delete "
-                             "the original.")
+        return "downscale", (
+            "RESOLUTION LOST: the output frame is narrower than the "
+            "source. This is not letterbox cropping. Do not delete "
+            "the original."
+        )
     if ratio is None:
         return "unknown", "Too early to project a final size."
     if ratio >= 100:
-        return "blowup", "Projecting LARGER than the source - kill it and restart at CRF 20."
+        return (
+            "blowup",
+            "Projecting LARGER than the source - kill it and restart at CRF 20.",
+        )
     # 80, not 85: this is the top of the 30-80% target band the dashboard draws.
     # Nothing in 12 titles has ever exceeded 71.3%, so this end has never fired --
     # but when it does, the strip and the verdict must say the same thing.
     if ratio >= 80:
-        return "no-saving", "Above the 30-80% target band - kill it and restart at CRF 18."
+        return (
+            "no-saving",
+            "Above the 30-80% target band - kill it and restart at CRF 18.",
+        )
 
     hist = history_ratios(normalised=True) if hist is None else hist
     cmp_ratio = ratio if norm_ratio is None else norm_ratio
@@ -575,12 +614,16 @@ def _verdict(ratio: Optional[float], hist: Optional[list[float]] = None,
     below_floor = cmp_ratio < OUTLIER_FLOOR_NORM
     below_base = base is not None and cmp_ratio < base * OUTLIER_FACTOR
     if below_floor or below_base:
-        detail = (f"the typical encode in this job keeps {base:.1f}% "
-                  f"(median of {len(hist)})" if base is not None
-                  else f"implausibly small for 4K at CRF {CRF_DEFAULT}")
+        detail = (
+            f"the typical encode in this job keeps {base:.1f}% (median of {len(hist)})"
+            if base is not None
+            else f"implausibly small for 4K at CRF {CRF_DEFAULT}"
+        )
         if below_floor:
-            detail = (f"under the {OUTLIER_FLOOR_NORM:.0f}% floor, below which this "
-                      f"job does not delete an original unattended; " + detail)
+            detail = (
+                f"under the {OUTLIER_FLOOR_NORM:.0f}% floor, below which this "
+                f"job does not delete an original unattended; " + detail
+            )
         cropped = norm_ratio is not None and abs(norm_ratio - ratio) >= 0.05
         lead = f"keeps {ratio:.1f}% of source bytes"
         if cropped:
@@ -591,13 +634,16 @@ def _verdict(ratio: Optional[float], hist: Optional[list[float]] = None,
         # say so rather than implying the two are like for like.
         caveat = ""
         if cropped and base is not None:
-            caveat = (" The baseline is only partly crop-adjusted — older ledger "
-                      "rows have no geometry — so it reads lower than it should "
-                      "for a cropped title.")
+            caveat = (
+                " The baseline is only partly crop-adjusted — older ledger "
+                "rows have no geometry — so it reads lower than it should "
+                "for a cropped title."
+            )
         return "suspect", (
             f"UNUSUAL: this encode {lead} — {detail}.{caveat} "
             "Frame width is unchanged, so no resolution was thrown away; "
-            "check picture quality on a scene before deleting the original.")
+            "check picture quality on a scene before deleting the original."
+        )
 
     if ratio >= 70:
         return "thin", "Real but thin saving - worth a human call."
@@ -643,8 +689,9 @@ def live_encodes() -> list[dict]:
     # anything containing a separator), which nulled the live sizes and
     # projections and left "folder" as a whole path -- so the queue's
     # encoding badge and the skip guard's title match both missed.
-    by_output = {os.path.basename(lg["output_name"]): lg
-                 for lg in logs if lg.get("output_name")}
+    by_output = {
+        os.path.basename(lg["output_name"]): lg for lg in logs if lg.get("output_name")
+    }
 
     hist = history_ratios(normalised=True)
     result = []
@@ -654,12 +701,16 @@ def live_encodes() -> list[dict]:
         src_name = os.path.basename(proc["source_name"])
         out_name = os.path.basename(proc["output_name"])
         lg = by_output.get(out_name, {})
-        src = (proc["source_name"] if os.sep in proc["source_name"]
-               and os.path.isfile(proc["source_name"])
-               else _find_in_staging(src_name))
-        out = (proc["output_name"] if os.sep in proc["output_name"]
-               and os.path.isfile(proc["output_name"])
-               else _find_in_staging(out_name))
+        src = (
+            proc["source_name"]
+            if os.sep in proc["source_name"] and os.path.isfile(proc["source_name"])
+            else _find_in_staging(src_name)
+        )
+        out = (
+            proc["output_name"]
+            if os.sep in proc["output_name"] and os.path.isfile(proc["output_name"])
+            else _find_in_staging(out_name)
+        )
         src_b, out_b = _size(src), _size(out)
 
         pct = lg.get("pct")
@@ -673,38 +724,41 @@ def live_encodes() -> list[dict]:
         src_geom, out_geom = lg.get("source_geometry"), lg.get("geometry")
         cf = crop_factor(src_geom, out_geom)
         norm = ratio * cf if ratio is not None else None
-        code, note = _verdict(ratio, hist, norm,
-                              is_downscale(src_geom, out_geom, lg.get("autocrop")))
+        code, note = _verdict(
+            ratio, hist, norm, is_downscale(src_geom, out_geom, lg.get("autocrop"))
+        )
 
         title = re.sub(r"\s+(Remux-)?2160p.*$", "", src_name).strip()
-        result.append({
-            "title": title,
-            "folder": os.path.basename(os.path.dirname(src)) if src else title,
-            "pid": proc["pid"],
-            "crf": proc["crf"] if proc.get("crf") is not None else lg.get("crf"),
-            "pct": pct,
-            "fps": lg.get("fps"),
-            "avg_fps": lg.get("avg_fps"),
-            "eta_s": lg.get("eta_s"),
-            "started_text": lg.get("started_text"),
-            "geometry": lg.get("geometry"),
-            "source_geometry": lg.get("source_geometry"),
-            "audio": lg.get("audio"),
-            "subs": lg.get("subs"),
-            "src_audio": lg.get("src_audio"),
-            "src_subs": lg.get("src_subs"),
-            "decoder_errors": lg.get("decoder_errors"),
-            "source_bytes": src_b,
-            "output_bytes": out_b,
-            "projected_bytes": int(projected) if projected else None,
-            "ratio_pct": round(ratio, 1) if ratio else None,
-            "norm_ratio_pct": round(norm, 1) if norm else None,
-            "crop_factor": round(cf, 3),
-            "shrink_pct": round(100 - ratio, 1) if ratio else None,
-            "verdict": code,
-            "verdict_note": note,
-            "log": lg.get("log"),
-        })
+        result.append(
+            {
+                "title": title,
+                "folder": os.path.basename(os.path.dirname(src)) if src else title,
+                "pid": proc["pid"],
+                "crf": proc["crf"] if proc.get("crf") is not None else lg.get("crf"),
+                "pct": pct,
+                "fps": lg.get("fps"),
+                "avg_fps": lg.get("avg_fps"),
+                "eta_s": lg.get("eta_s"),
+                "started_text": lg.get("started_text"),
+                "geometry": lg.get("geometry"),
+                "source_geometry": lg.get("source_geometry"),
+                "audio": lg.get("audio"),
+                "subs": lg.get("subs"),
+                "src_audio": lg.get("src_audio"),
+                "src_subs": lg.get("src_subs"),
+                "decoder_errors": lg.get("decoder_errors"),
+                "source_bytes": src_b,
+                "output_bytes": out_b,
+                "projected_bytes": int(projected) if projected else None,
+                "ratio_pct": round(ratio, 1) if ratio else None,
+                "norm_ratio_pct": round(norm, 1) if norm else None,
+                "crop_factor": round(cf, 3),
+                "shrink_pct": round(100 - ratio, 1) if ratio else None,
+                "verdict": code,
+                "verdict_note": note,
+                "log": lg.get("log"),
+            }
+        )
     return result
 
 
@@ -751,14 +805,19 @@ def staged_detail() -> list[dict]:
         except OSError:
             continue
         outs = [f for f in files if "2160p HEVC" in f and f.endswith(".mkv")]
-        srcs = [f for f in files if f.endswith(".mkv") and f not in outs
-                and not f.endswith(".partial")]
+        srcs = [
+            f
+            for f in files
+            if f.endswith(".mkv") and f not in outs and not f.endswith(".partial")
+        ]
         src = os.path.join(d, srcs[0]) if srcs else None
-        rows.append({
-            "folder": folder,
-            "source_bytes": _size(src),
-            "has_output": bool(outs),
-        })
+        rows.append(
+            {
+                "folder": folder,
+                "source_bytes": _size(src),
+                "has_output": bool(outs),
+            }
+        )
     return rows
 
 
@@ -783,8 +842,7 @@ def error_marker(title: str) -> Optional[str]:
     just unpickable and rendered red until a human deletes the marker file.
     """
     try:
-        with open(os.path.join(X9, ".error-" + title),
-                  encoding="utf-8") as fh:
+        with open(os.path.join(X9, ".error-" + title), encoding="utf-8") as fh:
             return fh.readline().strip() or "CRF ladder exhausted"
     except OSError:
         return None
@@ -793,7 +851,8 @@ def error_marker(title: str) -> Optional[str]:
 def staged_folders() -> list[str]:
     try:
         return sorted(
-            n for n in os.listdir(X9)
+            n
+            for n in os.listdir(X9)
             if not n.startswith(".") and os.path.isdir(os.path.join(X9, n))
         )
     except OSError:
@@ -809,8 +868,11 @@ QUEUE_TTL = 90.0
 _queue_cache: dict = {"at": 0.0, "key": None, "rows": []}
 
 
-def queue(min_mbps: float = STOP_MBPS, live: Optional[list] = None,
-          hist: Optional[list] = None) -> list[dict]:
+def queue(
+    min_mbps: float = STOP_MBPS,
+    live: Optional[list] = None,
+    hist: Optional[list] = None,
+) -> list[dict]:
     """Everything still above the stop threshold, highest bitrate first.
 
     `live` and `hist` are injectable so one snapshot can compute them once;
@@ -856,23 +918,27 @@ def queue(min_mbps: float = STOP_MBPS, live: Optional[list] = None,
         # (autopilot defers it and retries). Size comes from the staged copy
         # -- same bytes, and the offline path cannot be statted. Halting
         # encodes on a mount blip cost 4h16m on 2026-08-31.
-        root_offline = any(path.startswith(r.rstrip("/") + os.sep)
-                           for r in offline)
+        root_offline = any(path.startswith(r.rstrip("/") + os.sep) for r in offline)
         staged_here = folder.lower() in staged
         if root_offline and not staged_here:
             continue
         if not root_offline and not os.path.exists(path):
             continue
-        size = (_size(os.path.join(X9, folder, os.path.basename(path)))
-                if root_offline else _size(path))
-        rows.append({
-            "title": folder,
-            "mbps": round(mbps, 1),
-            "bytes": size,
-            "staged": staged_here,
-            "encoding": folder.lower() in encoding,
-            "location": _library_of(path),
-        })
+        size = (
+            _size(os.path.join(X9, folder, os.path.basename(path)))
+            if root_offline
+            else _size(path)
+        )
+        rows.append(
+            {
+                "title": folder,
+                "mbps": round(mbps, 1),
+                "bytes": size,
+                "staged": staged_here,
+                "encoding": folder.lower() in encoding,
+                "location": _library_of(path),
+            }
+        )
     ov = load_overrides()
     skips = {t.lower() for t in ov["skip"]}
     pri = {t.lower(): i for i, t in enumerate(ov["priority"])}
@@ -899,13 +965,15 @@ def queue(min_mbps: float = STOP_MBPS, live: Optional[list] = None,
     # skip can never read as a vanished (or finished) title. Pinned rows come
     # first in the hand-chosen order; everything else keeps the bitrate
     # ranking. (A skip clears any pin, so pinned rows are never skipped.)
-    rows.sort(key=lambda r: (pri.get(r["title"].lower(), len(pri)),
-                             -r["mbps"]))
+    rows.sort(key=lambda r: (pri.get(r["title"].lower(), len(pri)), -r["mbps"]))
     return rows
 
 
-def queue_cached(min_mbps: float = STOP_MBPS, live: Optional[list] = None,
-                 hist: Optional[list] = None) -> list[dict]:
+def queue_cached(
+    min_mbps: float = STOP_MBPS,
+    live: Optional[list] = None,
+    hist: Optional[list] = None,
+) -> list[dict]:
     live = live_encodes() if live is None else live
     hist = ledger() if hist is None else hist
     try:
@@ -919,8 +987,14 @@ def queue_cached(min_mbps: float = STOP_MBPS, live: Optional[list] = None,
     # Mount state MUST be in the key. Without it, a NAS remount served the
     # cached empty queue for up to 90 s -- restoring the exact "nothing left to
     # encode" illusion, only now with the offline banner gone.
-    key = (min_mbps, idx_mtime, ov_mtime, len(hist), tuple(staged_folders()),
-           tuple(offline_roots()))
+    key = (
+        min_mbps,
+        idx_mtime,
+        ov_mtime,
+        len(hist),
+        tuple(staged_folders()),
+        tuple(offline_roots()),
+    )
     now = time.monotonic()
     if _queue_cache["key"] == key and now - _queue_cache["at"] < QUEUE_TTL:
         rows = _queue_cache["rows"]
@@ -963,7 +1037,7 @@ def pick_next(rows: list) -> tuple[Optional[dict], set]:
         except OSError:
             continue
         if any("2160p HEVC" in f and f.endswith(".mkv") for f in files):
-            continue          # already encoded (or encoding), awaiting sync
+            continue  # already encoded (or encoding), awaiting sync
         if not any(f.endswith(".mkv") for f in files):
             # A replenish pull still landing: picking this title would make
             # start_encode halt on "no source file" mid-pull.
@@ -998,6 +1072,7 @@ def _library_of(path: str) -> str:
 
 
 # -------------------------------------------------------------------- ledger
+
 
 @dataclass
 class Entry:
@@ -1069,8 +1144,10 @@ def record(entry: Entry) -> None:
 
 # --------------------------------------------------------------------- totals
 
-def summary(hist: Optional[list] = None, q: Optional[list] = None,
-            live: Optional[list] = None) -> dict:
+
+def summary(
+    hist: Optional[list] = None, q: Optional[list] = None, live: Optional[list] = None
+) -> dict:
     hist = ledger() if hist is None else hist
     q = queue(hist=hist) if q is None else q
     # Only rows carrying BOTH sizes may contribute to a ratio. Mixing a row
@@ -1097,8 +1174,7 @@ def summary(hist: Optional[list] = None, q: Optional[list] = None,
     # "0 encoding" while HandBrake was demonstrably at 99%.
     encoding = len(live)
     staged = staged_detail()
-    staged_unencoded = [r for r in staged
-                        if not r["has_output"] and r["source_bytes"]]
+    staged_unencoded = [r for r in staged if not r["has_output"] and r["source_bytes"]]
     # Weighted ratio (total-in vs total-out), NOT the mean of per-title
     # percentages. The two happen to agree today and will diverge; the label
     # downstream says which one this is.
@@ -1110,8 +1186,11 @@ def summary(hist: Optional[list] = None, q: Optional[list] = None,
     # Job progress measures against the ORIGINAL scope: skipped bytes stay in
     # the goal, so skipping work can never render as finishing it.
     skipped_bytes = sum(r["bytes"] or 0 for r in q_skipped)
-    goal = (int((queue_bytes + skipped_bytes) * shrink / 100)
-            if shrink is not None else None)
+    goal = (
+        int((queue_bytes + skipped_bytes) * shrink / 100)
+        if shrink is not None
+        else None
+    )
     return {
         "completed": len(hist),
         "completed_measured": len(paired),
@@ -1136,7 +1215,8 @@ def summary(hist: Optional[list] = None, q: Optional[list] = None,
         "job_progress_pct": (
             round(reclaimed / (reclaimed + goal) * 100, 1)
             if complete and goal is not None and (reclaimed + goal) > 0
-            else None),
+            else None
+        ),
         # Folders physically on the drive, NOT queue rows that happen to be
         # staged -- a staged title already in the ledger occupies disk but is
         # filtered out of the queue, and this is the number read before
@@ -1148,8 +1228,7 @@ def summary(hist: Optional[list] = None, q: Optional[list] = None,
         "staged_in_queue": len([r for r in q_active if r["staged"]]),
         # Label identifies the ROOT, not just the volume: two roots share
         # Vermithor, and "Vermithor, Vermithor offline" names neither.
-        "roots_offline": [f"{volume_name(r)}/{os.path.basename(r)}"
-                          for r in offline],
+        "roots_offline": [f"{volume_name(r)}/{os.path.basename(r)}" for r in offline],
         "library_complete": complete,
         "overrides_corrupt": bool(load_overrides().get("corrupt")),
         # In summary, not only the dashboard payload: `smeltr report` must

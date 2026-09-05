@@ -31,6 +31,7 @@ The PNG decoder below is 30 lines of stdlib (zlib + the five scanline
 filters) so the pixel checks run wherever the Python suite runs, with no
 imaging library and no browser.
 """
+
 import io
 import os
 import re
@@ -63,8 +64,8 @@ def png_decode(data: bytes):
     assert data[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
     pos, idat, w, h, ctype = 8, b"", None, None, None
     while pos < len(data):
-        (ln,) = struct.unpack(">I", data[pos:pos + 4])
-        tag, body = data[pos + 4:pos + 8], data[pos + 8:pos + 8 + ln]
+        (ln,) = struct.unpack(">I", data[pos : pos + 4])
+        tag, body = data[pos + 4 : pos + 8], data[pos + 8 : pos + 8 + ln]
         if tag == b"IHDR":
             w, h, depth, ctype, _, _, interlace = struct.unpack(">IIBBBBB", body)
             assert depth == 8 and interlace == 0, (depth, interlace)
@@ -76,7 +77,7 @@ def png_decode(data: bytes):
     rows, prev = [], bytearray(stride)
     for y in range(h):
         base = y * (stride + 1)
-        f, line = raw[base], bytearray(raw[base + 1:base + 1 + stride])
+        f, line = raw[base], bytearray(raw[base + 1 : base + 1 + stride])
         for i in range(stride):
             a = line[i - bpp] if i >= bpp else 0
             b = prev[i]
@@ -97,7 +98,7 @@ def png_decode(data: bytes):
 
     def pixel(x, y):
         o = x * bpp
-        r, g, b = rows[y][o:o + 3]
+        r, g, b = rows[y][o : o + 3]
         return r, g, b, (rows[y][o + 3] if bpp == 4 else 255)
 
     return w, h, ctype, pixel
@@ -144,11 +145,12 @@ def get(path: str, host: str = "127.0.0.1:8787"):
 
 class Links(unittest.TestCase):
     def head(self) -> str:
-        return server.PAGE[:server.PAGE.index("</head>")]
+        return server.PAGE[: server.PAGE.index("</head>")]
 
     def icon_links(self):
-        return re.findall(r"<link\s+rel=\"(icon|apple-touch-icon)\"([^>]*)>",
-                          self.head())
+        return re.findall(
+            r"<link\s+rel=\"(icon|apple-touch-icon)\"([^>]*)>", self.head()
+        )
 
     def test_three_icon_links_in_head(self):
         rels = [rel for rel, _ in self.icon_links()]
@@ -156,10 +158,13 @@ class Links(unittest.TestCase):
 
     def test_every_href_is_a_served_route(self):
         """A <link> to a path the server 404s is a blank tab and no error."""
-        hrefs = [re.search(r'href="([^"]+)"', attrs).group(1)
-                 for _, attrs in self.icon_links()]
-        self.assertEqual(hrefs, ["/favicon.ico", "/favicon.svg",
-                                 "/apple-touch-icon.png"])
+        hrefs = [
+            re.search(r'href="([^"]+)"', attrs).group(1)
+            for _, attrs in self.icon_links()
+        ]
+        self.assertEqual(
+            hrefs, ["/favicon.ico", "/favicon.svg", "/apple-touch-icon.png"]
+        )
         for href in hrefs:
             self.assertIn(href, server.ICONS)
         # And nothing is served that the page does not name.
@@ -203,8 +208,7 @@ class Files(unittest.TestCase):
         the seam between them is invisible only while they agree."""
         svg = read("favicon.svg").decode("utf-8")
         tile = re.search(r'<rect [^>]*fill="#([0-9a-fA-F]{6})"', svg).group(1)
-        self.assertEqual(tuple(int(tile[i:i + 2], 16) for i in (0, 2, 4)),
-                         PANEL)
+        self.assertEqual(tuple(int(tile[i : i + 2], 16) for i in (0, 2, 4)), PANEL)
         with open(os.path.join(REPO, "tools", "render_favicon.sh")) as fh:
             self.assertIn(f'PANEL="#{tile}"', fh.read())
 
@@ -215,7 +219,8 @@ class Ico(unittest.TestCase):
         ico = server.ICONS["/favicon.ico"][1]
         self.assertEqual(struct.unpack("<HHH", ico[:6]), (0, 1, 1))
         w, h, colours, res, planes, bpp, size, off = struct.unpack(
-            "<BBBBHHII", ico[6:22])
+            "<BBBBHHII", ico[6:22]
+        )
         self.assertEqual((w, h, colours, res, planes, bpp), (32, 32, 0, 0, 1, 32))
         self.assertEqual((size, off), (len(png), 22))
         self.assertEqual(ico[22:], png)
@@ -245,8 +250,12 @@ class Gate(unittest.TestCase):
     def test_the_exemption_is_a_closed_list(self):
         """/favicon.png is a real file in web/ and NOT a route; it stays
         behind the token (403, not 404 -- the gate answers first)."""
-        for path in ("/favicon.png", "/favicon.svg.bak", "/icons/x.svg",
-                     "/apple-touch-icon-precomposed.png"):
+        for path in (
+            "/favicon.png",
+            "/favicon.svg.bak",
+            "/icons/x.svg",
+            "/apple-touch-icon-precomposed.png",
+        ):
             status, _, _ = get(path)
             self.assertEqual(status, 403, path)
 

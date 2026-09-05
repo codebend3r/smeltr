@@ -13,6 +13,7 @@ Exit codes:
   3  ladder     -- no-saving / blowup: should have been auto-killed; retry lower
   4  error      -- could not evaluate (missing files, unreadable log)
 """
+
 from __future__ import annotations
 
 import json
@@ -31,7 +32,7 @@ LADDER = {"no-saving", "blowup"}
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("usage: verdict.py \"<staged folder>\"", file=sys.stderr)
+        print('usage: verdict.py "<staged folder>"', file=sys.stderr)
         return 4
     folder = sys.argv[1]
     d = os.path.join(core.X9, folder)
@@ -41,11 +42,21 @@ def main() -> int:
 
     files = [f for f in os.listdir(d) if not f.startswith("._")]
     outs = [f for f in files if "2160p HEVC" in f and f.endswith(".mkv")]
-    srcs = [f for f in files if f.endswith(".mkv") and f not in outs
-            and not f.endswith(".partial")]
+    srcs = [
+        f
+        for f in files
+        if f.endswith(".mkv") and f not in outs and not f.endswith(".partial")
+    ]
     if len(outs) != 1 or len(srcs) != 1:
-        print(json.dumps({"error": "expected exactly one source and one output",
-                          "sources": srcs, "outputs": outs}))
+        print(
+            json.dumps(
+                {
+                    "error": "expected exactly one source and one output",
+                    "sources": srcs,
+                    "outputs": outs,
+                }
+            )
+        )
         return 4
 
     src, out = os.path.join(d, srcs[0]), os.path.join(d, outs[0])
@@ -56,7 +67,9 @@ def main() -> int:
     for proc in core._ps_handbrake():
         # basename both sides: the autopilot's -o is a full path (see
         # core.log_for_output), so a raw compare never fired this gate.
-        if os.path.basename(proc["output_name"]) == outs[0] and core._alive(proc["pid"]):
+        if os.path.basename(proc["output_name"]) == outs[0] and core._alive(
+            proc["pid"]
+        ):
             print(json.dumps({"error": "encode still running", "pid": proc["pid"]}))
             return 4
 
@@ -74,15 +87,22 @@ def main() -> int:
         return 4
     log_text = core._read_slice(info["log"], 131072, from_end=True)
     if "Encode done" not in log_text and "Finished work" not in log_text:
-        print(json.dumps({"error": "log shows no completion marker; encode died mid-write"}))
+        print(
+            json.dumps(
+                {"error": "log shows no completion marker; encode died mid-write"}
+            )
+        )
         return 4
 
     src_geom, out_geom = info.get("source_geometry"), info.get("geometry")
     ratio = ob / sb * 100.0
     norm = ratio * core.crop_factor(src_geom, out_geom)
     code, note = core._verdict(
-        ratio, core.history_ratios(normalised=True), norm,
-        core.is_downscale(src_geom, out_geom, info.get("autocrop")))
+        ratio,
+        core.history_ratios(normalised=True),
+        norm,
+        core.is_downscale(src_geom, out_geom, info.get("autocrop")),
+    )
 
     # A decoder-error count is not part of the size verdict but must never be
     # silently ignored: a corrupt output can still be small and well-shaped.
@@ -90,14 +110,23 @@ def main() -> int:
     if errs:
         code, note = "halt-decoder-errors", f"{errs} decoder errors in the source"
 
-    print(json.dumps({
-        "folder": folder, "verdict": code, "note": note,
-        "source_bytes": sb, "output_bytes": ob,
-        "ratio_pct": round(ratio, 1), "norm_ratio_pct": round(norm, 1),
-        "shrink_pct": round(100 - ratio, 1),
-        "source_geometry": src_geom, "output_geometry": out_geom,
-        "decoder_errors": errs,
-    }))
+    print(
+        json.dumps(
+            {
+                "folder": folder,
+                "verdict": code,
+                "note": note,
+                "source_bytes": sb,
+                "output_bytes": ob,
+                "ratio_pct": round(ratio, 1),
+                "norm_ratio_pct": round(norm, 1),
+                "shrink_pct": round(100 - ratio, 1),
+                "source_geometry": src_geom,
+                "output_geometry": out_geom,
+                "decoder_errors": errs,
+            }
+        )
+    )
     if code == "good":
         return 0
     if code in LADDER:

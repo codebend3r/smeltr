@@ -20,6 +20,7 @@ the pump is where the dangerous decisions live:
   * the running pull cannot be cancelled. There is no abort path for a
     transfer, and pretending otherwise would strand a hidden folder.
 """
+
 import os
 import sys
 import tempfile
@@ -32,12 +33,18 @@ from pipeline import core
 from dashboard import server
 
 
-GIB = 1024 ** 3
+GIB = 1024**3
 
 
 def row(title, **kw):
-    r = {"title": title, "bytes": 50 * GIB, "mbps": 95.0, "skipped": False,
-         "staged": False, "arriving_bytes": None}
+    r = {
+        "title": title,
+        "bytes": 50 * GIB,
+        "mbps": 95.0,
+        "skipped": False,
+        "staged": False,
+        "arriving_bytes": None,
+    }
     r.update(kw)
     return r
 
@@ -61,8 +68,10 @@ class Fixture(unittest.TestCase):
         # then call this"; what it calls is covered by the stage-control
         # code it shares with the replenisher.
         self.begin = mock.patch.object(
-            server, "_begin_pull_locked",
-            side_effect=lambda r, s, z: self.started.append(r["title"]) or None)
+            server,
+            "_begin_pull_locked",
+            side_effect=lambda r, s, z: self.started.append(r["title"]) or None,
+        )
         self.begin.start()
         self.pgrep = mock.patch.object(server, "_pgrep", return_value=False)
         self.pgrep.start()
@@ -77,8 +86,8 @@ class Fixture(unittest.TestCase):
         # a 10 GiB pull still fits, a 900 GiB one still does not -- so those
         # keep testing the gate and not the host.
         self.statvfs = mock.patch.object(
-            server.os, "statvfs",
-            return_value=mock.Mock(f_bavail=500 * GIB, f_frsize=1))
+            server.os, "statvfs", return_value=mock.Mock(f_bavail=500 * GIB, f_frsize=1)
+        )
         self.statvfs.start()
 
     def tearDown(self):
@@ -92,11 +101,14 @@ class Fixture(unittest.TestCase):
     def index_of(self, *titles):
         """Point the bitrate index at one source file per title."""
         self.index.stop()
-        recs = [{"path": os.path.join("/lib", t[0].upper(), t, t + ".mkv")}
-                for t in titles]
+        recs = [
+            {"path": os.path.join("/lib", t[0].upper(), t, t + ".mkv")} for t in titles
+        ]
         for r in recs:
-            os.makedirs(os.path.dirname(r["path"].replace("/lib", self._tmp.name)),
-                        exist_ok=True)
+            os.makedirs(
+                os.path.dirname(r["path"].replace("/lib", self._tmp.name)),
+                exist_ok=True,
+            )
         self.index = mock.patch.object(core, "load_index", return_value=recs)
         self.index.start()
         return recs
@@ -112,9 +124,11 @@ class Enqueue(Fixture):
         """The bug this feature exists to fix."""
         server._stage_active["title"] = "Croods, The (2013)"
         rows = [row("Cinderella (1950)")]
-        with mock.patch.object(server, "_stage_candidate",
-                               return_value=(rows[0], "/lib/x.mkv", 50 * GIB,
-                                             None, False)):
+        with mock.patch.object(
+            server,
+            "_stage_candidate",
+            return_value=(rows[0], "/lib/x.mkv", 50 * GIB, None, False),
+        ):
             fake = mock.Mock(_queue_rows=mock.Mock(return_value=rows))
             err = server.Handler._apply_stage_start(fake, {"title": rows[0]["title"]})
         self.assertIsNone(err, "a busy wire must queue, not 409")
@@ -134,8 +148,7 @@ class Enqueue(Fixture):
 
     def test_non_string_title_is_rejected(self):
         fake = mock.Mock(_queue_rows=mock.Mock(return_value=[]))
-        self.assertIn("expected", server.Handler._apply_stage_start(fake,
-                                                                   {"title": 3}))
+        self.assertIn("expected", server.Handler._apply_stage_start(fake, {"title": 3}))
 
 
 class Dispatch(Fixture):
@@ -144,8 +157,10 @@ class Dispatch(Fixture):
         server._stage_queue[:] = list(titles)
         rows = [row(t) for t in titles]
         cand = mock.patch.object(
-            server, "_stage_candidate",
-            side_effect=lambda t, rs: (row(t), "/lib/x.mkv", GIB, None, False))
+            server,
+            "_stage_candidate",
+            side_effect=lambda t, rs: (row(t), "/lib/x.mkv", GIB, None, False),
+        )
         cand.start()
         for expected in titles:
             self.pump(rows)
@@ -173,7 +188,7 @@ class Dispatch(Fixture):
     def test_a_stale_replenish_lock_is_named_as_stale(self):
         os.mkdir(os.path.join(core.X9, ".replenish.lock"))
         server._stage_queue[:] = ["A (1990)"]
-        self.pump([row("A (1990)")])   # _pgrep is False: no replenisher alive
+        self.pump([row("A (1990)")])  # _pgrep is False: no replenisher alive
         self.assertEqual(self.started, [])
         self.assertIn("STALE", server._stage_wait["why"])
 
@@ -184,13 +199,18 @@ class HoldsRatherThanDrops(Fixture):
     def test_a_full_drive_holds_the_head(self):
         server._stage_queue[:] = ["A (1990)", "B (1991)"]
         rows = [row("A (1990)"), row("B (1991)")]
-        with mock.patch.object(server, "_stage_candidate",
-                               return_value=(rows[0], "/lib/a.mkv", 900 * GIB,
-                                             None, False)):
+        with mock.patch.object(
+            server,
+            "_stage_candidate",
+            return_value=(rows[0], "/lib/a.mkv", 900 * GIB, None, False),
+        ):
             self.pump(rows)
         self.assertEqual(self.started, [], "must not start what will not fit")
-        self.assertEqual(server._stage_queue, ["A (1990)", "B (1991)"],
-                         "a full drive must not drop queued work")
+        self.assertEqual(
+            server._stage_queue,
+            ["A (1990)", "B (1991)"],
+            "a full drive must not drop queued work",
+        )
         self.assertIn("room", server._stage_wait["why"])
 
     def test_the_wait_reason_carries_no_volatile_number(self):
@@ -213,7 +233,8 @@ class HoldsRatherThanDrops(Fixture):
         recs = [{"path": "/nowhere/A (1990)/A (1990).mkv"}]
         with mock.patch.object(core, "load_index", return_value=recs):
             r, src, size, err, held = server._stage_candidate(
-                "A (1990)", [row("A (1990)")])
+                "A (1990)", [row("A (1990)")]
+            )
         self.assertTrue(held, "an unmounted NAS is 'not yet', not 'never'")
         self.assertIn("unreachable", err)
 
@@ -226,12 +247,15 @@ class DropsExactlyOne(Fixture):
         self.pump(rows)
         self.assertEqual(server._stage_queue, ["B (1991)"])
         self.assertEqual(self.started, [], "nothing to pull; it is already there")
-        self.assertEqual(server._encode_note["kind"], "ok",
-                         "already-staged is not an error")
+        self.assertEqual(
+            server._encode_note["kind"], "ok", "already-staged is not an error"
+        )
         # ...and the next one is not wedged behind it.
-        with mock.patch.object(server, "_stage_candidate",
-                               return_value=(rows[1], "/lib/b.mkv", 10 * GIB,
-                                             None, False)):
+        with mock.patch.object(
+            server,
+            "_stage_candidate",
+            return_value=(rows[1], "/lib/b.mkv", 10 * GIB, None, False),
+        ):
             self.pump(rows)
         self.assertEqual(self.started, ["B (1991)"])
 
@@ -248,13 +272,13 @@ class DropsExactlyOne(Fixture):
 
     def test_duplicate_folder_names_refuse_to_act_on_either(self):
         r, src, size, err, held = server._stage_candidate(
-            "A (1990)", [row("A (1990)"), row("A (1990)")])
+            "A (1990)", [row("A (1990)"), row("A (1990)")]
+        )
         self.assertIn("two queue rows", err)
         self.assertFalse(held)
 
     def test_a_title_missing_from_the_bitrate_index_is_dropped(self):
-        r, src, size, err, held = server._stage_candidate(
-            "A (1990)", [row("A (1990)")])
+        r, src, size, err, held = server._stage_candidate("A (1990)", [row("A (1990)")])
         self.assertIn("bitrate index", err)
         self.assertFalse(held)
 
@@ -318,8 +342,7 @@ class OrphanPulls(Fixture):
         self.assertTrue(done)
         self.assertFalse(os.path.exists(hidden))
         dest = os.path.join(core.X9, "A (1990)")
-        self.assertTrue(
-            os.path.isfile(os.path.join(dest, "A (1990) Bluray-2160p.mkv")))
+        self.assertTrue(os.path.isfile(os.path.join(dest, "A (1990) Bluray-2160p.mkv")))
         self.assertEqual(server._encode_note["kind"], "ok")
 
     def test_a_half_finished_orphan_is_deleted(self):
@@ -365,7 +388,8 @@ class OrphanPulls(Fixture):
         done = server._sweep_orphans_once()
         self.assertTrue(done)
         self.assertTrue(
-            os.path.isfile(os.path.join(hidden, "G (1996) Bluray-2160p.mkv")))
+            os.path.isfile(os.path.join(hidden, "G (1996) Bluray-2160p.mkv"))
+        )
         self.assertEqual(server._encode_note["kind"], "bad")
         self.assertIn("by hand", server._encode_note["msg"])
 
@@ -386,6 +410,7 @@ class OrphanPulls(Fixture):
 
     def test_main_wires_the_adoption_in(self):
         import inspect
+
         self.assertIn("_adopt_orphan_pulls()", inspect.getsource(server.main))
 
 

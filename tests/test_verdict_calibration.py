@@ -14,6 +14,7 @@ that drove it, both pinned below:
     thinnest output ever made here and its ledger row records SSIM 0.9931/0.9945
     against the cropped original.
 """
+
 import json
 import os
 import statistics
@@ -80,7 +81,7 @@ class Constants(unittest.TestCase):
 class Floor(unittest.TestCase):
     """With too little history there is no baseline, so only the floor applies."""
 
-    NO_HIST = []          # len < MIN_HISTORY -> base is None
+    NO_HIST = []  # len < MIN_HISTORY -> base is None
 
     def v(self, raw, norm):
         return core._verdict(raw, self.NO_HIST, norm, False)[0]
@@ -154,10 +155,13 @@ class RelativeToHistory(unittest.TestCase):
 
     def test_the_floor_is_what_binds_today(self):
         """Which rule is live is a fact worth failing on when it changes."""
-        self.assertGreater(core.OUTLIER_FLOOR_NORM, self.thr,
-                           f"the relative line ({self.thr:.2f}%) has risen above "
-                           f"the floor ({core.OUTLIER_FLOOR_NORM}%); the floor no "
-                           f"longer guards Flight-class results on its own")
+        self.assertGreater(
+            core.OUTLIER_FLOOR_NORM,
+            self.thr,
+            f"the relative line ({self.thr:.2f}%) has risen above "
+            f"the floor ({core.OUTLIER_FLOOR_NORM}%); the floor no "
+            f"longer guards Flight-class results on its own",
+        )
 
     def test_flight_still_asks_for_a_human(self):
         """Flight-class is REJECTED work, and the floor is what says so.
@@ -176,11 +180,13 @@ class RelativeToHistory(unittest.TestCase):
         for label, hist in (("live", self.hist), ("half", [h / 2 for h in self.hist])):
             code, _ = core._verdict(9.4, hist, 12.6, False)
             self.assertEqual(
-                code, "suspect",
+                code,
+                "suspect",
                 f"Flight-class (12.6% normalised) auto-syncs against the {label} "
                 f"baseline (median {statistics.median(hist):.1f}%). Deleting a "
                 f"~92 GB original unreviewed is possible again -- the floor is "
-                f"meant to make this independent of the baseline.")
+                f"meant to make this independent of the baseline.",
+            )
         # It now trips the FLOOR, not the relative rule, and the note has to
         # name the rule that actually fired -- the inverse of what this
         # asserted while the relative line was the binding one.
@@ -214,8 +220,9 @@ class Band(unittest.TestCase):
         self.assertEqual(self.v(80.0), "no-saving")
 
     def test_no_saving_names_the_band(self):
-        self.assertIn("30-80% target band",
-                      core._verdict(80.0, self.hist, 80.0, False)[1])
+        self.assertIn(
+            "30-80% target band", core._verdict(80.0, self.hist, 80.0, False)[1]
+        )
 
     def test_thin_starts_at_70(self):
         self.assertEqual(self.v(69.9), "good")
@@ -255,10 +262,10 @@ class LedgerRegression(unittest.TestCase):
     # The rows the calibration was reasoned about. New titles are covered by
     # the invariant below rather than being added to this list.
     ANCHORS = {
-        "Flight (2012)": "suspect",      # SSIM-verified good, kept for review
+        "Flight (2012)": "suspect",  # SSIM-verified good, kept for review
         "Oldboy (Oldeuboi) (2003)": "thin",
         "Shrek (2001)": "good",
-        "Hunt for the Wilderpeople (2016)": "good",   # heavy crop: 22.8 raw, 30.8 norm
+        "Hunt for the Wilderpeople (2016)": "good",  # heavy crop: 22.8 raw, 30.8 norm
     }
 
     def measured(self):
@@ -266,10 +273,11 @@ class LedgerRegression(unittest.TestCase):
         for r in rows():
             sb, ob = r.get("source_bytes"), r.get("output_bytes")
             if not sb or not ob:
-                continue          # Wanted (2008): no source size, never back-solved
+                continue  # Wanted (2008): no source size, never back-solved
             raw = ob / sb * 100.0
-            norm = raw * core.crop_factor(r.get("source_geometry"),
-                                          r.get("output_geometry"))
+            norm = raw * core.crop_factor(
+                r.get("source_geometry"), r.get("output_geometry")
+            )
             yield r["title"], raw, norm, core._verdict(raw, hist, norm, False)[0]
 
     def test_anchor_rows_keep_their_verdict(self):
@@ -277,8 +285,11 @@ class LedgerRegression(unittest.TestCase):
         for title, raw, norm, code in self.measured():
             if title in self.ANCHORS:
                 seen[title] = code
-                self.assertEqual(code, self.ANCHORS[title],
-                                 f"{title} at {raw:.1f}% raw / {norm:.1f}% norm")
+                self.assertEqual(
+                    code,
+                    self.ANCHORS[title],
+                    f"{title} at {raw:.1f}% raw / {norm:.1f}% norm",
+                )
         self.assertEqual(set(seen), set(self.ANCHORS), "an anchor row left the ledger")
 
     def test_no_shipped_row_reads_as_kill_it(self):
@@ -286,8 +297,11 @@ class LedgerRegression(unittest.TestCase):
         `downscale` all mean "kill it and start over", which cannot be true of
         something already on the NAS -- if one fires, a threshold is wrong."""
         for title, raw, norm, code in self.measured():
-            self.assertIn(code, ("good", "thin", "suspect"),
-                          f"{title} at {raw:.1f}% raw / {norm:.1f}% norm -> {code}")
+            self.assertIn(
+                code,
+                ("good", "thin", "suspect"),
+                f"{title} at {raw:.1f}% raw / {norm:.1f}% norm -> {code}",
+            )
 
     def test_the_unmeasurable_row_is_excluded(self):
         missing = [r for r in rows() if not r.get("source_bytes")]
@@ -316,10 +330,12 @@ class FixtureIntegrity(unittest.TestCase):
 
     def test_fixture_is_the_calibration_corpus(self):
         """12+ measured rows, or the baseline it feeds means nothing."""
-        measured = [r for r in self.rows
-                    if r.get("source_bytes") and r.get("output_bytes")]
-        self.assertGreaterEqual(len(measured), 12,
-                                "the frozen corpus lost rows the calibration relied on")
+        measured = [
+            r for r in self.rows if r.get("source_bytes") and r.get("output_bytes")
+        ]
+        self.assertGreaterEqual(
+            len(measured), 12, "the frozen corpus lost rows the calibration relied on"
+        )
 
     def test_frozen_anchors_keep_their_verdict(self):
         hist = core.history_ratios(normalised=True)
@@ -329,8 +345,9 @@ class FixtureIntegrity(unittest.TestCase):
             if not sb or not ob or r["title"] not in LedgerRegression.ANCHORS:
                 continue
             raw = ob / sb * 100.0
-            norm = raw * core.crop_factor(r.get("source_geometry"),
-                                          r.get("output_geometry"))
+            norm = raw * core.crop_factor(
+                r.get("source_geometry"), r.get("output_geometry")
+            )
             seen[r["title"]] = core._verdict(raw, hist, norm, False)[0]
         self.assertEqual(seen, LedgerRegression.ANCHORS)
 
@@ -341,11 +358,15 @@ class FixtureIntegrity(unittest.TestCase):
             if not sb or not ob:
                 continue
             raw = ob / sb * 100.0
-            norm = raw * core.crop_factor(r.get("source_geometry"),
-                                          r.get("output_geometry"))
+            norm = raw * core.crop_factor(
+                r.get("source_geometry"), r.get("output_geometry")
+            )
             code = core._verdict(raw, hist, norm, False)[0]
-            self.assertIn(code, ("good", "thin", "suspect"),
-                          f"{r['title']} at {raw:.1f}% raw -> {code}")
+            self.assertIn(
+                code,
+                ("good", "thin", "suspect"),
+                f"{r['title']} at {raw:.1f}% raw -> {code}",
+            )
 
 
 if __name__ == "__main__":

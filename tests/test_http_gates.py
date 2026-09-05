@@ -17,6 +17,7 @@ The gates are pure functions of the request, so they are exercised directly on
 a Handler built without a socket. Driving them over a real connection would
 test http.server, not this.
 """
+
 import os
 import sys
 import tempfile
@@ -57,8 +58,7 @@ class HostGate(unittest.TestCase):
     """A Host the server does not answer to is a rebinding attempt."""
 
     def test_plain_and_ported_loopback_pass(self):
-        for host in ("127.0.0.1", "127.0.0.1:8787", "localhost",
-                     "localhost:8787"):
+        for host in ("127.0.0.1", "127.0.0.1:8787", "localhost", "localhost:8787"):
             with self.subTest(host=host):
                 self.assertTrue(handler(host)._host_ok())
 
@@ -79,8 +79,12 @@ class HostGate(unittest.TestCase):
         self.assertFalse(handler("")._host_ok())
 
     def test_foreign_host_is_refused(self):
-        for host in ("evil.example.com", "evil.example.com:8787",
-                     "127.0.0.1.evil.com", "localhost.evil.com"):
+        for host in (
+            "evil.example.com",
+            "evil.example.com:8787",
+            "127.0.0.1.evil.com",
+            "localhost.evil.com",
+        ):
             with self.subTest(host=host):
                 self.assertFalse(handler(host)._host_ok())
 
@@ -119,31 +123,45 @@ class WriteGate(unittest.TestCase):
 
     def test_loopback_always_writes(self):
         with mock.patch.object(server, "LAN_WRITES", False):
-            self.assertTrue(handler(peer="127.0.0.1", local="127.0.0.1")
-                            ._writes_ok("/api/queue/skip"))
+            self.assertTrue(
+                handler(peer="127.0.0.1", local="127.0.0.1")._writes_ok(
+                    "/api/queue/skip"
+                )
+            )
 
     def test_lan_peer_is_read_only_by_default(self):
         with mock.patch.object(server, "LAN_WRITES", False):
-            self.assertFalse(handler(peer="192.168.1.50", local="192.168.1.9")
-                             ._writes_ok("/api/queue/skip"))
+            self.assertFalse(
+                handler(peer="192.168.1.50", local="192.168.1.9")._writes_ok(
+                    "/api/queue/skip"
+                )
+            )
 
     def test_lan_peer_may_pause(self):
         """The one write allowed off-box. Its worst case is the pipeline
         WAITING -- it cannot delete, encode, reorder or stage. The operator
         watches this on an iPad and could not stop the job from it."""
         with mock.patch.object(server, "LAN_WRITES", False):
-            self.assertTrue(handler(peer="192.168.1.50", local="192.168.1.9")
-                            ._writes_ok("/api/pause"))
+            self.assertTrue(
+                handler(peer="192.168.1.50", local="192.168.1.9")._writes_ok(
+                    "/api/pause"
+                )
+            )
 
     def test_lan_peer_may_pause_but_still_not_delete_or_encode(self):
         """Every OTHER mutating route stays on this Mac. Un-skipping re-arms a
         ~90 GB deletion; encode control spawns and kills HandBrake."""
         with mock.patch.object(server, "LAN_WRITES", False):
             h = handler(peer="192.168.1.50", local="192.168.1.9")
-            for route in ("/api/queue/skip", "/api/queue/order",
-                          "/api/queue/crf",
-                          "/api/encode/start", "/api/encode/abort",
-                          "/api/stage/start", "/api/stage/cancel"):
+            for route in (
+                "/api/queue/skip",
+                "/api/queue/order",
+                "/api/queue/crf",
+                "/api/encode/start",
+                "/api/encode/abort",
+                "/api/stage/start",
+                "/api/stage/cancel",
+            ):
                 self.assertFalse(h._writes_ok(route), route)
 
     def test_the_crf_picker_is_NOT_lan_writable(self):
@@ -157,8 +175,9 @@ class WriteGate(unittest.TestCase):
         """A caller that forgets the route must not fall through to the loose
         branch. A new endpoint is refused off-box until it is listed."""
         with mock.patch.object(server, "LAN_WRITES", False):
-            self.assertFalse(handler(peer="192.168.1.50", local="192.168.1.9")
-                             ._writes_ok())
+            self.assertFalse(
+                handler(peer="192.168.1.50", local="192.168.1.9")._writes_ok()
+            )
 
     def test_lan_peer_may_start_the_driver(self):
         """Added 2026-08-31 with the big play/pause toggle. The operator
@@ -166,15 +185,20 @@ class WriteGate(unittest.TestCase):
         via the LAN URL. Start's worst case is the pipeline running exactly
         as designed -- the same class as resume, already LAN-allowed."""
         with mock.patch.object(server, "LAN_WRITES", False):
-            self.assertTrue(handler(peer="192.168.1.50", local="192.168.1.9")
-                            ._writes_ok("/api/driver/start"))
+            self.assertTrue(
+                handler(peer="192.168.1.50", local="192.168.1.9")._writes_ok(
+                    "/api/driver/start"
+                )
+            )
 
     def test_the_lan_routes_are_spelled_the_way_do_POST_dispatches_them(self):
         """LAN_WRITE_ROUTES is matched against parsed.path, so a typo here
         would silently re-lock the iPad rather than fail loudly."""
         src_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "dashboard", "server.py")
+            "dashboard",
+            "server.py",
+        )
         with open(src_path, encoding="utf-8") as fh:
             src = fh.read()
         for route in ("/api/pause", "/api/driver/start"):
@@ -187,13 +211,19 @@ class WriteGate(unittest.TestCase):
         itself: the operator opened the LAN URL in a local browser. A remote
         peer cannot spoof it over TCP -- the SYN-ACK routes back to us."""
         with mock.patch.object(server, "LAN_WRITES", False):
-            self.assertTrue(handler(peer="192.168.1.9", local="192.168.1.9")
-                            ._writes_ok("/api/queue/skip"))
+            self.assertTrue(
+                handler(peer="192.168.1.9", local="192.168.1.9")._writes_ok(
+                    "/api/queue/skip"
+                )
+            )
 
     def test_opt_in_lets_the_lan_write(self):
         with mock.patch.object(server, "LAN_WRITES", True):
-            self.assertTrue(handler(peer="192.168.1.50", local="192.168.1.9")
-                            ._writes_ok("/api/queue/skip"))
+            self.assertTrue(
+                handler(peer="192.168.1.50", local="192.168.1.9")._writes_ok(
+                    "/api/queue/skip"
+                )
+            )
 
 
 class PrivateAddressGate(unittest.TestCase):
@@ -201,14 +231,26 @@ class PrivateAddressGate(unittest.TestCase):
     that is not demonstrably a home LAN must fail closed to loopback."""
 
     def test_rfc1918_and_cgnat_are_lan(self):
-        for addr in ("192.168.1.9", "10.0.0.4", "172.16.5.5", "172.31.255.254",
-                     "100.64.0.1", "100.127.255.255"):
+        for addr in (
+            "192.168.1.9",
+            "10.0.0.4",
+            "172.16.5.5",
+            "172.31.255.254",
+            "100.64.0.1",
+            "100.127.255.255",
+        ):
             with self.subTest(addr=addr):
                 self.assertTrue(server._is_private(addr))
 
     def test_public_and_link_local_are_not_lan(self):
-        for addr in ("8.8.8.8", "1.1.1.1", "169.254.10.5", "172.32.0.1",
-                     "100.128.0.1", "203.0.113.5"):
+        for addr in (
+            "8.8.8.8",
+            "1.1.1.1",
+            "169.254.10.5",
+            "172.32.0.1",
+            "100.128.0.1",
+            "203.0.113.5",
+        ):
             with self.subTest(addr=addr):
                 self.assertFalse(server._is_private(addr))
 
@@ -247,8 +289,10 @@ class DriverStart(unittest.TestCase):
         return object.__new__(server.Handler)
 
     def test_refuses_while_the_driver_is_alive(self):
-        with mock.patch.object(server, "_driver_pids", return_value=[123]), \
-             mock.patch.object(server.subprocess, "Popen") as pop:
+        with (
+            mock.patch.object(server, "_driver_pids", return_value=[123]),
+            mock.patch.object(server.subprocess, "Popen") as pop,
+        ):
             err = self._h()._apply_driver_start({})
         self.assertIn("already running", err)
         pop.assert_not_called()
@@ -256,20 +300,24 @@ class DriverStart(unittest.TestCase):
     def test_refuses_while_an_encode_runs(self):
         """A driver started beside a dashboard encode would pick and start a
         SECOND encode; only one may ever run."""
-        with mock.patch.object(server, "_driver_pids", return_value=[]), \
-             mock.patch.object(server.core, "live_encodes",
-                               return_value=[{"title": "x"}]), \
-             mock.patch.object(server.subprocess, "Popen") as pop:
+        with (
+            mock.patch.object(server, "_driver_pids", return_value=[]),
+            mock.patch.object(
+                server.core, "live_encodes", return_value=[{"title": "x"}]
+            ),
+            mock.patch.object(server.subprocess, "Popen") as pop,
+        ):
             err = self._h()._apply_driver_start({})
         self.assertIn("encode", err)
         pop.assert_not_called()
 
     def test_refuses_with_no_staging_drive(self):
-        with mock.patch.object(server, "_driver_pids", return_value=[]), \
-             mock.patch.object(server.core, "live_encodes", return_value=[]), \
-             mock.patch.object(server.core, "X9",
-                               "/nonexistent/smeltr-test-x9"), \
-             mock.patch.object(server.subprocess, "Popen") as pop:
+        with (
+            mock.patch.object(server, "_driver_pids", return_value=[]),
+            mock.patch.object(server.core, "live_encodes", return_value=[]),
+            mock.patch.object(server.core, "X9", "/nonexistent/smeltr-test-x9"),
+            mock.patch.object(server.subprocess, "Popen") as pop,
+        ):
             err = self._h()._apply_driver_start({})
         self.assertIn("not mounted", err)
         pop.assert_not_called()
@@ -281,16 +329,16 @@ class DriverStart(unittest.TestCase):
         dashboard restart."""
         with tempfile.TemporaryDirectory() as d:
             os.mkdir(os.path.join(d, ".autopilot.lock"))
-            with mock.patch.object(server, "_driver_pids", return_value=[]), \
-                 mock.patch.object(server.core, "live_encodes",
-                                   return_value=[]), \
-                 mock.patch.object(server.core, "X9", d), \
-                 mock.patch.object(server.core, "set_paused") as sp, \
-                 mock.patch.object(server.subprocess, "Popen") as pop:
+            with (
+                mock.patch.object(server, "_driver_pids", return_value=[]),
+                mock.patch.object(server.core, "live_encodes", return_value=[]),
+                mock.patch.object(server.core, "X9", d),
+                mock.patch.object(server.core, "set_paused") as sp,
+                mock.patch.object(server.subprocess, "Popen") as pop,
+            ):
                 err = self._h()._apply_driver_start({})
             self.assertIsNone(err)
-            self.assertFalse(
-                os.path.isdir(os.path.join(d, ".autopilot.lock")))
+            self.assertFalse(os.path.isdir(os.path.join(d, ".autopilot.lock")))
             sp.assert_called_once_with(False)
             kw = pop.call_args.kwargs
             self.assertEqual(kw["cwd"], d)

@@ -10,6 +10,7 @@ a fact about the wire) or a new attempt (a partial that shrank).
 
 Filesystem is real (temp dirs); core.X9 and core.LIBRARY_ROOTS are patched.
 """
+
 import os
 import sys
 import tempfile
@@ -37,8 +38,10 @@ class TransferRateHold(unittest.TestCase):
         os.makedirs(os.path.join(root, "M", FOLDER))
         self.part = os.path.join(root, "M", FOLDER, OUT + ".partial")
         self._partial(100)
-        self.patches = [mock.patch.object(core, "X9", x9),
-                        mock.patch.object(core, "LIBRARY_ROOTS", [root])]
+        self.patches = [
+            mock.patch.object(core, "X9", x9),
+            mock.patch.object(core, "LIBRARY_ROOTS", [root]),
+        ]
         for p in self.patches:
             p.start()
         server._xfer_track.clear()
@@ -62,7 +65,7 @@ class TransferRateHold(unittest.TestCase):
         self.assertIsNone(self._row()["rate_bps"])
 
     def test_rate_appears_on_growth_and_holds_without_it(self):
-        self._row()                      # anchor
+        self._row()  # anchor
         time.sleep(0.02)
         self._partial(400)
         grown = self._row()
@@ -79,7 +82,7 @@ class TransferRateHold(unittest.TestCase):
         self._partial(400)
         self.assertIsNotNone(self._row()["rate_bps"])
         rec = server._xfer_track[FOLDER]
-        rec["grew"] -= 200               # no growth for >120 s
+        rec["grew"] -= 200  # no growth for >120 s
         old = time.time() - 200
         os.utime(self.part, (old, old))  # and the mtime agrees
         row = self._row()
@@ -94,7 +97,7 @@ class TransferRateHold(unittest.TestCase):
         time.sleep(0.02)
         self._partial(400)
         self.assertIsNotNone(self._row()["rate_bps"])
-        server._xfer_track[FOLDER]["grew"] -= (server.RATE_HOLD_SECONDS + 1)
+        server._xfer_track[FOLDER]["grew"] -= server.RATE_HOLD_SECONDS + 1
         row = self._row()
         self.assertFalse(row["stalled"])
         self.assertIsNone(row["rate_bps"])
@@ -104,7 +107,7 @@ class TransferRateHold(unittest.TestCase):
         time.sleep(0.02)
         self._partial(400)
         self.assertIsNotNone(self._row()["rate_bps"])
-        self._partial(50)                # smaller = restarted push
+        self._partial(50)  # smaller = restarted push
         row = self._row()
         self.assertIsNone(row["rate_bps"])
         self.assertFalse(row["stalled"])

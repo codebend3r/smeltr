@@ -18,6 +18,7 @@ The two failures this pins:
 of the words that do halt. It was deleted rather than completed -- the
 docstring already lists the codes, and `return 2` is the real fallthrough.
 """
+
 import ast
 import os
 import unittest
@@ -40,8 +41,11 @@ def verdict_words() -> set:
     suite instead of silently inheriting the fallthrough.
     """
     tree = ast.parse(source("pipeline/core.py"))
-    fn = next(n for n in ast.walk(tree)
-              if isinstance(n, ast.FunctionDef) and n.name == "_verdict")
+    fn = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_verdict"
+    )
     words = set()
     for node in ast.walk(fn):
         if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple):
@@ -69,8 +73,9 @@ class Mapping(unittest.TestCase):
     def test_only_good_exits_zero(self):
         """0 is the delete-the-original code. Exactly one word may earn it."""
         zero = {w for w in verdict_words() | SYNTHETIC if exit_code_for(w) == 0}
-        self.assertEqual(zero, {"good"},
-                         "a word other than 'good' now authorises a deletion")
+        self.assertEqual(
+            zero, {"good"}, "a word other than 'good' now authorises a deletion"
+        )
 
     def test_every_word_maps_to_a_documented_code(self):
         for word in verdict_words() | SYNTHETIC:
@@ -82,9 +87,11 @@ class Mapping(unittest.TestCase):
         every other non-good word needs a human, and 2 is how it gets one."""
         self.assertEqual(verdict.LADDER, {"no-saving", "blowup"})
         for word in verdict.LADDER:
-            self.assertIn(word, verdict_words(),
-                          f"LADDER carries '{word}', which core._verdict() "
-                          f"can no longer return")
+            self.assertIn(
+                word,
+                verdict_words(),
+                f"LADDER carries '{word}', which core._verdict() can no longer return",
+            )
 
     def test_unknown_word_halts(self):
         """The fallthrough must fail SAFE, not fail open."""
@@ -100,17 +107,19 @@ class NoDeadHaltSet(unittest.TestCase):
 
     def test_halt_set_is_gone(self):
         src = source("pipeline/verdict.py")
-        self.assertNotIn("HALT", src,
-                         "HALT is back — make it total and read it in main(), "
-                         "or drop it again")
+        self.assertNotIn(
+            "HALT",
+            src,
+            "HALT is back — make it total and read it in main(), or drop it again",
+        )
 
     def test_halting_words_are_the_expected_set(self):
         """The words that stop the driver, asserted directly instead of
         through a constant that could drift from them."""
-        halting = {w for w in verdict_words() | SYNTHETIC
-                   if exit_code_for(w) == 2}
-        self.assertEqual(halting, {"suspect", "thin", "downscale", "unknown",
-                                   "halt-decoder-errors"})
+        halting = {w for w in verdict_words() | SYNTHETIC if exit_code_for(w) == 2}
+        self.assertEqual(
+            halting, {"suspect", "thin", "downscale", "unknown", "halt-decoder-errors"}
+        )
 
 
 class Docstring(unittest.TestCase):

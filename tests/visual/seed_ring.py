@@ -14,6 +14,7 @@ gap rule is visible, and an unreadable GPU for one stretch so the em-dash
 path renders. `--depth-seconds` seeds a PARTIAL ring, which is what puts the
 --skel wash and the 0 baseline on screen.
 """
+
 import argparse
 import math
 import os
@@ -55,8 +56,12 @@ def sample(ts: int, day_phase: float):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("directory")
-    ap.add_argument("--depth-seconds", type=int, default=sysmon.SLOTS,
-                    help="how much history to write (default: the whole ring)")
+    ap.add_argument(
+        "--depth-seconds",
+        type=int,
+        default=sysmon.SLOTS,
+        help="how much history to write (default: the whole ring)",
+    )
     args = ap.parse_args()
 
     depth = max(1, min(args.depth_seconds, sysmon.SLOTS))
@@ -69,8 +74,10 @@ def main() -> int:
     buf = bytearray(sysmon.SLOTS * sysmon.SLOT_BYTES)
     # Two sampler outages, so a GAP is visible next to the flat baseline and
     # the two cannot be confused by eye.
-    holes = ((now - 5 * 3600, now - 5 * 3600 + 900),
-             (now - 40 * 3600, now - 40 * 3600 + 7200))
+    holes = (
+        (now - 5 * 3600, now - 5 * 3600 + 900),
+        (now - 40 * 3600, now - 40 * 3600 + 7200),
+    )
     written = 0
     for ts in range(now - depth + 1, now + 1):
         if any(lo <= ts < hi for lo, hi in holes):
@@ -78,15 +85,17 @@ def main() -> int:
         vals = sample(ts, ((ts % 86400) / 86400.0))
         packed = sysmon.SLOT.pack(ts, *[NAN if v is None else v for v in vals])
         off = (ts % sysmon.SLOTS) * sysmon.SLOT_BYTES
-        buf[off:off + sysmon.SLOT_BYTES] = packed
+        buf[off : off + sysmon.SLOT_BYTES] = packed
         written += 1
 
     with open(path, "wb") as fh:
         fh.write(sysmon.MAGIC)
         fh.write(buf)
     os.chmod(path, 0o600)
-    print(f"{path}: {written} samples, {depth} s deep "
-          f"({struct.calcsize('<I7f')} B/slot, {os.path.getsize(path) >> 20} MiB)")
+    print(
+        f"{path}: {written} samples, {depth} s deep "
+        f"({struct.calcsize('<I7f')} B/slot, {os.path.getsize(path) >> 20} MiB)"
+    )
     return 0
 
 

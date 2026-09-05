@@ -46,9 +46,9 @@ import sys
 import threading
 import time
 
-SLOTS = 604800                      # one slot per second, 7 d
-SLOT = struct.Struct("<I7f")        # ts + cpu gpu ram net_in net_out disk_r disk_w
-SLOT_BYTES = SLOT.size              # 32
+SLOTS = 604800  # one slot per second, 7 d
+SLOT = struct.Struct("<I7f")  # ts + cpu gpu ram net_in net_out disk_r disk_w
+SLOT_BYTES = SLOT.size  # 32
 MAGIC = b"SMLTRMON2\0\0\0\0\0\0\0"  # 16 bytes; bump the digit to invalidate
 N_METRICS = 7
 RING_NAME = "sysmon.ring"
@@ -59,6 +59,7 @@ _NAN = float("nan")
 # --------------------------------------------------------------- pure parsers
 # Each takes raw command output so the tests can feed fixtures. They return
 # cumulative counters or absolute readings; rate() turns counters into /s.
+
 
 def parse_ioreg_gpu(text: str):
     """Max "Device Utilization %" across accelerators, or None if absent."""
@@ -93,8 +94,9 @@ def parse_netstat(text: str):
         if len(parts) < 10 or not parts[2].startswith("<Link#"):
             continue
         name = parts[0].rstrip("*")
-        if name.startswith(("lo", "utun", "gif", "stf", "bridge",
-                            "awdl", "llw", "ap", "anpi")):
+        if name.startswith(
+            ("lo", "utun", "gif", "stf", "bridge", "awdl", "llw", "ap", "anpi")
+        ):
             continue
         try:
             total_in += int(parts[-5])
@@ -118,9 +120,12 @@ def parse_vm_stat(text: str, total_bytes: int):
         if m:
             fields[m.group(1).strip()] = int(m.group(2))
     try:
-        used_pages = (fields["Anonymous pages"] - fields["Pages purgeable"]
-                      + fields["Pages wired down"]
-                      + fields["Pages occupied by compressor"])
+        used_pages = (
+            fields["Anonymous pages"]
+            - fields["Pages purgeable"]
+            + fields["Pages wired down"]
+            + fields["Pages occupied by compressor"]
+        )
     except KeyError:
         return None
     if total_bytes <= 0:
@@ -138,7 +143,7 @@ def cpu_pct(prev_ticks, cur_ticks):
     # it is 3.10+ and the supported floor is stock macOS 3.9 (see ruff.toml).
     d = [c - p for p, c in zip(prev_ticks, cur_ticks)]
     total = sum(d)
-    if total <= 0 or any(x < 0 for x in d):   # counter reset / no time passed
+    if total <= 0 or any(x < 0 for x in d):  # counter reset / no time passed
         return None
     return max(0.0, min(100.0, 100.0 * (1.0 - d[2] / total)))
 
@@ -155,6 +160,7 @@ def rate(prev, cur, dt):
 
 
 # ------------------------------------------------------------------ ring file
+
 
 class Ring:
     """Fixed-size on-disk ring of one sample per second, 7 d deep.
@@ -180,13 +186,16 @@ class Ring:
                 os.pwrite(fd, MAGIC, 0)
             self._fd = fd
         except OSError as exc:
-            print(f"sysmon: ring unavailable ({exc}); history is memory-only",
-                  file=sys.stderr)
+            print(
+                f"sysmon: ring unavailable ({exc}); history is memory-only",
+                file=sys.stderr,
+            )
             self._fd = None
 
     def write(self, ts: int, values):
-        self.write_packed(ts, SLOT.pack(ts, *[_NAN if v is None else float(v)
-                                              for v in values]))
+        self.write_packed(
+            ts, SLOT.pack(ts, *[_NAN if v is None else float(v) for v in values])
+        )
 
     def write_packed(self, ts: int, packed: bytes):
         if self._fd is None:
@@ -200,8 +209,9 @@ class Ring:
             # silently until the next restart reveals an empty chart.
             self._fails = getattr(self, "_fails", 0) + 1
             if self._fails == 3:
-                print(f"sysmon: ring writes failing ({exc}); reopening",
-                      file=sys.stderr)
+                print(
+                    f"sysmon: ring writes failing ({exc}); reopening", file=sys.stderr
+                )
                 self.close()
                 self._open()
 
@@ -240,14 +250,16 @@ class Ring:
 
 # ------------------------------------------------------------------- sampler
 
+
 def _run(cmd, timeout=5):
     """subprocess.run()'s timeout path ends in an UNBOUNDED wait() after the
     kill -- an `ioreg` stuck in an uninterruptible IOKit wait (a wedged USB
     enumeration, exactly the sick-X9 case) would park the sampler thread
     forever. This version abandons an unkillable child instead."""
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, text=True)
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+        )
     except OSError:
         return ""
     try:
@@ -258,7 +270,7 @@ def _run(cmd, timeout=5):
         try:
             proc.communicate(timeout=2)
         except (subprocess.TimeoutExpired, OSError):
-            pass                              # D-state: abandon, never block
+            pass  # D-state: abandon, never block
         return ""
     except OSError:
         return ""
@@ -285,8 +297,15 @@ class _Mach:
             return None
         buf = (ctypes.c_uint32 * 4)()
         count = ctypes.c_uint32(4)
-        if self._stats(self._host, 3,          # HOST_CPU_LOAD_INFO
-                       ctypes.byref(buf), ctypes.byref(count)) != 0:
+        if (
+            self._stats(
+                self._host,
+                3,  # HOST_CPU_LOAD_INFO
+                ctypes.byref(buf),
+                ctypes.byref(count),
+            )
+            != 0
+        ):
             return None
         return list(buf)
 
@@ -303,14 +322,14 @@ class Sampler:
         self._mach = _Mach()
         self._mem_total = self._read_mem_total()
         self._lock = threading.Lock()
-        self._buf = bytearray(SLOTS * SLOT_BYTES)   # packed mirror of the ring
-        self._latest = None                   # (ts, [7 floats|None])
+        self._buf = bytearray(SLOTS * SLOT_BYTES)  # packed mirror of the ring
+        self._latest = None  # (ts, [7 floats|None])
         raw = self.ring.raw()
         if len(raw) == len(self._buf):
-            self._buf[:] = raw                # stale slots filtered at serve time
-        self._prev_cpu = None                 # ticks
-        self._prev_net = None                 # (t, (in, out))
-        self._prev_disk = None                # (t, (read, write))
+            self._buf[:] = raw  # stale slots filtered at serve time
+        self._prev_cpu = None  # ticks
+        self._prev_net = None  # (t, (in, out))
+        self._prev_disk = None  # (t, (read, write))
 
     @staticmethod
     def _read_mem_total():
@@ -335,13 +354,13 @@ class Sampler:
 
     def _tick(self):
         ticks = self._mach.cpu_ticks()
-        gpu = parse_ioreg_gpu(_run(["ioreg", "-r", "-d", "1", "-c",
-                                    "IOAccelerator"]))
+        gpu = parse_ioreg_gpu(_run(["ioreg", "-r", "-d", "1", "-c", "IOAccelerator"]))
         ram = parse_vm_stat(_run(["vm_stat"]), self._mem_total)
         net_raw = parse_netstat(_run(["netstat", "-ib"]))
         net = None if net_raw is None else (time.time(), net_raw)
-        disk_raw = parse_ioreg_disk(_run(["ioreg", "-r", "-w0", "-c",
-                                          "IOBlockStorageDriver"]))
+        disk_raw = parse_ioreg_disk(
+            _run(["ioreg", "-r", "-w0", "-c", "IOBlockStorageDriver"])
+        )
         disk = None if disk_raw is None else (time.time(), disk_raw)
         ts = int(time.time())
 
@@ -352,22 +371,27 @@ class Sampler:
         if disk is not None:
             self._prev_disk = disk
         if pticks is None and pnet is None and pdisk is None:
-            return                            # rates need two readings
+            return  # rates need two readings
         net_in, net_out = self._rate2(pnet, net)
         disk_r, disk_w = self._rate2(pdisk, disk)
-        self._store(ts, [
-            cpu_pct(pticks, ticks),
-            None if gpu is None else float(gpu),
-            ram,
-            net_in, net_out, disk_r, disk_w,
-        ])
+        self._store(
+            ts,
+            [
+                cpu_pct(pticks, ticks),
+                None if gpu is None else float(gpu),
+                ram,
+                net_in,
+                net_out,
+                disk_r,
+                disk_w,
+            ],
+        )
 
     def _store(self, ts: int, vals):
-        packed = SLOT.pack(ts, *[_NAN if v is None else float(v)
-                                 for v in vals])
+        packed = SLOT.pack(ts, *[_NAN if v is None else float(v) for v in vals])
         off = (ts % SLOTS) * SLOT_BYTES
         with self._lock:
-            self._buf[off:off + SLOT_BYTES] = packed
+            self._buf[off : off + SLOT_BYTES] = packed
             self._latest = (ts, vals)
         self.ring.write_packed(ts, packed)
 
@@ -376,12 +400,14 @@ class Sampler:
             started = time.time()
             try:
                 self._tick()
-            except Exception as exc:          # never let one bad read kill 7 d
+            except Exception as exc:  # never let one bad read kill 7 d
                 print(f"sysmon: tick failed: {exc!r}", file=sys.stderr)
             took = time.time() - started
-            if took > 5.0:                    # a stalled tick must leave a trace
-                print(f"sysmon: tick took {took:.1f}s (a probe is stalling)",
-                      file=sys.stderr)
+            if took > 5.0:  # a stalled tick must leave a trace
+                print(
+                    f"sysmon: tick took {took:.1f}s (a probe is stalling)",
+                    file=sys.stderr,
+                )
             time.sleep(max(0.05, 1.0 - took))
 
     def start(self):
@@ -391,8 +417,10 @@ class Sampler:
     # ------------------------------------------------------------- serving
     @staticmethod
     def _sample_dict(ts, vals):
-        return {"t": ts, "v": [None if v is None or math.isnan(v)
-                               else round(v, 1) for v in vals]}
+        return {
+            "t": ts,
+            "v": [None if v is None or math.isnan(v) else round(v, 1) for v in vals],
+        }
 
     def latest(self):
         """{"t": ts, "v": [7 numbers|null]} for the newest sample, or None."""
@@ -445,22 +473,22 @@ class Sampler:
         with self._lock:
             snap = bytes(self._buf)
         chunks = []
-        run_lo = -1                           # first byte of the open run
-        run_hi = -1                           # last slot offset in that run
-        start = (now + 1) % SLOTS             # oldest slot, walking forward
+        run_lo = -1  # first byte of the open run
+        run_hi = -1  # last slot offset in that run
+        start = (now + 1) % SLOTS  # oldest slot, walking forward
         for k in range(SLOTS):
             off = ((start + k) % SLOTS) * SLOT_BYTES
-            ts = int.from_bytes(snap[off:off + 4], "little")
+            ts = int.from_bytes(snap[off : off + 4], "little")
             if ts == 0 or ts <= floor or ts > now + 2:
                 continue
             if off == run_hi + SLOT_BYTES:
                 run_hi = off
                 continue
             if run_lo >= 0:
-                chunks.append(snap[run_lo:run_hi + SLOT_BYTES])
+                chunks.append(snap[run_lo : run_hi + SLOT_BYTES])
             run_lo = run_hi = off
         if run_lo >= 0:
-            chunks.append(snap[run_lo:run_hi + SLOT_BYTES])
+            chunks.append(snap[run_lo : run_hi + SLOT_BYTES])
         return b"".join(chunks)
 
 

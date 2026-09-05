@@ -10,6 +10,7 @@ OSC-8 hyperlinks vanish. So:
     clickable in a terminal and readable everywhere else
   * box drawing is plain Unicode, which survives a copy-paste intact
 """
+
 from __future__ import annotations
 
 import argparse
@@ -35,7 +36,7 @@ def gib(b) -> str:
         return "\u2014"
     if b == 0:
         return "0 GiB"
-    return f"{b/TIB:.2f} TiB" if b >= TIB else f"{b/GIB:.2f} GiB"
+    return f"{b / TIB:.2f} TiB" if b >= TIB else f"{b / GIB:.2f} GiB"
 
 
 def dur(s) -> str:
@@ -89,7 +90,9 @@ def render_table(headers, rows, aligns) -> str:
         out = []
         for i, cell in enumerate(cells):
             text = str(cell)
-            out.append(text.rjust(widths[i]) if aligns[i] == "r" else text.ljust(widths[i]))
+            out.append(
+                text.rjust(widths[i]) if aligns[i] == "r" else text.ljust(widths[i])
+            )
         return "\u2502" + "\u2502".join(f" {v} " for v in out) + "\u2502"
 
     parts = [line("\u250c", "\u252c", "\u2510")]
@@ -126,45 +129,78 @@ def section_stats(s) -> str:
     complete = s.get("library_complete", True)
     pairs = [
         ("Reclaimed so far", f"{gib(s['reclaimed_bytes'])}   ({measured})"),
-        ("Average shrink",
-         f"{avg:.1f}%   (weighted: {gib(s['source_total_bytes'])} -> "
-         f"{gib(s['output_total_bytes'])})" if avg is not None else "—"),
-        ("Encodes recorded",
-         f"{s['completed']}   ({s['completed_unknown_source']} without a recorded original)"
-         if s["completed_unknown_source"] else str(s["completed"])),
-        ("Still queued",
-         (f"{s['queue_waiting']} waiting above {s['stop_mbps']:.0f} Mb/s"
-          f" + {s['queue_encoding']} encoding   ({gib(s['queue_bytes'])} of"
-          f" originals{', incl. the encoding' if s['queue_encoding'] else ''})")
-         if complete else
-         f"unknown — library not fully mounted ({s['queue_waiting']} readable)"),
-        ("Still to reclaim",
-         f"~{gib(s['queue_reclaimable_bytes'])}   (projected at the measured {avg:.1f}%)"
-         if complete and s.get("queue_reclaimable_bytes") else
-         ("unknown — library not fully mounted" if not complete else "0 GiB")),
-        ("Job progress",
-         f"~{s['job_progress_pct']:.1f}%   (by reclaimed bytes, not title count"
-         f"{'; goal still counts the skipped titles' if s.get('queue_skipped') else ''})"
-         if s.get("job_progress_pct") is not None else
-         ("cannot be computed — " + ", ".join(s.get("roots_offline") or [])
-          + " not mounted" if not complete else "—")),
+        (
+            "Average shrink",
+            f"{avg:.1f}%   (weighted: {gib(s['source_total_bytes'])} -> "
+            f"{gib(s['output_total_bytes'])})"
+            if avg is not None
+            else "—",
+        ),
+        (
+            "Encodes recorded",
+            f"{s['completed']}   ({s['completed_unknown_source']} without a recorded original)"
+            if s["completed_unknown_source"]
+            else str(s["completed"]),
+        ),
+        (
+            "Still queued",
+            (
+                f"{s['queue_waiting']} waiting above {s['stop_mbps']:.0f} Mb/s"
+                f" + {s['queue_encoding']} encoding   ({gib(s['queue_bytes'])} of"
+                f" originals{', incl. the encoding' if s['queue_encoding'] else ''})"
+            )
+            if complete
+            else f"unknown — library not fully mounted ({s['queue_waiting']} readable)",
+        ),
+        (
+            "Still to reclaim",
+            f"~{gib(s['queue_reclaimable_bytes'])}   (projected at the measured {avg:.1f}%)"
+            if complete and s.get("queue_reclaimable_bytes")
+            else ("unknown — library not fully mounted" if not complete else "0 GiB"),
+        ),
+        (
+            "Job progress",
+            f"~{s['job_progress_pct']:.1f}%   (by reclaimed bytes, not title count"
+            f"{'; goal still counts the skipped titles' if s.get('queue_skipped') else ''})"
+            if s.get("job_progress_pct") is not None
+            else (
+                "cannot be computed — "
+                + ", ".join(s.get("roots_offline") or [])
+                + " not mounted"
+                if not complete
+                else "—"
+            ),
+        ),
         # Always derived from the drive itself, so it stays true when the NAS is
         # unreachable -- the moment someone is most likely to think the job is
         # over and start deleting.
-        ("Staged on drive",
-         f"{s['staged']} folders, {gib(s['staged_bytes'])}   "
-         f"({s['queue_encoding']} encoding, {s['staged_unencoded']} not yet encoded"
-         f" = {gib(s['staged_unencoded_bytes'])})"),
+        (
+            "Staged on drive",
+            f"{s['staged']} folders, {gib(s['staged_bytes'])}   "
+            f"({s['queue_encoding']} encoding, {s['staged_unencoded']} not yet encoded"
+            f" = {gib(s['staged_unencoded_bytes'])})",
+        ),
     ]
     if s.get("queue_skipped"):
-        pairs.insert(4, ("Skipped by hand",
-                         f"{s['queue_skipped']} titles ({gib(s['queue_skipped_bytes'])})"
-                         " — out of Still queued and Still to reclaim;"
-                         " Job progress keeps them in its goal"))
+        pairs.insert(
+            4,
+            (
+                "Skipped by hand",
+                f"{s['queue_skipped']} titles ({gib(s['queue_skipped_bytes'])})"
+                " — out of Still queued and Still to reclaim;"
+                " Job progress keeps them in its goal",
+            ),
+        )
     if not s.get("library_complete", True):
-        pairs.insert(0, ("!! LIBRARY",
-                         "INCOMPLETE — " + ", ".join(s.get("roots_offline") or [])
-                         + " not mounted; queue figures are partial"))
+        pairs.insert(
+            0,
+            (
+                "!! LIBRARY",
+                "INCOMPLETE — "
+                + ", ".join(s.get("roots_offline") or [])
+                + " not mounted; queue figures are partial",
+            ),
+        )
     return indent(kv_table(pairs), 2) + "\n"
 
 
@@ -181,8 +217,11 @@ def section_live(live) -> str:
         # apart from an unwanted downscale, and that check gates a deletion.
         if e.get("source_geometry") and e["geometry"]:
             same = e["source_geometry"] == e["geometry"]
-            bits.append(e["geometry"] if same
-                        else f"{e['source_geometry']} -> {e['geometry']} (auto-crop)")
+            bits.append(
+                e["geometry"]
+                if same
+                else f"{e['source_geometry']} -> {e['geometry']} (auto-crop)"
+            )
         elif e["geometry"]:
             bits.append(e["geometry"])
         if e["audio"] is not None:
@@ -195,8 +234,11 @@ def section_live(live) -> str:
                 bits.append(f"{e['audio']} audio / {e['subs']} subs")
         # Silence is indistinguishable from zero, so state it either way.
         de = e.get("decoder_errors")
-        bits.append("0 decoder errors" if de == 0 else
-                    (f"{de} DECODER ERRORS" if de else "decoder errors not yet reported"))
+        bits.append(
+            "0 decoder errors"
+            if de == 0
+            else (f"{de} DECODER ERRORS" if de else "decoder errors not yet reported")
+        )
         bits.append(f"pid {e['pid']}")
         out.append(f"  {c(e['title'], '1')}" + c("   " + " · ".join(bits), "2"))
 
@@ -204,16 +246,41 @@ def section_live(live) -> str:
         # it with HandBrake's instantaneous fps put two numbers on one line that
         # could not both be true.
         avg = e.get("avg_fps") or 0
-        out.append(f"  {bar(pct)} {pct:6.2f}%   ETA {dur(e['eta_s'])}   {avg:.1f} fps avg")
-        out.append(indent(render_table(
-            ["ORIGINAL", "WRITTEN SO FAR", "PROJECTED FINAL", "SHRINK", "VERDICT"],
-            [[gib(e["source_bytes"]), gib(e["output_bytes"]), gib(e["projected_bytes"]),
-              "—" if e.get("shrink_pct") is None else f"{e['shrink_pct']:.1f}%",
-              e["verdict"].upper()]],
-            ["r", "r", "r", "r", "l"]), 2))
+        out.append(
+            f"  {bar(pct)} {pct:6.2f}%   ETA {dur(e['eta_s'])}   {avg:.1f} fps avg"
+        )
+        out.append(
+            indent(
+                render_table(
+                    [
+                        "ORIGINAL",
+                        "WRITTEN SO FAR",
+                        "PROJECTED FINAL",
+                        "SHRINK",
+                        "VERDICT",
+                    ],
+                    [
+                        [
+                            gib(e["source_bytes"]),
+                            gib(e["output_bytes"]),
+                            gib(e["projected_bytes"]),
+                            "—"
+                            if e.get("shrink_pct") is None
+                            else f"{e['shrink_pct']:.1f}%",
+                            e["verdict"].upper(),
+                        ]
+                    ],
+                    ["r", "r", "r", "r", "l"],
+                ),
+                2,
+            )
+        )
         loud = e["verdict"] in ("suspect", "blowup", "no-saving", "downscale")
-        style = "1;31" if e["verdict"] in ("blowup", "no-saving", "downscale") else (
-                "1;33" if e["verdict"] in ("suspect", "thin") else "2")
+        style = (
+            "1;31"
+            if e["verdict"] in ("blowup", "no-saving", "downscale")
+            else ("1;33" if e["verdict"] in ("suspect", "thin") else "2")
+        )
         out.append(("  !! " if loud else "  ") + c(e["verdict_note"], style))
     return "\n".join(out) + "\n"
 
@@ -229,12 +296,16 @@ def _arriving_on_x9(title: str, staged: bool) -> bool:
     if not staged:
         return False
     try:
-        names = [n for n in os.listdir(os.path.join(core.X9, title))
-                 if not n.startswith("._")]
+        names = [
+            n
+            for n in os.listdir(os.path.join(core.X9, title))
+            if not n.startswith("._")
+        ]
     except OSError:
         return False
-    return (any(n.endswith(".partial") for n in names)
-            and not any(n.endswith((".mkv", ".mp4", ".m2ts")) for n in names))
+    return any(n.endswith(".partial") for n in names) and not any(
+        n.endswith((".mkv", ".mp4", ".m2ts")) for n in names
+    )
 
 
 def section_queue(q, limit) -> str:
@@ -258,20 +329,34 @@ def section_queue(q, limit) -> str:
                 status = "pinned · " + status
             rank_n += 1
             rank = rank_n
-        rows.append([rank, f"{r['mbps']:.1f}", gib(r["bytes"]), r["title"],
-                     r["location"], status])
+        rows.append(
+            [
+                rank,
+                f"{r['mbps']:.1f}",
+                gib(r["bytes"]),
+                r["title"],
+                r["location"],
+                status,
+            ]
+        )
     # "MB/S" reads as megabytes and is 8x wrong; and neither the bitrate nor the
     # size column said whether it described the original or the output.
-    body = render_table(["RANK", "SRC Mb/s", "SRC SIZE", "TITLE", "NAS", "STATUS"],
-                        rows, ["r", "r", "r", "l", "l", "l"])
+    body = render_table(
+        ["RANK", "SRC Mb/s", "SRC SIZE", "TITLE", "NAS", "STATUS"],
+        rows,
+        ["r", "r", "r", "l", "l", "l"],
+    )
     note = ""
-    hidden = q[len(shown):]
+    hidden = q[len(shown) :]
     if hidden:
         hw = sum(1 for r in hidden if not r.get("skipped"))
         hs = len(hidden) - hw
-        parts = ([f"{hw} more waiting"] if hw else []) + \
-                ([f"{hs} skipped by hand"] if hs else [])
-        note = c(f"\n  … {' + '.join(parts)} not shown — use --all for the full queue.", "2")
+        parts = ([f"{hw} more waiting"] if hw else []) + (
+            [f"{hs} skipped by hand"] if hs else []
+        )
+        note = c(
+            f"\n  … {' + '.join(parts)} not shown — use --all for the full queue.", "2"
+        )
     return indent(body, 2) + note + "\n"
 
 
@@ -285,27 +370,41 @@ def section_ledger(hist, limit) -> str:
     rows, notes = [], []
     for n, r in shown:
         approx = "~" if r.get("exact") is False else ""
-        rows.append([
-            n, r["title"],
-            "—" if not r.get("source_bytes") else approx + gib(r["source_bytes"]),
-            "—" if not r.get("output_bytes") else approx + gib(r["output_bytes"]),
-            "—" if not r.get("saved_bytes") else approx + gib(r["saved_bytes"]),
-            "—" if r.get("saved_pct") is None else f"{r['saved_pct']:.1f}%",
-            "—" if r.get("crf") is None else f"{r['crf']:g}",
-            "—" if r.get("audio") is None else f"{r['audio']}a/{r['subs']}s",
-            # Matches the dashboard's two-pill rendering: volume · bucket,
-            # one field, not a path claiming to be complete.
-            (r.get("dest") or "—").replace("/", " · "),
-            RECORD_LABEL.get(r.get("provenance"), r.get("provenance") or "—"),
-            (r.get("finished_at") or "—")[:10],
-        ])
+        rows.append(
+            [
+                n,
+                r["title"],
+                "—" if not r.get("source_bytes") else approx + gib(r["source_bytes"]),
+                "—" if not r.get("output_bytes") else approx + gib(r["output_bytes"]),
+                "—" if not r.get("saved_bytes") else approx + gib(r["saved_bytes"]),
+                "—" if r.get("saved_pct") is None else f"{r['saved_pct']:.1f}%",
+                "—" if r.get("crf") is None else f"{r['crf']:g}",
+                "—" if r.get("audio") is None else f"{r['audio']}a/{r['subs']}s",
+                # Matches the dashboard's two-pill rendering: volume · bucket,
+                # one field, not a path claiming to be complete.
+                (r.get("dest") or "—").replace("/", " · "),
+                RECORD_LABEL.get(r.get("provenance"), r.get("provenance") or "—"),
+                (r.get("finished_at") or "—")[:10],
+            ]
+        )
         if r.get("note"):
             notes.append(f"{n}. {r['title']} — {r['note']}")
 
     # A column that is "—" in every row costs ~12 terminal columns to say
     # nothing, and width is what makes these tables wrap when pasted.
-    heads = ["#", "TITLE", "ORIGINAL", "OUTPUT", "SAVED", "SHRINK", "CRF",
-             "TRACKS", "MOVED TO", "SOURCE OF RECORD", "FINISHED"]
+    heads = [
+        "#",
+        "TITLE",
+        "ORIGINAL",
+        "OUTPUT",
+        "SAVED",
+        "SHRINK",
+        "CRF",
+        "TRACKS",
+        "MOVED TO",
+        "SOURCE OF RECORD",
+        "FINISHED",
+    ]
     aligns = ["r", "l", "r", "r", "r", "r", "r", "l", "l", "l", "l"]
     if all(r[-1] == "—" for r in rows):
         heads, aligns = heads[:-1], aligns[:-1]
@@ -314,10 +413,17 @@ def section_ledger(hist, limit) -> str:
 
     tail = []
     if len(shown) < len(ordered):
-        tail.append(c(f"  … {len(ordered)-len(shown)} older entries — use --all.", "2"))
+        tail.append(
+            c(f"  … {len(ordered) - len(shown)} older entries — use --all.", "2")
+        )
     if any(r.get("exact") is False for _, r in shown):
-        tail.append(c("  ~ not measured byte-for-byte at encode time "
-                      "(see SOURCE OF RECORD for how each row was obtained).", "2"))
+        tail.append(
+            c(
+                "  ~ not measured byte-for-byte at encode time "
+                "(see SOURCE OF RECORD for how each row was obtained).",
+                "2",
+            )
+        )
     for line in notes:
         tail.append(c("  " + line, "2"))
     return indent(body, 2) + ("\n" + "\n".join(tail) if tail else "") + "\n"
@@ -325,9 +431,11 @@ def section_ledger(hist, limit) -> str:
 
 # ---------------------------------------------------------------------- main
 
+
 def main() -> int:
     ap = argparse.ArgumentParser(
-        prog="queue-report", description="Snapshot of the 4K re-encode queue.")
+        prog="queue-report", description="Snapshot of the 4K re-encode queue."
+    )
     ap.add_argument("--all", action="store_true", help="show every row, no truncation")
     ap.add_argument("--limit", type=int, default=12, help="rows per table (default 12)")
     ap.add_argument("--queue", action="store_true", help="queue only")
@@ -357,19 +465,28 @@ def main() -> int:
     shown = url
     if url and not TTY and "?" in url:
         shown = url.split("?", 1)[0]
-    print(f"  {c('live dashboard', '2')}  {link(url, shown)}" if url else
-          f"  {c('dashboard not running — start it with: ~/.smeltr/smeltr start', '2')}")
+    print(
+        f"  {c('live dashboard', '2')}  {link(url, shown)}"
+        if url
+        else f"  {c('dashboard not running — start it with: ~/.smeltr/smeltr start', '2')}"
+    )
     if not s["x9_online"]:
-        print(f"  {c('WARNING: staging drive not mounted — sizes below are incomplete', '1;33')}")
+        print(
+            f"  {c('WARNING: staging drive not mounted — sizes below are incomplete', '1;33')}"
+        )
     # An offline library root silently empties the queue, which is
     # indistinguishable from having finished. Say so, loudly, every time.
     if s.get("overrides_corrupt"):
-        print(f"  {c('!! queue_overrides.json is unreadable — skips and priorities are NOT applied.', '1;33')}")
+        print(
+            f"  {c('!! queue_overrides.json is unreadable — skips and priorities are NOT applied.', '1;33')}"
+        )
     # A paused pipeline must never render as a healthy one -- this is the
     # view a 1am SSH session uses, and without the line it is byte-identical
     # to a running job.
     if s.get("paused"):
-        print(f"  {c('PAUSED — the current encode (if any) still finishes and syncs; nothing new starts. Resume from the dashboard.', '1;33')}")
+        print(
+            f"  {c('PAUSED — the current encode (if any) still finishes and syncs; nothing new starts. Resume from the dashboard.', '1;33')}"
+        )
     if not s.get("library_complete", True):
         missing = ", ".join(s.get("roots_offline") or ["unknown"])
         print(f"  {c('!! LIBRARY INCOMPLETE: ' + missing + ' not mounted.', '1;31')}")
@@ -388,8 +505,10 @@ def main() -> int:
         print(section_live(live))
 
     if want_queue:
-        sub = (f"{s['queue_waiting']} waiting above {s['stop_mbps']:.0f} Mb/s"
-               f" · {gib(s['queue_bytes'])} of originals")
+        sub = (
+            f"{s['queue_waiting']} waiting above {s['stop_mbps']:.0f} Mb/s"
+            f" · {gib(s['queue_bytes'])} of originals"
+        )
         if not s.get("library_complete", True):
             sub += "  [PARTIAL — library not fully mounted]"
         print(f"  {c('QUEUE', '1')}  {c(sub, '2')}")
@@ -400,7 +519,9 @@ def main() -> int:
         print(f"  {c('HISTORY', '1')}  {c(sub, '2')}")
         print(section_ledger(hist, limit))
 
-    print(f"  {c('snapshot ' + s['generated_at'] + ' — the dashboard above is live.', '2')}")
+    print(
+        f"  {c('snapshot ' + s['generated_at'] + ' — the dashboard above is live.', '2')}"
+    )
     print()
     return 0
 

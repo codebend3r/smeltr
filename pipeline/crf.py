@@ -17,6 +17,7 @@ all. The driver substitutes this straight into `-q`, and the safe answer to
 every failure is the value it would have used before this existed. Failing
 loudly here would idle the CPU over a preference.
 """
+
 from __future__ import annotations
 
 import os

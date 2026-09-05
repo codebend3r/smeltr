@@ -16,22 +16,22 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dashboard import sysmon  # noqa: E402
 
 
-IOREG_GPU = '''
+IOREG_GPU = """
 +-o AGXAcceleratorG13X  <class AGXAcceleratorG13X, id 0x100000287>
     {
       "PerformanceStatistics" = {"Device Utilization %"=37,"Renderer Utilization %"=35}
       "IOClass" = "AGXAcceleratorG13X"
     }
-'''
+"""
 
-IOREG_DISK = '''
+IOREG_DISK = """
 +-o AppleAPFSMedia  <class IOBlockStorageDriver>
       "Statistics" = {"Bytes (Read)"=60399001600,"Bytes (Write)"=24870031360}
 +-o Disk2  <class IOBlockStorageDriver>
       "Statistics" = {"Bytes (Read)"=111092603904,"Bytes (Write)"=39086864896}
-'''
+"""
 
-NETSTAT = '''\
+NETSTAT = """\
 Name       Mtu   Network       Address            Ipkts Ierrs     Ibytes    Opkts Oerrs     Obytes  Coll
 lo0        16384 <Link#1>                        114624     0 1142291140   114624     0 1142291140     0
 lo0        16384 127           localhost         114624     - 1142291140   114624     - 1142291140     -
@@ -43,9 +43,9 @@ utun0      1380  <Link#17>                          100     0      50000      10
 awdl0      1484  <Link#12>   aa:bb:cc:dd:ee:ff      500     0     250000      400     0     150000     0
 bridge0    1500  <Link#20>   36:d1:45:f3:0a:00     9000     0    4000000     8000     0    3000000     0
 en1        1500  <Link#10>   a4:cf:99:9c:14:9a     1000     0    2000000      900     0    1000000     0
-'''
+"""
 
-VM_STAT = '''\
+VM_STAT = """\
 Mach Virtual Memory Statistics: (page size of 16384 bytes)
 Pages free:                                     5555.
 Pages active:                                1157535.
@@ -60,7 +60,7 @@ Anonymous pages:                             1594188.
 Pages stored in compressor:                     7720.
 Pages occupied by compressor:                   1871.
 Pageins:                                    10050437.
-'''
+"""
 
 
 class TestParsers(unittest.TestCase):
@@ -76,9 +76,10 @@ class TestParsers(unittest.TestCase):
         self.assertEqual(sysmon.parse_ioreg_gpu(two), 61)
 
     def test_disk_sums_all_drivers(self):
-        self.assertEqual(sysmon.parse_ioreg_disk(IOREG_DISK),
-                         (60399001600 + 111092603904,
-                          24870031360 + 39086864896))
+        self.assertEqual(
+            sysmon.parse_ioreg_disk(IOREG_DISK),
+            (60399001600 + 111092603904, 24870031360 + 39086864896),
+        )
 
     def test_disk_absent(self):
         self.assertIsNone(sysmon.parse_ioreg_disk(""))
@@ -87,8 +88,9 @@ class TestParsers(unittest.TestCase):
         # en0 + en1 only: lo0 (chatter), utun0 and bridge0 (double count),
         # gif/stf (dead), awdl (AirDrop sidecar) are all excluded. Only
         # <Link#> rows count -- per-address rows repeat the same counters.
-        self.assertEqual(sysmon.parse_netstat(NETSTAT),
-                         (9000000000 + 2000000, 1000000000 + 1000000))
+        self.assertEqual(
+            sysmon.parse_netstat(NETSTAT), (9000000000 + 2000000, 1000000000 + 1000000)
+        )
 
     def test_netstat_empty(self):
         self.assertIsNone(sysmon.parse_netstat("Name Mtu\n"))
@@ -110,7 +112,9 @@ class TestRateMath(unittest.TestCase):
     def test_cpu_pct(self):
         self.assertAlmostEqual(
             sysmon.cpu_pct([0, 0, 0, 0], [948, 44, 22, 0]),
-            100.0 * (1 - 22 / 1014), places=3)
+            100.0 * (1 - 22 / 1014),
+            places=3,
+        )
 
     def test_cpu_counter_reset_is_none(self):
         self.assertIsNone(sysmon.cpu_pct([100, 100, 100, 0], [50, 100, 100, 0]))
@@ -147,7 +151,7 @@ class TestRing(unittest.TestCase):
         self.assertIn(now, loaded)
         vals = loaded[now]
         self.assertAlmostEqual(vals[0], 50.0, places=3)
-        self.assertIsNone(vals[1])            # NaN round-trips to None
+        self.assertIsNone(vals[1])  # NaN round-trips to None
         self.assertAlmostEqual(vals[3], 1e6, delta=1)
         r2.close()
 
@@ -164,7 +168,7 @@ class TestRing(unittest.TestCase):
     def test_wrap_overwrites_in_place(self):
         r = sysmon.Ring(self.path)
         t1 = 1_700_000_000
-        t2 = t1 + sysmon.SLOTS                # same slot, one day later
+        t2 = t1 + sysmon.SLOTS  # same slot, one day later
         r.write(t1, [10.0] * 7)
         r.write(t2, [20.0] * 7)
         loaded = r.load(t2)
@@ -194,18 +198,21 @@ class TestRing(unittest.TestCase):
 class TestHistoryServing(unittest.TestCase):
     def test_history_bytes_ordered_and_windowed(self):
         with tempfile.TemporaryDirectory() as d:
-            s = sysmon.Sampler(d)             # no .start(): no thread
+            s = sysmon.Sampler(d)  # no .start(): no thread
             import time as _t
+
             now = int(_t.time())
             for k, ts in enumerate([now - 10, now - 5, now - 2]):
                 s._store(ts, [float(k)] * 7)
             stale = now - sysmon.SLOTS - 100
             if s._buf[(stale % sysmon.SLOTS) * sysmon.SLOT_BYTES] == 0:
-                s._store(stale, [99.0] * 7)   # don't clobber a test slot
+                s._store(stale, [99.0] * 7)  # don't clobber a test slot
             raw = s.history_bytes()
             self.assertEqual(len(raw) % sysmon.SLOT_BYTES, 0)
-            stamps = [sysmon.SLOT.unpack_from(raw, o)[0]
-                      for o in range(0, len(raw), sysmon.SLOT_BYTES)]
+            stamps = [
+                sysmon.SLOT.unpack_from(raw, o)[0]
+                for o in range(0, len(raw), sysmon.SLOT_BYTES)
+            ]
             self.assertEqual(stamps, sorted(stamps))
             self.assertIn(now - 10, stamps)
             self.assertNotIn(stale, stamps)
@@ -216,7 +223,7 @@ class TestHistoryServing(unittest.TestCase):
         # NARROW -- a caller asking for more than the ring holds gets the
         # ring, and one asking for nothing at all still gets the ring.
         with tempfile.TemporaryDirectory() as d:
-            s = sysmon.Sampler(d)             # no .start(): no thread
+            s = sysmon.Sampler(d)  # no .start(): no thread
             now = int(time.time())
             inside, outside = now - 100, now - 4000
             s._store(inside, [1.0] * 7)
@@ -224,15 +231,17 @@ class TestHistoryServing(unittest.TestCase):
 
             def stamps(*args):
                 raw = s.history_bytes(*args)
-                return [sysmon.SLOT.unpack_from(raw, o)[0]
-                        for o in range(0, len(raw), sysmon.SLOT_BYTES)]
+                return [
+                    sysmon.SLOT.unpack_from(raw, o)[0]
+                    for o in range(0, len(raw), sysmon.SLOT_BYTES)
+                ]
 
-            self.assertIn(outside, stamps())            # default: whole ring
+            self.assertIn(outside, stamps())  # default: whole ring
             wide = stamps(3600)
             self.assertIn(inside, wide)
-            self.assertNotIn(outside, wide)             # older than the span
+            self.assertNotIn(outside, wide)  # older than the span
             self.assertEqual(stamps(sysmon.SLOTS * 99), stamps())
-            self.assertEqual(stamps(0), stamps(1))      # clamped, never empty-by-zero
+            self.assertEqual(stamps(0), stamps(1))  # clamped, never empty-by-zero
 
     def test_history_bytes_coalesces_runs_across_the_wrap(self):
         # Records are emitted as contiguous runs now, not one slice per
@@ -242,15 +251,17 @@ class TestHistoryServing(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             s = sysmon.Sampler(d)
             now = int(time.time())
-            edge = (now // sysmon.SLOTS) * sysmon.SLOTS - 1   # slot SLOTS-1
+            edge = (now // sysmon.SLOTS) * sysmon.SLOTS - 1  # slot SLOTS-1
             want = [edge - 1, edge, edge + 1, edge + 2]
             if want[0] <= now - sysmon.SLOTS or want[-1] > now:
                 self.skipTest("the wrap point is not inside the live window")
             for ts in want:
                 s._store(ts, [float(ts % 7)] * 7)
             raw = s.history_bytes()
-            got = [sysmon.SLOT.unpack_from(raw, o)[0]
-                   for o in range(0, len(raw), sysmon.SLOT_BYTES)]
+            got = [
+                sysmon.SLOT.unpack_from(raw, o)[0]
+                for o in range(0, len(raw), sysmon.SLOT_BYTES)
+            ]
             self.assertEqual([t for t in got if t in want], want)
             self.assertEqual(got, sorted(got))
 
@@ -282,7 +293,7 @@ class TestSinceCursor(unittest.TestCase):
     def test_cursor_skips_seconds_the_sampler_missed(self):
         s = self._sampler()
         s._store(1000, [1.0] * 7)
-        s._store(1003, [2.0] * 7)             # 1001-1002 never sampled
+        s._store(1003, [2.0] * 7)  # 1001-1002 never sampled
         self.assertEqual([m["t"] for m in s.since(1000)], [1003])
 
     def test_caught_up_cursor_gets_nothing(self):

@@ -12,6 +12,7 @@ the facts that make that safe:
   * a request from this machine's own bound address may write (the operator
     on the LAN URL), other network peers may not without the opt-in.
 """
+
 import contextlib
 import io
 import os
@@ -127,8 +128,10 @@ class DriverContract(unittest.TestCase):
             out = io.StringIO()
             argv, sys.argv = sys.argv, ["next_title.py"]
             try:
-                with contextlib.redirect_stdout(out), \
-                     contextlib.redirect_stderr(io.StringIO()):
+                with (
+                    contextlib.redirect_stdout(out),
+                    contextlib.redirect_stderr(io.StringIO()),
+                ):
                     rc = next_title.main()
             finally:
                 sys.argv = argv
@@ -159,8 +162,14 @@ class OfflineRootKeepsStagedRows(unittest.TestCase):
     staged still drops (its size cannot be observed and it cannot encode)."""
 
     def setUp(self):
-        self._saved = (core.offline_roots, core.load_index, core.X9,
-                       core.live_encodes, core.ledger, core.load_overrides)
+        self._saved = (
+            core.offline_roots,
+            core.load_index,
+            core.X9,
+            core.live_encodes,
+            core.ledger,
+            core.load_overrides,
+        )
         self._tmp = tempfile.TemporaryDirectory()
         core.X9 = self._tmp.name
         root = "/Volumes/Vhagar/Media/4K Movies"
@@ -168,13 +177,21 @@ class OfflineRootKeepsStagedRows(unittest.TestCase):
         core.offline_roots = lambda: [root]
         core.live_encodes = lambda: []
         core.ledger = lambda: []
-        core.load_overrides = lambda: {"skip": [], "priority": [], "crf": {},
-                                       "corrupt": False}
+        core.load_overrides = lambda: {
+            "skip": [],
+            "priority": [],
+            "crf": {},
+            "corrupt": False,
+        }
         core.load_index = lambda: [
-            {"path": root + "/A/Alpha (2001)/Alpha (2001) Remux-2160p.mkv",
-             "overall_bitrate": 90e6},
-            {"path": root + "/B/Beta (2002)/Beta (2002) Remux-2160p.mkv",
-             "overall_bitrate": 80e6},
+            {
+                "path": root + "/A/Alpha (2001)/Alpha (2001) Remux-2160p.mkv",
+                "overall_bitrate": 90e6,
+            },
+            {
+                "path": root + "/B/Beta (2002)/Beta (2002) Remux-2160p.mkv",
+                "overall_bitrate": 80e6,
+            },
         ]
         d = os.path.join(self._tmp.name, "Alpha (2001)")
         os.makedirs(d)
@@ -182,8 +199,14 @@ class OfflineRootKeepsStagedRows(unittest.TestCase):
             fh.write("x" * 1024)
 
     def tearDown(self):
-        (core.offline_roots, core.load_index, core.X9,
-         core.live_encodes, core.ledger, core.load_overrides) = self._saved
+        (
+            core.offline_roots,
+            core.load_index,
+            core.X9,
+            core.live_encodes,
+            core.ledger,
+            core.load_overrides,
+        ) = self._saved
         self._tmp.cleanup()
 
     def test_staged_row_survives_its_root_going_offline(self):
@@ -192,8 +215,7 @@ class OfflineRootKeepsStagedRows(unittest.TestCase):
         self.assertIn("Alpha (2001)", titles)
 
     def test_its_size_is_read_from_the_staged_copy(self):
-        row = next(r for r in core.queue(min_mbps=70)
-                   if r["title"] == "Alpha (2001)")
+        row = next(r for r in core.queue(min_mbps=70) if r["title"] == "Alpha (2001)")
         # The library path cannot be statted; the staged copy is the same
         # bytes. Never None, never a guess.
         self.assertEqual(row["bytes"], 1024)
@@ -211,16 +233,14 @@ class ArrivingFolders(unittest.TestCase):
     is by construction; this pins the driver-facing behavior."""
 
     def setUp(self):
-        self._saved = (core.offline_roots, core.paused, core.queue_cached,
-                       core.X9)
+        self._saved = (core.offline_roots, core.paused, core.queue_cached, core.X9)
         self._tmp = tempfile.TemporaryDirectory()
         core.X9 = self._tmp.name
         core.offline_roots = lambda: []
         core.paused = lambda: False
 
     def tearDown(self):
-        (core.offline_roots, core.paused, core.queue_cached,
-         core.X9) = self._saved
+        (core.offline_roots, core.paused, core.queue_cached, core.X9) = self._saved
         self._tmp.cleanup()
 
     def _folder(self, title, files):
@@ -233,8 +253,10 @@ class ArrivingFolders(unittest.TestCase):
     def _main(self):
         argv, sys.argv = sys.argv, ["next_title.py"]
         try:
-            with contextlib.redirect_stdout(io.StringIO()) as out, \
-                 contextlib.redirect_stderr(io.StringIO()):
+            with (
+                contextlib.redirect_stdout(io.StringIO()) as out,
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
                 rc = next_title.main()
             return rc, out.getvalue().strip()
         finally:
@@ -285,8 +307,7 @@ class PickNext(unittest.TestCase):
     def test_live_output_excludes_the_row_without_a_reason(self):
         # The in-progress encode's own file matches *2160p HEVC*.mkv, so the
         # live row is passed silently -- awaiting sync is not a wait state.
-        self._folder("Live (2020)", ["Live (2020).mkv",
-                                     "Live (2020) 2160p HEVC.mkv"])
+        self._folder("Live (2020)", ["Live (2020).mkv", "Live (2020) 2160p HEVC.mkv"])
         row, waits = core.pick_next([{"title": "Live (2020)", "staged": True}])
         self.assertIsNone(row)
         self.assertEqual(waits, set())
@@ -294,10 +315,12 @@ class PickNext(unittest.TestCase):
     def test_reasons_name_each_actual_state(self):
         self._folder("Arriving (2012)", ["Arriving (2012).mkv.partial"])
         self._folder("Skipped (1999)", ["Skipped (1999) Remux-2160p.mkv"])
-        row, waits = core.pick_next([
-            {"title": "Arriving (2012)", "staged": True},
-            {"title": "Skipped (1999)", "staged": True, "skipped": True},
-        ])
+        row, waits = core.pick_next(
+            [
+                {"title": "Arriving (2012)", "staged": True},
+                {"title": "Skipped (1999)", "staged": True, "skipped": True},
+            ]
+        )
         self.assertIsNone(row)
         self.assertEqual(waits, {"arriving", "skipped"})
 
@@ -305,7 +328,8 @@ class PickNext(unittest.TestCase):
         # No source file exists to encode regardless of the skip.
         self._folder("Both (2005)", ["Both (2005).mkv.partial"])
         row, waits = core.pick_next(
-            [{"title": "Both (2005)", "staged": True, "skipped": True}])
+            [{"title": "Both (2005)", "staged": True, "skipped": True}]
+        )
         self.assertIsNone(row)
         self.assertEqual(waits, {"arriving"})
 
@@ -315,8 +339,10 @@ class PickNext(unittest.TestCase):
         core.offline_roots = lambda: []
         core.paused = lambda: False
         try:
-            with contextlib.redirect_stdout(io.StringIO()), \
-                 contextlib.redirect_stderr(io.StringIO()) as err:
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()) as err,
+            ):
                 rc = next_title.main()
             return rc, err.getvalue()
         finally:
@@ -326,7 +352,8 @@ class PickNext(unittest.TestCase):
     def test_wait_message_names_arriving_not_skipped(self):
         self._folder("Arriving (2012)", ["Arriving (2012).mkv.partial"])
         core.queue_cached = lambda min_mbps=None: [
-            {"title": "Arriving (2012)", "staged": True}]
+            {"title": "Arriving (2012)", "staged": True}
+        ]
         rc, err = self._next_title_stderr()
         self.assertEqual(rc, 3)
         self.assertIn("still landing", err)
@@ -335,7 +362,8 @@ class PickNext(unittest.TestCase):
     def test_wait_message_names_skipped_not_arriving(self):
         self._folder("Skipped (1999)", ["Skipped (1999) Remux-2160p.mkv"])
         core.queue_cached = lambda min_mbps=None: [
-            {"title": "Skipped (1999)", "staged": True, "skipped": True}]
+            {"title": "Skipped (1999)", "staged": True, "skipped": True}
+        ]
         rc, err = self._next_title_stderr()
         self.assertEqual(rc, 3)
         self.assertIn("hand-skipped", err)
@@ -345,6 +373,7 @@ class PickNext(unittest.TestCase):
 class ServerGates(unittest.TestCase):
     def setUp(self):
         from dashboard import server
+
         self.server = server
         self._flag = core.PAUSE_FLAG
         self._tmp = tempfile.TemporaryDirectory()
@@ -382,6 +411,7 @@ class ServerGates(unittest.TestCase):
         class _Sock:
             def __init__(self, ip):
                 self._ip = ip
+
             def getsockname(self):
                 return (self._ip, 8787)
 
@@ -421,6 +451,7 @@ class MarkReady(unittest.TestCase):
 
     def setUp(self):
         from dashboard import server
+
         self.server = server
         self._x9 = core.X9
         self._tmp = tempfile.TemporaryDirectory()
@@ -451,8 +482,7 @@ class MarkReady(unittest.TestCase):
 
     def test_a_live_encode_keeps_next_up_but_never_ready(self):
         rows = self._rows()
-        self.server._mark_ready(rows, live=[{"title": "Other (2000)"}],
-                                paused=False)
+        self.server._mark_ready(rows, live=[{"title": "Other (2000)"}], paused=False)
         self.assertFalse(rows[0]["ready"])
         self.assertTrue(rows[0]["next_up"])
 
