@@ -42,15 +42,15 @@
 #     is a 40-character hash and for a `run:` is its first line -- neither says
 #     what the step is FOR when it is the one that went red.
 #   * PR hygiene (title, body sections, commit subjects) is a separate workflow,
-#     .github/workflows/pr.yml. It only makes sense on a pull_request event and
-#     has nothing to do with whether the code is green.
+#     .github/workflows/pull-request-format-checker.yml. It only makes sense
+#     on a pull_request event and has nothing to do with whether the code is
+#     green.
 
-name: 🔥 CI
+name: 🧪 Pull request checks
 
 on:
-  push:
-    branches: [main]
   pull_request:
+  push:
   workflow_dispatch:
 
 # Read-only. Nothing in this workflow writes to the repo, publishes, or deploys.

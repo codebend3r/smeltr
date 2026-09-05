@@ -805,14 +805,15 @@ command allowed to fail carries `|| true`. All four are shellchecked by
 - **commit-msg (instant)** holds the subject to the `commit-format`
   rules — `SMLTR: ` + Capitalized verb, ≤72 chars, no trailing period, no
   conventional-commits prefix behind it, no AI-authorship trailer, `-`
-  bullets. The rules are the `commits` job of `.github/workflows/pr.yml`
-  transcribed into POSIX sh, and they exist locally because that job only
+  bullets. The rules are the `commits` job of
+  `.github/workflows/pull-request-format-checker.yml` transcribed into POSIX
+  sh, and they exist locally because that job only
   ever sees a pull request: `bun run release` and a plain `git push` land on
   `main` with no PR, so a direct-to-main commit was checked nowhere.
   `fixup!`/`squash!` subjects pass here (git writes them for `--fixup` and
   autosquash consumes them) and are refused by pre-push, so one can never
-  reach a remote. Merge subjects are exempt, as in pr.yml. Comment lines and
-  everything below git's scissors line are ignored, so a `commit -v` diff is
+  reach a remote. Merge subjects are exempt, as in the PR format checker.
+  Comment lines and everything below git's scissors line are ignored, so a `commit -v` diff is
   never read as body text. `test_repo_invariants.py::CommitRules` runs the
   real function against a dozen messages.
 - **pre-push (~20 s)** first re-checks every commit not yet on ANY remote

@@ -2,8 +2,8 @@
 # Two gates before anything leaves this machine. First, every commit not yet on
 # ANY remote carries a `SMLTR:` subject and none is a leftover `fixup!` --
 # commit-msg already refused the subject at write time, but --no-verify,
-# --amend on an old commit and a rebase all bypass it, and pr.yml only ever
-# sees a pull request. Then `bun run verify` (lint, every suite, build,
+# --amend on an old commit and a rebase all bypass it, and the PR format
+# checker only ever sees a pull request. Then `bun run verify` (lint, every suite, build,
 # ~20 s) -- the same gate `bun run release` runs as `preversion`. A push that
 # only deletes refs (all-zero local sha on stdin) has no tree to test and is
 # let through.

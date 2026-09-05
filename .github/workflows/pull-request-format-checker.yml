@@ -1,8 +1,5 @@
-# PR hygiene for smeltr.
-#
-# ci.yml already runs the whole test suite on every pull request; this workflow
-# is the half that only makes sense ON a pull request and has nothing to do
-# with whether the code is green: does the PR itself follow the house rules?
+# PR hygiene for smeltr. It checks the FORMAT of a pull request -- its title,
+# body and commit subjects -- and runs no code from the repo.
 #
 #   * The title is a commit subject: `SMLTR: ` + capitalized imperative verb,
 #     <=72 chars, no trailing period, no conventional-commits prefix.
@@ -31,11 +28,12 @@
 #   * Read-only. `contents: read` is for the checkout; title and body come from
 #     the event payload, so no API call and no wider permission is needed.
 
-name: 📝 PR
+name: 📝 Pull request format checker
 
 on:
   pull_request:
-    types: [opened, edited, synchronize, reopened, ready_for_review]
+  push:
+  workflow_dispatch:
 
 permissions:
   contents: read
