@@ -22,6 +22,7 @@ origins; every value reaches the DOM via textContent. A LAN bind refuses any
 non-private address and fails closed to loopback -- the token rides in the URL
 in cleartext HTTP, which is acceptable on a home LAN and not on the internet.
 """
+
 from __future__ import annotations
 
 import hmac
@@ -45,6 +46,7 @@ from urllib.parse import urlparse, parse_qs
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pipeline import core
 from dashboard import events as events_mod
+from dashboard import notify
 from dashboard import sysmon
 
 # Token persists across restarts in a 0600 file, so LAN devices survive the
@@ -91,8 +93,10 @@ def _lan_ip() -> str | None:
 # which also returns True for the documentation/benchmarking/TEST-NET ranges
 # (192.0.2/24, 198.51.100/24, 203.0.113/24, 198.18/15) -- a public-facing
 # 203.0.113.x would sail through that check. Membership is explicit instead.
-_LAN_NETS = tuple(ipaddress.ip_network(n) for n in (
-    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"))
+_LAN_NETS = tuple(
+    ipaddress.ip_network(n)
+    for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10")
+)
 
 
 def _is_private(addr: str) -> bool:
@@ -110,8 +114,21 @@ def _is_private(addr: str) -> bool:
 # out 100.64/10, which _is_private deliberately accepts for real CGNAT homes --
 # binding every private address WITHOUT this filter would newly expose the
 # dashboard across a VPN that the old single-address bind never reached.
-_TUNNEL_IFACES = ("lo", "utun", "tun", "tap", "ipsec", "ppp", "gif", "stf",
-                  "awdl", "llw", "anpi", "bridge", "ap")
+_TUNNEL_IFACES = (
+    "lo",
+    "utun",
+    "tun",
+    "tap",
+    "ipsec",
+    "ppp",
+    "gif",
+    "stf",
+    "awdl",
+    "llw",
+    "anpi",
+    "bridge",
+    "ap",
+)
 
 
 def _lan_ips() -> list[str]:
@@ -130,8 +147,9 @@ def _lan_ips() -> list[str]:
     """
     found: list[str] = []
     try:
-        out = subprocess.run(["ifconfig", "-a"], capture_output=True,
-                             text=True, timeout=5).stdout
+        out = subprocess.run(
+            ["ifconfig", "-a"], capture_output=True, text=True, timeout=5
+        ).stdout
     except (OSError, subprocess.SubprocessError):
         out = ""
     iface, up = "", False
@@ -165,9 +183,12 @@ if _bind_req == "lan":
     BINDS = _lan_ips()
     if not BINDS:
         cand = _lan_ip()
-        why = ("no network" if not cand else f"{cand} is not a private LAN address")
-        print(f"smeltr: SMELTR_BIND=lan -> {why}; binding loopback only",
-              file=sys.stderr, flush=True)
+        why = "no network" if not cand else f"{cand} is not a private LAN address"
+        print(
+            f"smeltr: SMELTR_BIND=lan -> {why}; binding loopback only",
+            file=sys.stderr,
+            flush=True,
+        )
         BINDS = ["127.0.0.1"]
 elif _bind_req == "127.0.0.1":
     BINDS = ["127.0.0.1"]
@@ -176,8 +197,12 @@ elif _is_private(_bind_req):
     # interface is how an operator deliberately narrows the exposure.
     BINDS = [_bind_req]
 else:
-    print(f"smeltr: SMELTR_BIND={_bind_req!r} is not a private LAN address; "
-          "binding loopback only", file=sys.stderr, flush=True)
+    print(
+        f"smeltr: SMELTR_BIND={_bind_req!r} is not a private LAN address; "
+        "binding loopback only",
+        file=sys.stderr,
+        flush=True,
+    )
     BINDS = ["127.0.0.1"]
 # The primary keeps naming the printed URL, the footer, and the log lines.
 BIND = BINDS[0]
@@ -275,9 +300,13 @@ def _transfers() -> list:
     for folder in core.staged_folders():
         stage = os.path.join(core.X9, folder)
         try:
-            names = [n for n in os.listdir(stage)
-                     if n.endswith(".mkv") and "2160p hevc" in n.lower()
-                     and not n.startswith("._")]
+            names = [
+                n
+                for n in os.listdir(stage)
+                if n.endswith(".mkv")
+                and "2160p hevc" in n.lower()
+                and not n.startswith("._")
+            ]
         except OSError:
             continue
         # Two finished outputs in one folder is a state record.py refuses to
@@ -322,8 +351,9 @@ def _transfers() -> list:
                 # (equal weighting read up to 21% high in live sampling).
                 inst = (done - rec["done"]) / dt
                 prev = rec.get("rate")
-                rec["rate"] = (inst if prev is None
-                               else (prev * 20 + inst * dt) / (20 + dt))
+                rec["rate"] = (
+                    inst if prev is None else (prev * 20 + inst * dt) / (20 + dt)
+                )
             rec.update(done=done, t=now, grew=now)
         elif done < rec["done"]:
             # A smaller partial is a NEW attempt; restart tracking.
@@ -338,8 +368,7 @@ def _transfers() -> list:
             # done > total means the partial is from a DIFFERENT (older)
             # output than the one staged now -- a stale leftover, not progress.
             stalled = True
-        pct = (round(done / total * 100, 1)
-               if not stalled and total > 0 else None)
+        pct = round(done / total * 100, 1) if not stalled and total > 0 else None
         # The held rate is reported on EVERY non-stalled frame, not only the
         # frames where growth was observed: a no-growth frame is a stat-cadence
         # artifact, and a rate/ETA caption that blinked in and out every few
@@ -352,16 +381,18 @@ def _transfers() -> list:
         # byte counts, which are still facts.
         fresh_rate = (now - rec["grew"]) <= RATE_HOLD_SECONDS
         rate = rec.get("rate") if not stalled and fresh_rate else None
-        rows.append({
-            "title": folder,
-            "nas": core.volume_name(root),
-            "src_dir": dest,
-            "done_bytes": done,
-            "total_bytes": total,
-            "pct": pct,
-            "rate_bps": round(rate) if rate else None,
-            "stalled": stalled,
-        })
+        rows.append(
+            {
+                "title": folder,
+                "nas": core.volume_name(root),
+                "src_dir": dest,
+                "done_bytes": done,
+                "total_bytes": total,
+                "pct": pct,
+                "rate_bps": round(rate) if rate else None,
+                "stalled": stalled,
+            }
+        )
     for k in list(_xfer_track):
         if k not in seen:
             del _xfer_track[k]
@@ -424,9 +455,11 @@ def _arrivals() -> dict:
         if partials and not full:
             found[folder.lower()] = os.path.join(stage, partials[0])
     try:
-        hidden = [n for n in os.listdir(core.X9)
-                  if n.startswith(".pull-")
-                  and os.path.isdir(os.path.join(core.X9, n))]
+        hidden = [
+            n
+            for n in os.listdir(core.X9)
+            if n.startswith(".pull-") and os.path.isdir(os.path.join(core.X9, n))
+        ]
     except OSError:
         hidden = []
     for n in hidden:
@@ -436,8 +469,7 @@ def _arrivals() -> dict:
         except OSError:
             continue
         if names:
-            found.setdefault(n[len(".pull-"):].lower(),
-                             os.path.join(d, names[0]))
+            found.setdefault(n[len(".pull-") :].lower(), os.path.join(d, names[0]))
     out = {}
     now = time.monotonic()
     for key, path in found.items():
@@ -462,9 +494,11 @@ def _arrivals() -> dict:
             fresh = (time.time() - os.path.getmtime(path)) < 120
         except OSError:
             fresh = False
-        out[key] = {"done": done,
-                    "stalled": (now - rec["grew"] > 120) and not fresh,
-                    "rate": round(rate) if rate else None}
+        out[key] = {
+            "done": done,
+            "stalled": (now - rec["grew"] > 120) and not fresh,
+            "rate": round(rate) if rate else None,
+        }
     for k in list(_arr_track):
         if k not in out:
             del _arr_track[k]
@@ -472,9 +506,11 @@ def _arrivals() -> dict:
 
 
 def _arr_fields(a) -> dict:
-    return {"arriving_bytes": a["done"] if a else None,
-            "arriving_stalled": bool(a and a["stalled"]),
-            "arriving_rate_bps": a["rate"] if a else None}
+    return {
+        "arriving_bytes": a["done"] if a else None,
+        "arriving_stalled": bool(a and a["stalled"]),
+        "arriving_rate_bps": a["rate"] if a else None,
+    }
 
 
 def _src_dirs() -> dict:
@@ -527,8 +563,14 @@ def build_state() -> dict:
         # dicts, and these decorations are a dashboard concern only.
         sd = _src_dirs()
         arr = _arrivals()
-        q = [dict(r, src_dir=sd.get(r["title"].lower()),
-                  **_arr_fields(arr.get(r["title"].lower()))) for r in q]
+        q = [
+            dict(
+                r,
+                src_dir=sd.get(r["title"].lower()),
+                **_arr_fields(arr.get(r["title"].lower())),
+            )
+            for r in q
+        ]
         # summary() is the ONE carrier of paused -- the same field report.py
         # banners -- and it feeds _mark_ready so "ready" and the paused banner
         # can never come from two reads that disagree within one snapshot.
@@ -617,8 +659,11 @@ def _set_note(msg, kind="warn") -> None:
     "ok" note may not paper over it for 15 minutes; warn/bad always write.
     """
     with _state_lock:
-        if kind == "ok" and _encode_note["kind"] == "bad" \
-                and time.monotonic() - _encode_note["at"] < 900:
+        if (
+            kind == "ok"
+            and _encode_note["kind"] == "bad"
+            and time.monotonic() - _encode_note["at"] < 900
+        ):
             return
         _encode_note["msg"], _encode_note["kind"] = msg, kind
         _encode_note["at"] = time.monotonic()
@@ -651,8 +696,7 @@ def _mark_ready(rows: list, live: list, paused: bool) -> None:
     # _arrivals(). A row still arriving must never carry the green row or the
     # start button -- /api/encode/start refuses it with a 409, and a promise
     # the click cannot keep is the exact bug ready exists to prevent.
-    pick, _ = core.pick_next(
-        [r for r in rows if r.get("arriving_bytes") is None])
+    pick, _ = core.pick_next([r for r in rows if r.get("arriving_bytes") is None])
     if pick is not None:
         pick["next_up"] = True
         if not live and not paused:
@@ -666,8 +710,9 @@ def _slug_of(title: str) -> str:
 
 def _pgrep(pattern: str) -> list:
     try:
-        out = subprocess.run(["pgrep", "-f", pattern], capture_output=True,
-                             text=True, timeout=5)
+        out = subprocess.run(
+            ["pgrep", "-f", pattern], capture_output=True, text=True, timeout=5
+        )
     except (OSError, subprocess.SubprocessError):
         return []
     return [int(x) for x in out.stdout.split() if x.isdigit()]
@@ -698,15 +743,20 @@ def _staging_files(title: str):
 def _track_counts(path: str):
     """(audio, subtitle) stream counts from ffprobe, or (None, None)."""
     try:
-        out = subprocess.run(["ffprobe", "-v", "error", "-show_streams", path],
-                             capture_output=True, text=True, timeout=120).stdout
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_streams", path],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        ).stdout
     except (OSError, subprocess.SubprocessError):
         return None, None
     return (out.count("codec_type=audio"), out.count("codec_type=subtitle"))
 
 
-def _parity_gate(proc, src: str, out: str, log: str, title: str,
-                 slug: str, crf: int) -> None:
+def _parity_gate(
+    proc, src: str, out: str, log: str, title: str, slug: str, crf: int
+) -> None:
     """Verify HandBrake is writing every track, then hand off to the watcher.
 
     A multi-hour encode that silently dropped audio or subtitles is a
@@ -733,8 +783,10 @@ def _parity_gate(proc, src: str, out: str, log: str, title: str,
     os_ = len(re.findall(r"^\[[0-9:]+\]\s+\* subtitle track", text, re.M))
     sa, ss = _track_counts(src)
     if sa is None:
-        _set_note("Started %s, but ffprobe could not read the source to verify "
-                  "track parity. Encode is RUNNING and UNVERIFIED." % title)
+        _set_note(
+            "Started %s, but ffprobe could not read the source to verify "
+            "track parity. Encode is RUNNING and UNVERIFIED." % title
+        )
         return
     if (oa, os_) != (sa, ss):
         _kill(proc.pid)
@@ -742,9 +794,11 @@ def _parity_gate(proc, src: str, out: str, log: str, title: str,
             os.remove(out)
         except OSError:
             pass
-        _set_note("Refused %s: source has %da/%ds but the job writes %da/%ds. "
-                  "Encode killed and the partial deleted."
-                  % (title, sa, ss, oa, os_), kind="bad")
+        _set_note(
+            "Refused %s: source has %da/%ds but the job writes %da/%ds. "
+            "Encode killed and the partial deleted." % (title, sa, ss, oa, os_),
+            kind="bad",
+        )
         return
     watch_log = os.path.join(core.X9, ".watch-%s.log" % slug)
     try:
@@ -753,17 +807,32 @@ def _parity_gate(proc, src: str, out: str, log: str, title: str,
         open(watch_log, "w").close()
         with open(watch_log, "ab") as wf:
             subprocess.Popen(
-                ["bash", os.path.join(core.X9, ".watch-encode.sh"), slug, title,
-                 os.path.basename(src), os.path.basename(out), str(proc.pid),
-                 str(crf)],
-                stdout=wf, stderr=subprocess.STDOUT, start_new_session=True)
+                [
+                    "bash",
+                    os.path.join(core.X9, ".watch-encode.sh"),
+                    slug,
+                    title,
+                    os.path.basename(src),
+                    os.path.basename(out),
+                    str(proc.pid),
+                    str(crf),
+                ],
+                stdout=wf,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
     except OSError as e:
-        _set_note("%s is encoding (%da/%ds verified) but the progress watcher "
-                  "failed to start (%s) — no CRF ladder or auto-kill on this "
-                  "run." % (title, sa, ss, e))
+        _set_note(
+            "%s is encoding (%da/%ds verified) but the progress watcher "
+            "failed to start (%s) — no CRF ladder or auto-kill on this "
+            "run." % (title, sa, ss, e)
+        )
         return
-    _set_note("%s encoding at CRF %d — %d audio, %d subtitle tracks verified."
-              % (title, crf, sa, ss), kind="ok")
+    _set_note(
+        "%s encoding at CRF %d — %d audio, %d subtitle tracks verified."
+        % (title, crf, sa, ss),
+        kind="ok",
+    )
 
 
 def _kill(pid: int) -> None:
@@ -800,9 +869,12 @@ def _abort_worker(pid: int, title: str, out) -> None:
             freed = os.path.getsize(out)
             os.remove(out)
         except OSError as e:
-            _set_note("Killed %s but could NOT delete its partial (%s). Delete "
-                      "it by hand before the driver runs — it will be mistaken "
-                      "for a finished encode." % (title, e), kind="bad")
+            _set_note(
+                "Killed %s but could NOT delete its partial (%s). Delete "
+                "it by hand before the driver runs — it will be mistaken "
+                "for a finished encode." % (title, e),
+                kind="bad",
+            )
             return
     with _ov_lock:
         ov = core.load_overrides()
@@ -812,14 +884,21 @@ def _abort_worker(pid: int, title: str, out) -> None:
         try:
             core.save_overrides(skip, pri)
         except OSError as e:
-            _set_note("Killed %s and deleted its partial, but could not write "
-                      "the skip (%s) — a running driver may restart it."
-                      % (title, e), kind="bad")
+            _set_note(
+                "Killed %s and deleted its partial, but could not write "
+                "the skip (%s) — a running driver may restart it." % (title, e),
+                kind="bad",
+            )
             return
-    _set_note("Aborted %s — partial deleted%s, title skipped so it is not "
-              "picked up again. Restore it from the queue to re-arm."
-              % (title, "" if freed is None else
-                 " (%.2f GiB discarded)" % (freed / 1073741824.0)), kind="ok")
+    _set_note(
+        "Aborted %s — partial deleted%s, title skipped so it is not "
+        "picked up again. Restore it from the queue to re-arm."
+        % (
+            title,
+            "" if freed is None else " (%.2f GiB discarded)" % (freed / 1073741824.0),
+        ),
+        kind="ok",
+    )
 
 
 # ------------------------------------------------------------- stage control
@@ -887,19 +966,31 @@ def _stage_candidate(title: str, rows: list):
     if not matches:
         return None, None, None, "it is no longer in the queue", False
     if len(matches) > 1:
-        return None, None, None, ("two queue rows share this folder name; "
-                                  "refusing to act on both"), False
+        return (
+            None,
+            None,
+            None,
+            ("two queue rows share this folder name; refusing to act on both"),
+            False,
+        )
     row = matches[0]
     if row.get("skipped"):
         return None, None, None, "it is skipped — restore it first", False
     # Arriving before staged: "already there" is the wrong message for a file
     # that is mostly missing.
     if row.get("arriving_bytes") is not None:
-        pct = (" (%.0f%% pulled)"
-               % (row["arriving_bytes"] / row["bytes"] * 100)
-               if row.get("bytes") else "")
-        return None, None, None, ("it is already being copied to the staging "
-                                  "drive%s" % pct), False
+        pct = (
+            " (%.0f%% pulled)" % (row["arriving_bytes"] / row["bytes"] * 100)
+            if row.get("bytes")
+            else ""
+        )
+        return (
+            None,
+            None,
+            None,
+            ("it is already being copied to the staging drive%s" % pct),
+            False,
+        )
     if row.get("staged"):
         return None, None, None, "it is already on the staging drive", False
     srcs = set()
@@ -912,8 +1003,16 @@ def _stage_candidate(title: str, rows: list):
     if not srcs:
         return None, None, None, "its file is not in the bitrate index", False
     if len(srcs) > 1:
-        return None, None, None, ("the index lists more than one source file "
-                                  "for this title; refusing to pick one"), False
+        return (
+            None,
+            None,
+            None,
+            (
+                "the index lists more than one source file "
+                "for this title; refusing to pick one"
+            ),
+            False,
+        )
     src = srcs.pop()
     # An unreachable NAS is a HOLD, not a drop: the share remounts, and a
     # queue that empties itself during a blip is worse than one that waits.
@@ -941,12 +1040,14 @@ def _space_hold(size: int, rows: list):
         return "waiting — cannot read free space on the staging drive", None
     # PLUS the bytes other in-flight pulls have promised but not yet written:
     # statvfs only counts what has already landed.
-    inbound = sum(max(0, (r.get("bytes") or 0) - r["arriving_bytes"])
-                  for r in rows if r.get("arriving_bytes") is not None)
-    need = size + inbound + 10 * 1024 ** 3
+    inbound = sum(
+        max(0, (r.get("bytes") or 0) - r["arriving_bytes"])
+        for r in rows
+        if r.get("arriving_bytes") is not None
+    )
+    need = size + inbound + 10 * 1024**3
     if avail < need:
-        return ("waiting for room — needs %.0f GiB free"
-                % (need / 1073741824.0)), avail
+        return ("waiting for room — needs %.0f GiB free" % (need / 1073741824.0)), avail
     return None, avail
 
 
@@ -963,15 +1064,18 @@ def _begin_pull_locked(row: dict, src: str, size: int):
         return "could not create the pull folder: %s" % e
     _stage_active["title"] = row["title"]
     try:
-        threading.Thread(target=_stage_worker,
-                         args=(row["title"], src, hidden),
-                         daemon=True).start()
+        threading.Thread(
+            target=_stage_worker, args=(row["title"], src, hidden), daemon=True
+        ).start()
     except RuntimeError as e:
         _stage_active["title"] = None
         shutil.rmtree(hidden, ignore_errors=True)
         return "could not start the pull thread: %s" % e
-    _set_note("Staging %s — pulling %.2f GiB from the library over SSH."
-              % (row["title"], size / 1073741824.0), kind="ok")
+    _set_note(
+        "Staging %s — pulling %.2f GiB from the library over SSH."
+        % (row["title"], size / 1073741824.0),
+        kind="ok",
+    )
     return None
 
 
@@ -989,6 +1093,7 @@ def _pump_once_locked(rows: list) -> None:
     says so on the row; a permanent one drops that ONE title and moves on, so
     a single dead title cannot wedge the whole queue.
     """
+
     def hold(why):
         if _stage_wait["why"] != why:
             _stage_wait["why"] = why
@@ -997,8 +1102,7 @@ def _pump_once_locked(rows: list) -> None:
     def drop(title, why, kind):
         _stage_queue.pop(0)
         _stage_wait["why"] = None
-        _set_note("Dropped the queued pull of %s — %s." % (title, why),
-                  kind=kind)
+        _set_note("Dropped the queued pull of %s — %s." % (title, why), kind=kind)
 
     title = _stage_queue[0]
     busy = _wire_busy_locked()
@@ -1015,10 +1119,12 @@ def _pump_once_locked(rows: list) -> None:
     why, avail = _space_hold(size, rows)
     if why:
         if _stage_wait["why"] != why and avail is not None:
-            _set_note("Pull queue is waiting for room on the staging drive: "
-                      "%s needs %.0f GiB free, %.0f GiB available."
-                      % (title, (size + 10 * 1024 ** 3) / 1073741824.0,
-                         avail / 1073741824.0), kind="warn")
+            _set_note(
+                "Pull queue is waiting for room on the staging drive: "
+                "%s needs %.0f GiB free, %.0f GiB available."
+                % (title, (size + 10 * 1024**3) / 1073741824.0, avail / 1073741824.0),
+                kind="warn",
+            )
         return hold(why)
     err = _begin_pull_locked(row, src, size)
     if err:
@@ -1042,12 +1148,14 @@ def _stage_pump_loop() -> None:
             # whether to try; _begin_pull_locked is what commits.
             rows = build_state()["queue"] if idle else []
             with _stage_lock:
-                before = (_stage_wait["why"], len(_stage_queue),
-                          _stage_active["title"])
+                before = (_stage_wait["why"], len(_stage_queue), _stage_active["title"])
                 if idle and _stage_queue and _stage_active["title"] is None:
                     _pump_once_locked(rows)
-                changed = before != (_stage_wait["why"], len(_stage_queue),
-                                     _stage_active["title"])
+                changed = before != (
+                    _stage_wait["why"],
+                    len(_stage_queue),
+                    _stage_active["title"],
+                )
             if changed:
                 _drop_state_cache()
             time.sleep(STAGE_PUMP_SECONDS)
@@ -1091,8 +1199,10 @@ def _stage_worker(title: str, src: str, hidden: str) -> None:
             with open(log, "wb") as fh:
                 proc = subprocess.Popen(
                     ["/bin/bash", xfer, "pull", src, hidden],
-                    stdout=fh, stderr=subprocess.STDOUT,
-                    start_new_session=True)
+                    stdout=fh,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
             try:
                 rc = proc.wait(timeout=6 * 3600)
             except subprocess.TimeoutExpired:
@@ -1105,28 +1215,42 @@ def _stage_worker(title: str, src: str, hidden: str) -> None:
                 except OSError:
                     pass
                 proc.wait()
-                _set_note("Staging %s gave up after 6 hours — killed the pull;"
-                          " removing the folder." % title, kind="bad")
+                _set_note(
+                    "Staging %s gave up after 6 hours — killed the pull;"
+                    " removing the folder." % title,
+                    kind="bad",
+                )
         except OSError as e:
-            _set_note("Staging %s FAILED before the transfer started (%s)."
-                      % (title, e), kind="bad")
+            _set_note(
+                "Staging %s FAILED before the transfer started (%s)." % (title, e),
+                kind="bad",
+            )
         if rc == 0:
             dest = os.path.join(core.X9, title)
             try:
                 os.rename(hidden, dest)
                 keep = True
-                _set_note("Staged %s — a copy. The library original is "
-                          "untouched now, and is deleted only when a good "
-                          "encode of it syncs back." % title, kind="ok")
+                _set_note(
+                    "Staged %s — a copy. The library original is "
+                    "untouched now, and is deleted only when a good "
+                    "encode of it syncs back." % title,
+                    kind="ok",
+                )
             except OSError as e:
                 # Never delete a completed 70 GB pull over a rename problem.
                 keep = True
-                _set_note("Pulled %s but could NOT move it into place (%s) — "
-                          "the complete file is in %s; move it by hand."
-                          % (title, e, os.path.basename(hidden)), kind="bad")
+                _set_note(
+                    "Pulled %s but could NOT move it into place (%s) — "
+                    "the complete file is in %s; move it by hand."
+                    % (title, e, os.path.basename(hidden)),
+                    kind="bad",
+                )
         elif rc is not None:
-            _set_note("Staging %s FAILED — see %s. Removing the folder."
-                      % (title, os.path.basename(log)), kind="bad")
+            _set_note(
+                "Staging %s FAILED — see %s. Removing the folder."
+                % (title, os.path.basename(log)),
+                kind="bad",
+            )
         if not keep:
             # Delete only inside the staging drive, however hidden was built.
             real = os.path.realpath(hidden)
@@ -1153,31 +1277,39 @@ def _finish_orphan_locked(title: str, hidden: str) -> None:
     except OSError:
         return
     real = [f for f in files if not f.startswith("._")]
-    complete = (any(f.endswith(".mkv") for f in real)
-                and not any(f.endswith(".partial") for f in real))
+    complete = any(f.endswith(".mkv") for f in real) and not any(
+        f.endswith(".partial") for f in real
+    )
     if complete:
         dest = os.path.join(core.X9, title)
         try:
             if os.path.exists(dest):
                 raise OSError("a folder named %s already exists" % title)
             os.rename(hidden, dest)
-            _set_note("Staged %s — finished a pull orphaned by a server "
-                      "restart. The library original is untouched, and is "
-                      "deleted only when a good encode of it syncs back."
-                      % title, kind="ok")
+            _set_note(
+                "Staged %s — finished a pull orphaned by a server "
+                "restart. The library original is untouched, and is "
+                "deleted only when a good encode of it syncs back." % title,
+                kind="ok",
+            )
         except OSError as e:
             # Never delete a completed 70 GB pull over a rename problem.
-            _set_note("Found the completed orphaned pull of %s but could "
-                      "NOT move it into place (%s) — the file is in %s; "
-                      "move it by hand."
-                      % (title, e, os.path.basename(hidden)), kind="bad")
+            _set_note(
+                "Found the completed orphaned pull of %s but could "
+                "NOT move it into place (%s) — the file is in %s; "
+                "move it by hand." % (title, e, os.path.basename(hidden)),
+                kind="bad",
+            )
         return
     # Delete only inside the staging drive, however hidden was built.
     realpath = os.path.realpath(hidden)
     if realpath.startswith(os.path.realpath(core.X9) + os.sep):
         shutil.rmtree(realpath, ignore_errors=True)
-    _set_note("Removed the half-finished pull of %s left behind by a server "
-              "restart — stage it again." % title, kind="bad")
+    _set_note(
+        "Removed the half-finished pull of %s left behind by a server "
+        "restart — stage it again." % title,
+        kind="bad",
+    )
 
 
 def _sweep_orphans_once() -> bool:
@@ -1201,8 +1333,11 @@ def _sweep_orphans_once() -> bool:
         # whatever is there; retrying here would tick forever on a machine
         # that simply has no X9.
         return True
-    orphans = [n for n in names if n.startswith(".pull-")
-               and os.path.isdir(os.path.join(core.X9, n))]
+    orphans = [
+        n
+        for n in names
+        if n.startswith(".pull-") and os.path.isdir(os.path.join(core.X9, n))
+    ]
     if not orphans:
         return True
     with _stage_lock:
@@ -1211,7 +1346,7 @@ def _sweep_orphans_once() -> bool:
         if _pgrep(r"ssh-xfer\.sh pull"):
             return False
         for n in orphans:
-            _finish_orphan_locked(n[len(".pull-"):], os.path.join(core.X9, n))
+            _finish_orphan_locked(n[len(".pull-") :], os.path.join(core.X9, n))
     _drop_state_cache()
     return True
 
@@ -1224,9 +1359,10 @@ def _adopt_orphan_pulls() -> None:
     child survived the restart -- and commits once it exits.
     """
     try:
-        if not any(n.startswith(".pull-")
-                   and os.path.isdir(os.path.join(core.X9, n))
-                   for n in os.listdir(core.X9)):
+        if not any(
+            n.startswith(".pull-") and os.path.isdir(os.path.join(core.X9, n))
+            for n in os.listdir(core.X9)
+        ):
             return
     except OSError:
         return
@@ -1255,7 +1391,7 @@ class Handler(BaseHTTPRequestHandler):
         if not raw:
             return False  # HTTP/1.1 requires a Host; absent one can't match
         if raw.startswith("["):
-            host = raw[:raw.index("]") + 1] if "]" in raw else raw
+            host = raw[: raw.index("]") + 1] if "]" in raw else raw
         else:
             host = raw.rsplit(":", 1)[0] if ":" in raw else raw
         # Case-insensitive, and a trailing-dot FQDN (mr-meeseeks.local.) is the
@@ -1279,8 +1415,11 @@ class Handler(BaseHTTPRequestHandler):
         # its address to another device, which would inherit write access.
         # A remote peer cannot spoof this over TCP -- the SYN-ACK would
         # route back to us, not to it.
-        if (LAN_WRITES or self._peer_is_loopback()
-                or self.connection.getsockname()[0] == self.client_address[0]):
+        if (
+            LAN_WRITES
+            or self._peer_is_loopback()
+            or self.connection.getsockname()[0] == self.client_address[0]
+        ):
             return True
         # Default "" is deliberately NOT in LAN_WRITE_ROUTES: a caller that
         # forgets to pass the route gets the strict answer, never the loose
@@ -1294,8 +1433,9 @@ class Handler(BaseHTTPRequestHandler):
         # Compare BYTES. compare_digest raises TypeError on non-ASCII str, which
         # killed the handler thread with no response and appended an unbounded
         # traceback to the log -- trivially sprayable by any local page.
-        return hmac.compare_digest(supplied.encode("utf-8", "surrogatepass"),
-                                   TOKEN.encode("utf-8"))
+        return hmac.compare_digest(
+            supplied.encode("utf-8", "surrogatepass"), TOKEN.encode("utf-8")
+        )
 
     def _headers(self, status: int, ctype: str, extra: dict | None = None) -> None:
         self.send_response(status)
@@ -1365,9 +1505,9 @@ class Handler(BaseHTTPRequestHandler):
             # The driver/watcher timeline for the Events tab. Read-only, and
             # fetched on demand rather than riding the SSE frames.
             tl = events_mod.events()
-            body = json.dumps({"rev": events_mod.rev(),
-                               "events": tl["events"],
-                               "total": tl["total"]}).encode()
+            body = json.dumps(
+                {"rev": events_mod.rev(), "events": tl["events"], "total": tl["total"]}
+            ).encode()
             return self._send(200, "application/json; charset=utf-8", body)
         if route == "/api/stream":
             return self._stream()
@@ -1395,8 +1535,11 @@ class Handler(BaseHTTPRequestHandler):
         # An HTTP/1.1 keep-alive response with neither Content-Length nor
         # chunked framing is undelimited. Close-delimited is correct for SSE here.
         self.close_connection = True
-        self._headers(200, "text/event-stream; charset=utf-8",
-                      {"Connection": "close", "X-Accel-Buffering": "no"})
+        self._headers(
+            200,
+            "text/event-stream; charset=utf-8",
+            {"Connection": "close", "X-Accel-Buffering": "no"},
+        )
         self.end_headers()
         # Two cadences on one connection: the full state every POLL_SECONDS
         # (build_state stats NAS roots over SMB and must NOT run at 1 Hz),
@@ -1421,8 +1564,7 @@ class Handler(BaseHTTPRequestHandler):
                 samples = mon.since(last_mon_t) if mon else []
                 if samples:
                     last_mon_t = samples[-1]["t"]
-                    chunks.append(f"event: mon\ndata: "
-                                  f"{json.dumps(samples)}\n\n")
+                    chunks.append(f"event: mon\ndata: {json.dumps(samples)}\n\n")
                 if chunks:
                     self.wfile.write("".join(chunks).encode())
                     self.wfile.flush()
@@ -1452,10 +1594,13 @@ class Handler(BaseHTTPRequestHandler):
         # _deny closes the connection, so the unread body on the wire can never
         # be replayed as a smuggled request.
         if not self._writes_ok(parsed.path):
-            return self._deny(403, "read-only from the network — "
-                              "skip/reorder, encode start/abort and stage "
-                              "pulls only from this Mac. Pause/resume works "
-                              "from any device holding this URL.")
+            return self._deny(
+                403,
+                "read-only from the network — "
+                "skip/reorder, encode start/abort and stage "
+                "pulls only from this Mac. Pause/resume works "
+                "from any device holding this URL.",
+            )
         try:
             length = int(self.headers.get("Content-Length") or "0")
         except ValueError:
@@ -1514,8 +1659,7 @@ class Handler(BaseHTTPRequestHandler):
             # quietly disagree with the number under the operator's cursor.
             crf = core.planned_crf(title)
         if crf not in CRF_CHOICES:
-            return "CRF must be one of %s" % ", ".join(
-                str(c) for c in CRF_CHOICES)
+            return "CRF must be one of %s" % ", ".join(str(c) for c in CRF_CHOICES)
         if not os.path.isdir(core.X9):
             return "the staging drive is not mounted"
         with _encode_lock:
@@ -1525,29 +1669,35 @@ class Handler(BaseHTTPRequestHandler):
             # change inside .autopilot.sh; until then the rule is that only one
             # of us runs at a time.
             if _driver_pids():
-                return ("autopilot.sh is running — stop the driver first, or "
-                        "let it pick the next title itself")
+                return (
+                    "autopilot.sh is running — stop the driver first, or "
+                    "let it pick the next title itself"
+                )
             if core.live_encodes():
                 return "an encode is already running"
-            matches = [r for r in self._queue_rows()
-                       if r["title"].lower() == title.lower()]
+            matches = [
+                r for r in self._queue_rows() if r["title"].lower() == title.lower()
+            ]
             if not matches:
                 return "title is not in the queue"
             if len(matches) > 1:
-                return ("two queue rows share this folder name; refusing to "
-                        "act on both")
+                return "two queue rows share this folder name; refusing to act on both"
             row = matches[0]
             if row.get("skipped"):
                 return "this title is skipped — restore it first"
             if not row.get("staged"):
-                return ("this title is not on the staging drive yet — only "
-                        "staged titles can be encoded")
+                return (
+                    "this title is not on the staging drive yet — only "
+                    "staged titles can be encoded"
+                )
             if row.get("arriving_bytes") is not None:
                 return "this title is still being copied to the staging drive"
             folder, src, out = _staging_files(row["title"])
             if out is not None:
-                return ("this title already has a 2160p HEVC output — delete "
-                        "it first, or let the driver record and sync it")
+                return (
+                    "this title already has a 2160p HEVC output — delete "
+                    "it first, or let the driver record and sync it"
+                )
             if not src:
                 return "no source .mkv in the staging folder"
             slug = _slug_of(row["title"])
@@ -1556,20 +1706,43 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 fh = open(log, "wb")
                 proc = subprocess.Popen(
-                    ["HandBrakeCLI", "-i", src, "-o", dest,
-                     "-f", "av_mkv", "-e", "x265_10bit", "-q", str(crf),
-                     "--encoder-preset", "medium",
-                     "--all-audio", "--aencoder", "copy",
-                     "--audio-fallback", "ac3", "--all-subtitles"],
-                    stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
+                    [
+                        "HandBrakeCLI",
+                        "-i",
+                        src,
+                        "-o",
+                        dest,
+                        "-f",
+                        "av_mkv",
+                        "-e",
+                        "x265_10bit",
+                        "-q",
+                        str(crf),
+                        "--encoder-preset",
+                        "medium",
+                        "--all-audio",
+                        "--aencoder",
+                        "copy",
+                        "--audio-fallback",
+                        "ac3",
+                        "--all-subtitles",
+                    ],
+                    stdout=fh,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
             except OSError as e:
                 return "could not start HandBrakeCLI: %s" % e
-            _set_note("Starting %s at CRF %d — verifying track parity before "
-                      "letting it run." % (row["title"], crf), kind="ok")
+            _set_note(
+                "Starting %s at CRF %d — verifying track parity before "
+                "letting it run." % (row["title"], crf),
+                kind="ok",
+            )
             threading.Thread(
                 target=_parity_gate,
                 args=(proc, src, dest, log, row["title"], slug, crf),
-                daemon=True).start()
+                daemon=True,
+            ).start()
         return None
 
     def _apply_encode_abort(self, body: dict):
@@ -1577,9 +1750,11 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(title, str):
             return "expected {title: str}"
         with _encode_lock:
-            live = [e for e in core.live_encodes()
-                    if (e.get("folder") or e.get("title", "")).lower()
-                    == title.lower()]
+            live = [
+                e
+                for e in core.live_encodes()
+                if (e.get("folder") or e.get("title", "")).lower() == title.lower()
+            ]
             if not live:
                 return "that title is not encoding right now"
             if len(live) > 1:
@@ -1590,10 +1765,14 @@ class Handler(BaseHTTPRequestHandler):
                 return "could not identify the HandBrake process"
             folder = enc.get("folder") or title
             _, _, out = _staging_files(folder)
-            _set_note("Aborting %s — stopping HandBrake, then discarding the "
-                      "partial." % folder, kind="warn")
-            threading.Thread(target=_abort_worker, args=(pid, folder, out),
-                             daemon=True).start()
+            _set_note(
+                "Aborting %s — stopping HandBrake, then discarding the "
+                "partial." % folder,
+                kind="warn",
+            )
+            threading.Thread(
+                target=_abort_worker, args=(pid, folder, out), daemon=True
+            ).start()
         return None
 
     def _apply_stage_start(self, body: dict):
@@ -1613,13 +1792,15 @@ class Handler(BaseHTTPRequestHandler):
             return "the staging drive is not mounted"
         rows = self._queue_rows()
         with _stage_lock:
-            if _stage_active["title"] \
-                    and _stage_active["title"].lower() == title.lower():
+            if (
+                _stage_active["title"]
+                and _stage_active["title"].lower() == title.lower()
+            ):
                 return "this title is being pulled right now"
             if any(t.lower() == title.lower() for t in _stage_queue):
-                return ("this title is already in the pull queue at position "
-                        "%d" % (1 + [t.lower() for t in _stage_queue]
-                                .index(title.lower())))
+                return "this title is already in the pull queue at position %d" % (
+                    1 + [t.lower() for t in _stage_queue].index(title.lower())
+                )
             row, src, size, err, held = _stage_candidate(title, rows)
             if err:
                 return err if not held else err.replace("waiting — ", "")
@@ -1632,9 +1813,12 @@ class Handler(BaseHTTPRequestHandler):
                 return "could not start the pull dispatcher: %s" % e
             busy = _wire_busy_locked()
         if busy or pos > 1:
-            _set_note("Queued %s (%.2f GiB) — position %d. One transfer runs "
-                      "at a time; the rest wait their turn."
-                      % (row["title"], size / 1073741824.0, pos), kind="ok")
+            _set_note(
+                "Queued %s (%.2f GiB) — position %d. One transfer runs "
+                "at a time; the rest wait their turn."
+                % (row["title"], size / 1073741824.0, pos),
+                kind="ok",
+            )
         # Position 1 with a free wire: the pump starts it on its next tick,
         # and _begin_pull_locked writes the note that says so.
         return None
@@ -1650,10 +1834,14 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(title, str):
             return "expected {title: str}"
         with _stage_lock:
-            if _stage_active["title"] \
-                    and _stage_active["title"].lower() == title.lower():
-                return ("that pull is already running — it finishes or it "
-                        "fails; the dashboard does not abort a transfer")
+            if (
+                _stage_active["title"]
+                and _stage_active["title"].lower() == title.lower()
+            ):
+                return (
+                    "that pull is already running — it finishes or it "
+                    "fails; the dashboard does not abort a transfer"
+                )
             keep = [t for t in _stage_queue if t.lower() != title.lower()]
             if len(keep) == len(_stage_queue):
                 return "that title is not in the pull queue"
@@ -1680,8 +1868,10 @@ class Handler(BaseHTTPRequestHandler):
         if _driver_pids():
             return "the driver is already running"
         if core.live_encodes():
-            return ("an encode is already running — the driver would start "
-                    "a second one beside it; abort it or let it finish first")
+            return (
+                "an encode is already running — the driver would start "
+                "a second one beside it; abort it or let it finish first"
+            )
         if not os.path.isdir(core.X9):
             return "the staging drive is not mounted"
         # kill -9 (the documented stop) skips the driver's trap, so a lock
@@ -1706,9 +1896,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             # start_new_session: the driver must survive a dashboard restart
             # -- it is the pipeline, the server is only its window.
-            subprocess.Popen(["./.autopilot.sh"], cwd=core.X9, stdout=logf,
-                             stderr=subprocess.STDOUT,
-                             stdin=subprocess.DEVNULL, start_new_session=True)
+            subprocess.Popen(
+                ["./.autopilot.sh"],
+                cwd=core.X9,
+                stdout=logf,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
         except OSError as e:
             return "could not launch the driver: %s" % e
         finally:
@@ -1716,8 +1911,11 @@ class Handler(BaseHTTPRequestHandler):
         # NOT the watchdog: a play-launched driver has no reboot recovery
         # until ops/watchdog.sh is relaunched by hand, and silently spawning
         # a supervisor that relaunches drivers is not what play means.
-        _set_note("driver launched — it sweeps the drive, then picks the "
-                  "next title within ~30 s", "ok")
+        _set_note(
+            "driver launched — it sweeps the drive, then picks the "
+            "next title within ~30 s",
+            "ok",
+        )
         return None
 
     def _apply_pause(self, body: dict):
@@ -1737,11 +1935,13 @@ class Handler(BaseHTTPRequestHandler):
         # Through the note banner, because the moment needs stating at the
         # TOP of the page, and resume's 5-minute pickup latency is otherwise
         # stated only while it does not yet apply and withdrawn when it does.
-        _set_note("Paused — the current encode (if any) still finishes, "
-                  "verifies and syncs; nothing new starts until resumed."
-                  if on else
-                  "Resumed — the driver picks up the next title within "
-                  "5 minutes.", kind="ok")
+        _set_note(
+            "Paused — the current encode (if any) still finishes, "
+            "verifies and syncs; nothing new starts until resumed."
+            if on
+            else "Resumed — the driver picks up the next title within 5 minutes.",
+            kind="ok",
+        )
         return None
 
     def _queue_rows(self) -> list[dict]:
@@ -1751,8 +1951,7 @@ class Handler(BaseHTTPRequestHandler):
         title, skipped = body.get("title"), body.get("skipped")
         if not isinstance(title, str) or not isinstance(skipped, bool):
             return "expected {title: str, skipped: bool}"
-        matches = [r for r in self._queue_rows()
-                   if r["title"].lower() == title.lower()]
+        matches = [r for r in self._queue_rows() if r["title"].lower() == title.lower()]
         if not matches:
             return "title is not in the queue"
         if len(matches) > 1:
@@ -1772,10 +1971,14 @@ class Handler(BaseHTTPRequestHandler):
                 files = os.listdir(d)
             except OSError:
                 files = []
-            if any("2160p HEVC" in f and f.endswith(".mkv")
-                   and not f.startswith("._") for f in files):
-                return ("this title's encode is already finished — it will be "
-                        "recorded and synced; skipping cannot stop that")
+            if any(
+                "2160p HEVC" in f and f.endswith(".mkv") and not f.startswith("._")
+                for f in files
+            ):
+                return (
+                    "this title's encode is already finished — it will be "
+                    "recorded and synced; skipping cannot stop that"
+                )
         ov = core.load_overrides()
         skip = [t for t in ov["skip"] if t.lower() != row["title"].lower()]
         pri = [t for t in ov["priority"] if t.lower() != row["title"].lower()]
@@ -1801,13 +2004,13 @@ class Handler(BaseHTTPRequestHandler):
         title, crf = body.get("title"), body.get("crf")
         if not isinstance(title, str):
             return "expected {title: str, crf: int|null}"
-        if crf is not None and (isinstance(crf, bool)
-                                or not isinstance(crf, int)
-                                or crf not in CRF_CHOICES):
+        if crf is not None and (
+            isinstance(crf, bool) or not isinstance(crf, int) or crf not in CRF_CHOICES
+        ):
             return "CRF must be null or one of %s" % ", ".join(
-                str(c) for c in CRF_CHOICES)
-        matches = [r for r in self._queue_rows()
-                   if r["title"].lower() == title.lower()]
+                str(c) for c in CRF_CHOICES
+            )
+        matches = [r for r in self._queue_rows() if r["title"].lower() == title.lower()]
         if not matches:
             return "title is not in the queue"
         if len(matches) > 1:
@@ -1821,8 +2024,7 @@ class Handler(BaseHTTPRequestHandler):
         if row.get("encoding"):
             return "this title is encoding right now — abort it first"
         ov = core.load_overrides()
-        crfs = {t: v for t, v in ov["crf"].items()
-                if t.lower() != row["title"].lower()}
+        crfs = {t: v for t, v in ov["crf"].items() if t.lower() != row["title"].lower()}
         if crf is not None:
             crfs[row["title"]] = crf
         core.save_overrides(ov["skip"], ov["priority"], crfs)
@@ -1830,8 +2032,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _apply_order(self, body: dict):
         order = body.get("order")
-        if not isinstance(order, list) or \
-                not all(isinstance(t, str) for t in order):
+        if not isinstance(order, list) or not all(isinstance(t, str) for t in order):
             return "expected {order: [titles]}"
         if len(order) > 500:
             return "order list too long"
@@ -1920,8 +2121,7 @@ def free_port(preferred: int = 8787) -> int:
 # carry, so the browser still receives ONE self-contained document. CSP stays
 # `default-src 'none'` -- nothing but the favicon (ICONS, below) is fetched
 # over the network, and there is still no dependency to install.
-_WEB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                    "web")
+_WEB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
 
 
 def _asset(name: str) -> str:
@@ -1936,14 +2136,18 @@ def _asset(name: str) -> str:
         with open(path, encoding="utf-8") as fh:
             return fh.read()
     except OSError as e:
-        raise SystemExit(f"smeltr: cannot read {path} ({e}); the dashboard "
-                         f"assets are missing from this checkout") from e
+        raise SystemExit(
+            f"smeltr: cannot read {path} ({e}); the dashboard "
+            f"assets are missing from this checkout"
+        ) from e
 
 
-_PAGE = (_asset("index.html")
-         .replace("__APP_CSS__", _asset("app.css"))
-         .replace("__THEME_JS__", _asset("theme.js"))
-         .replace("__APP_JS__", _asset("app.js")))
+_PAGE = (
+    _asset("index.html")
+    .replace("__APP_CSS__", _asset("app.css"))
+    .replace("__THEME_JS__", _asset("theme.js"))
+    .replace("__APP_JS__", _asset("app.js"))
+)
 
 
 def _asset_bytes(name: str) -> bytes:
@@ -1953,8 +2157,10 @@ def _asset_bytes(name: str) -> bytes:
         with open(path, "rb") as fh:
             return fh.read()
     except OSError as e:
-        raise SystemExit(f"smeltr: cannot read {path} ({e}); the dashboard "
-                         f"assets are missing from this checkout") from e
+        raise SystemExit(
+            f"smeltr: cannot read {path} ({e}); the dashboard "
+            f"assets are missing from this checkout"
+        ) from e
 
 
 def _ico(png: bytes) -> bytes:
@@ -1968,8 +2174,7 @@ def _ico(png: bytes) -> bytes:
     one. Width/height are 0 in the directory entry for 256 px; ours is 32.
     """
     w, h = struct.unpack(">II", png[16:24])  # IHDR
-    entry = struct.pack("<BBBBHHII", w % 256, h % 256, 0, 0, 1, 32,
-                        len(png), 22)
+    entry = struct.pack("<BBBBHHII", w % 256, h % 256, 0, 0, 1, 32, len(png), 22)
     return struct.pack("<HHH", 0, 1, 1) + entry + png
 
 
@@ -1983,8 +2188,7 @@ def _ico(png: bytes) -> bytes:
 ICONS = {
     "/favicon.svg": ("image/svg+xml", _asset_bytes("favicon.svg")),
     "/favicon.ico": ("image/x-icon", _ico(_asset_bytes("favicon.png"))),
-    "/apple-touch-icon.png": ("image/png",
-                              _asset_bytes("apple-touch-icon.png")),
+    "/apple-touch-icon.png": ("image/png", _asset_bytes("apple-touch-icon.png")),
 }
 
 
@@ -1994,11 +2198,17 @@ ICONS = {
 # raw value, on principle.
 # Off-box the page is read-only for network peers by default; say so unless the
 # LAN-writes opt-in is on. (Loopback can always write regardless.)
-_scope_text = (" + ".join(BINDS) + " · token required"
-               + ("" if LAN_WRITES
-                  else " · network peers may pause/resume — all other "
-                       "writes from this Mac only")
-               if LAN_EXPOSED else "127.0.0.1 only")
+_scope_text = (
+    " + ".join(BINDS)
+    + " · token required"
+    + (
+        ""
+        if LAN_WRITES
+        else " · network peers may pause/resume — all other writes from this Mac only"
+    )
+    if LAN_EXPOSED
+    else "127.0.0.1 only"
+)
 _SCOPE = html.escape(_scope_text)
 PAGE = _PAGE.replace("__NONCE__", NONCE).replace("__SCOPE__", _SCOPE)
 
@@ -2011,6 +2221,11 @@ def main() -> None:
     # Adopt pulls a previous server run left behind: the transfer child
     # survives a restart, its wait-then-rename worker thread does not.
     _adopt_orphan_pulls()
+    # Email + Slack on finished/failed/laddered/errored/replaced. Off unless
+    # notify.json sits beside the ledger; an observer of the same logs the
+    # Events tab reads, never anything the driver waits on.
+    if notify.start():
+        print("smeltr: notifications on (notify.json)", file=sys.stderr, flush=True)
     port = free_port()
     httpd = ThreadingHTTPServer((BIND, port), Handler)
     httpd.daemon_threads = True
@@ -2034,15 +2249,21 @@ def main() -> None:
                 # free_port already required this port free on every address,
                 # so this is a genuine surprise -- surface it rather than
                 # silently leaving a documented URL dead.
-                print(f"smeltr: listener on {addr}:{port} failed ({e}); "
-                      f"http://{addr}:{port}/ will not work this run",
-                      file=sys.stderr, flush=True)
+                print(
+                    f"smeltr: listener on {addr}:{port} failed ({e}); "
+                    f"http://{addr}:{port}/ will not work this run",
+                    file=sys.stderr,
+                    flush=True,
+                )
     # Print the plain URL unless the token is actually required -- a link the
     # user cannot retype is a link they cannot use. When LAN-bound the URL
     # names the LAN address (that is the whole point) and always carries the
     # token, since REQUIRE_TOKEN is forced on above.
-    url = (f"http://{BIND}:{port}/?t={TOKEN}" if REQUIRE_TOKEN
-           else f"http://{BIND}:{port}/")
+    url = (
+        f"http://{BIND}:{port}/?t={TOKEN}"
+        if REQUIRE_TOKEN
+        else f"http://{BIND}:{port}/"
+    )
     urlfile = os.path.join(core.SMELTR_DIR, "url")
     pidfile = os.path.join(core.SMELTR_DIR, "server.pid")
 

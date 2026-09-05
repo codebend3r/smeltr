@@ -11,6 +11,11 @@ sysmon.ring
 node_modules/
 queue_overrides.json
 pause
+# notify.json holds the Slack webhook and the Gmail app password; notify.cursor
+# is the notifier's seen-set and pending sends.
+notify.json
+notify.cursor
+notify.cursor.*
 
 # The live encode ledger. Written by `record.py` on every finished encode, so a
 # tracked copy conflicts on every driver cycle. Stays on disk — untracking it

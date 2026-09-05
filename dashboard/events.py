@@ -18,6 +18,7 @@ Honesty rules, same as the rest of the page:
   own — the timeline stays one decision per row.
 - No log (X9 unmounted) is an empty list, never an error page.
 """
+
 import os
 import re
 import time
@@ -56,9 +57,11 @@ def _watch_logs():
         names = os.listdir(core.X9)
     except OSError:
         return []
-    return [n for n in names
-            if n.startswith(".watch-") and n.endswith(".log")
-            and not n.startswith("._")]
+    return [
+        n
+        for n in names
+        if n.startswith(".watch-") and n.endswith(".log") and not n.startswith("._")
+    ]
 
 
 def _driver_events():
@@ -81,10 +84,15 @@ def _driver_events():
         m = _TS.match(line)
         if m and not m.group(2):
             word = m.group(3).split(" ", 1)[0]
-            out.append({"ts": m.group(1),
-                        "kind": _KINDS.get(word, "info"),
-                        "text": m.group(3), "detail": None,
-                        "src": "driver"})
+            out.append(
+                {
+                    "ts": m.group(1),
+                    "kind": _KINDS.get(word, "info"),
+                    "text": m.group(3),
+                    "detail": None,
+                    "src": "driver",
+                }
+            )
         elif out:
             # Indented-but-stamped ("  tracks OK 4a/6s") or raw shell output
             # ("size guard PASS: …") — detail of the event above.
@@ -123,26 +131,43 @@ def _watch_events():
                 # FAILED is a HandBrake that DIED (reboot/kill) — the single
                 # most likely reason someone opens this tab.
                 final = i == len(lines) - 1
-                if word == "KILLED" and "next: none-" in line:
+                # The watcher writes `next: CRF ${NEXTCRF}` and NEXTCRF is
+                # the WORD none-too-small/none-too-big at an end rung, so
+                # the line reads "next: CRF none-too-small". Matching
+                # "next: none-" drew every exhaustion as a routine retry.
+                if word == "KILLED" and "next: CRF none-" in line:
                     # Ladder exhausted: .autopilot.sh writes .error-<title>
                     # and moves on — a human owes this row a decision, so it
                     # must not scan identically to a routine retry.
                     kind = "exhausted"
                 else:
                     kind = "failed" if word == "FAILED" else "killed"
-                out.append({"ts": stamp if final else None, "kind": kind,
-                            "text": _regib(word + " " + " — ".join(parts[1:])),
-                            "detail": None, "src": "watcher",
-                            "approx": final,
-                            "_ord": stamp})
+                out.append(
+                    {
+                        "ts": stamp if final else None,
+                        "kind": kind,
+                        "text": _regib(word + " " + " — ".join(parts[1:])),
+                        "detail": None,
+                        "src": "watcher",
+                        "approx": final,
+                        "_ord": stamp,
+                    }
+                )
             elif word == "COMPLETE" and len(parts) >= 3:
                 tail = " — ".join(parts[3:])
-                out.append({"ts": parts[2], "kind": "complete",
-                            "text": _regib("COMPLETE " + parts[1] +
-                                           ((" — " + tail) if tail else "")),
-                            "detail": None, "src": "watcher",
-                            "approx": False,
-                            "_ord": parts[2]})
+                out.append(
+                    {
+                        "ts": parts[2],
+                        "kind": "complete",
+                        "text": _regib(
+                            "COMPLETE " + parts[1] + ((" — " + tail) if tail else "")
+                        ),
+                        "detail": None,
+                        "src": "watcher",
+                        "approx": False,
+                        "_ord": parts[2],
+                    }
+                )
     return out
 
 
@@ -176,8 +201,12 @@ def events(limit=DEFAULT_LIMIT):
     merged = []
     for e in rows:
         p = merged[-1] if merged else None
-        if (p is not None and p["kind"] == e["kind"]
-                and p["text"] == e["text"] and p["src"] == e["src"]):
+        if (
+            p is not None
+            and p["kind"] == e["kind"]
+            and p["text"] == e["text"]
+            and p["src"] == e["src"]
+        ):
             p["count"] += 1
             p["ts"] = e["ts"] or p["ts"]
             p["approx"] = e["approx"] if e["ts"] else p["approx"]
@@ -189,8 +218,7 @@ def events(limit=DEFAULT_LIMIT):
             merged.append(e)
     for e in merged:
         del e["_ord"]
-    return {"events": list(reversed(merged[-limit:])),
-            "total": len(merged)}
+    return {"events": list(reversed(merged[-limit:])), "total": len(merged)}
 
 
 def rev() -> str:

@@ -113,5 +113,9 @@ case "${1:-report}" in
   # failure here worth idling the CPU over.
   crf) shift; exec "$PY" "$DIR/pipeline/crf.py" "$@" ;;
   open)   running || start >/dev/null 2>&1; exec open "$(cat "$DIR/url")" ;;
-  *)      echo "usage: smeltr {start|stop|restart|status|url|open|report [...]|record <folder> [...]|crf <title>}" >&2; exit 2 ;;
+  # Sends one "test" notification through every channel notify.json
+  # configures, so a webhook or app password is proven before the first real
+  # event. Exit 1 with no config, or when any channel refuses.
+  notify-test) shift; exec "$PY" "$DIR/dashboard/notify.py" --test "$@" ;;
+  *)      echo "usage: smeltr {start|stop|restart|status|url|open|report [...]|record <folder> [...]|crf <title>|notify-test}" >&2; exit 2 ;;
 esac

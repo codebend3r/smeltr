@@ -11,6 +11,7 @@ process.
 Transitive, not direct: `record.py -> report.py -> server.py` would be just as
 fatal as a direct import, and no eyeball check catches a two-hop path.
 """
+
 import ast
 import os
 import unittest
@@ -28,13 +29,17 @@ DASHBOARD_DIR = "dashboard"
 
 # Importing any of these from the decision path is the failure. server.py
 # spawns and kills encodes; sysmon.py starts a 1 Hz daemon thread and mmaps a
-# ring buffer -- neither belongs in a process that decides on a deletion.
-DASHBOARD_ONLY = frozenset({"server", "sysmon", "report"})
+# ring buffer; notify.py posts to Slack and Gmail over the network -- none of
+# them belongs in a process that decides on a deletion.
+DASHBOARD_ONLY = frozenset({"server", "sysmon", "report", "events", "notify"})
 
 
 def _modules_in(pkg: str) -> frozenset:
-    return frozenset(f[:-3] for f in os.listdir(os.path.join(ROOT, pkg))
-                     if f.endswith(".py") and not f.startswith("__"))
+    return frozenset(
+        f[:-3]
+        for f in os.listdir(os.path.join(ROOT, pkg))
+        if f.endswith(".py") and not f.startswith("__")
+    )
 
 
 def _path_of(module: str) -> str:
@@ -42,8 +47,9 @@ def _path_of(module: str) -> str:
         p = os.path.join(ROOT, pkg, module + ".py")
         if os.path.isfile(p):
             return p
-    raise AssertionError(f"no module {module}.py in {PIPELINE_DIR}/ or "
-                         f"{DASHBOARD_DIR}/")
+    raise AssertionError(
+        f"no module {module}.py in {PIPELINE_DIR}/ or {DASHBOARD_DIR}/"
+    )
 
 
 def imports_of(module: str) -> set:
@@ -84,10 +90,12 @@ class DecisionPathIsSelfContained(unittest.TestCase):
             with self.subTest(module=module):
                 reached = closure(module) & DASHBOARD_ONLY
                 self.assertEqual(
-                    reached, set(),
+                    reached,
+                    set(),
                     f"{module}.py transitively imports {sorted(reached)} — "
                     f"the driver would now load the dashboard to decide on a "
-                    f"deletion. Path: {module} -> {sorted(closure(module))}")
+                    f"deletion. Path: {module} -> {sorted(closure(module))}",
+                )
 
     def test_no_dashboard_module_lives_in_the_pipeline_package(self):
         """The folder IS the boundary now. A dashboard module filed under
@@ -105,7 +113,8 @@ class DecisionPathIsSelfContained(unittest.TestCase):
             self.assertTrue(
                 os.path.isfile(os.path.join(ROOT, PIPELINE_DIR, module + ".py")),
                 f"{module}.py is not in {PIPELINE_DIR}/ — the decision path "
-                f"must stay together, and this list must follow it")
+                f"must stay together, and this list must follow it",
+            )
 
 
 if __name__ == "__main__":

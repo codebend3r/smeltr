@@ -13,6 +13,7 @@ events, not silence; ladder exhaustion is distinct from a routine kill;
 identical runs collapse so a long pause cannot evict the real history; and
 `total` exists so truncation is disclosed, never silent.
 """
+
 import os
 import sys
 import tempfile
@@ -64,7 +65,10 @@ class Timeline(unittest.TestCase):
         self.tmp.cleanup()
 
     def _age(self, path):
-        old = time.time() - 2 * 86400
+        # An ABSOLUTE instant, not "now minus two days": the fixture's driver
+        # lines are dated 2026-09-01, and a relative age overtook them on
+        # 2026-09-03, putting the mtime-stamped KILLED line at the top.
+        old = time.mktime((2026, 8, 31, 12, 0, 0, 0, 0, -1))
         os.utime(path, (old, old))
 
     def _evs(self, **kw):
@@ -72,7 +76,7 @@ class Timeline(unittest.TestCase):
 
     def test_newest_first_and_kinds(self):
         evs = self._evs()
-        self.assertEqual(evs[0]["kind"], "cycle")           # 15:35 CYCLE
+        self.assertEqual(evs[0]["kind"], "cycle")  # 15:35 CYCLE
         kinds = [e["kind"] for e in evs]
         for k in ("halted", "judge", "start", "up", "killed", "complete"):
             self.assertIn(k, kinds)
@@ -108,8 +112,10 @@ class Timeline(unittest.TestCase):
 
     def test_killed_not_final_claims_no_time(self):
         with open(self.watch, "w") as f:
-            f.write("KILLED|Movie (2000)|projected 90%|band 30-80|partial deleted|next: CRF 18\n"
-                    "COMPLETE|Movie (2000)|2026-08-31 19:33:54|done\n")
+            f.write(
+                "KILLED|Movie (2000)|projected 90%|band 30-80|partial deleted|next: CRF 18\n"
+                "COMPLETE|Movie (2000)|2026-08-31 19:33:54|done\n"
+            )
         self._age(self.watch)
         killed = [e for e in self._evs() if e["kind"] == "killed"][0]
         self.assertIsNone(killed["ts"])
@@ -119,7 +125,9 @@ class Timeline(unittest.TestCase):
         # .watch-encode.sh emits FAILED when HandBrake dies — the single most
         # likely reason someone opens this tab.
         with open(self.watch, "w") as f:
-            f.write("FAILED|Movie (2000)|HandBrakeCLI died at 47% (reboot/kill?) — delete partial and restart\n")
+            f.write(
+                "FAILED|Movie (2000)|HandBrakeCLI died at 47% (reboot/kill?) — delete partial and restart\n"
+            )
         self._age(self.watch)
         failed = [e for e in self._evs() if e["kind"] == "failed"]
         self.assertEqual(len(failed), 1)
@@ -127,8 +135,15 @@ class Timeline(unittest.TestCase):
         self.assertTrue(failed[0]["approx"])
 
     def test_ladder_exhaustion_is_distinct_from_a_routine_kill(self):
+        # The watcher writes `next: CRF ${NEXTCRF}` and NEXTCRF is the word
+        # none-too-small at the bottom rung -- so the line reads
+        # "next: CRF none-too-small". The old test matched "next: none-",
+        # a string the watcher never writes, and the tab drew every
+        # exhaustion as a routine retry (2026-09-05 code-critic finding).
         with open(self.watch, "w") as f:
-            f.write("KILLED|Movie (2000)|projected 8% at 10% (CRF 10)|band 30-80|partial deleted|next: none-too-small\n")
+            f.write(
+                "KILLED|Movie (2000)|projected 8% at 10% (CRF 10)|band 30-80|partial deleted|next: CRF none-too-small\n"
+            )
         self._age(self.watch)
         kinds = [e["kind"] for e in self._evs()]
         self.assertIn("exhausted", kinds)
