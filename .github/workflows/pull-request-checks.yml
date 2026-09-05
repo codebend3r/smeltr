@@ -49,10 +49,7 @@
 name: 🧪 Pull request checks
 
 on:
-  push:
-    branches: [main]
   pull_request:
-  workflow_dispatch:
 
 # Read-only. Nothing in this workflow writes to the repo, publishes, or deploys.
 permissions:
