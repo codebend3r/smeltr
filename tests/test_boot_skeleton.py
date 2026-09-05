@@ -15,16 +15,22 @@ a skeleton that renders but is invisible, unthemed, or unstoppable is worse
 than none, because it is the thing standing between a black screen and a
 diagnosis.
 """
+
 import re
 import unittest
 
 from dashboard import server
 
 
+# oxfmt writes the CSS one declaration per line; these assertions read the
+# DENSE form (no whitespace around { } : ; > ,) so they pin rules, not layout.
+DENSE = re.sub(r"\s*([{}:;>,])\s*", r"\1", server.PAGE)
+
+
 def css_block(name: str) -> str:
     """The body of the first CSS rule whose selector contains `name`."""
-    i = server.PAGE.index(name)
-    return server.PAGE[i:server.PAGE.index("}", i)]
+    i = DENSE.index(name)
+    return DENSE[i : DENSE.index("}", i)]
 
 
 class Tokens(unittest.TestCase):
@@ -36,10 +42,10 @@ class Tokens(unittest.TestCase):
     """
 
     def test_defined_in_both_root_blocks(self):
-        dark = server.PAGE.index(":root{")
-        light = server.PAGE.index(':root[data-theme="light"]')
-        dark_block = server.PAGE[dark:light]
-        light_block = server.PAGE[light:server.PAGE.index("}", light)]
+        dark = DENSE.index(":root{")
+        light = DENSE.index(':root[data-theme="light"]')
+        dark_block = DENSE[dark:light]
+        light_block = DENSE[light : DENSE.index("}", light)]
         for tok in ("--skel", "--skel-hi"):
             self.assertIn(tok + ":", dark_block, f"{tok} missing from dark :root")
             self.assertIn(tok + ":", light_block, f"{tok} missing from light :root")
@@ -48,14 +54,16 @@ class Tokens(unittest.TestCase):
         for sel in (".skel{", ".boot-note{", ".boot-fail{"):
             block = css_block(sel)
             self.assertNotRegex(
-                block, r"#[0-9a-fA-F]{3,8}\b",
-                f"{sel} carries a hex literal the light theme cannot reach")
+                block,
+                r"#[0-9a-fA-F]{3,8}\b",
+                f"{sel} carries a hex literal the light theme cannot reach",
+            )
 
 
 class Motion(unittest.TestCase):
     def test_shimmer_is_disabled_under_reduced_motion(self):
         i = server.PAGE.index("prefers-reduced-motion")
-        block = server.PAGE[i:i + 900]
+        block = server.PAGE[i : i + 900]
         self.assertIn("animation:none", block.replace(" ", ""))
 
     def test_ghosts_are_excluded_from_entrance_animations(self):
@@ -71,9 +79,10 @@ class Motion(unittest.TestCase):
         The delay must live in the ANIMATION (with `both` fill), not in a bare
         opacity:0 -- prefers-reduced-motion kills animations globally, and a
         skeleton whose only opacity came from a dead animation is invisible."""
-        self.assertRegex(server.PAGE, r"@keyframes skelin\{from\{opacity:0\}\}")
-        self.assertRegex(css_block(".skelwrap{"),
-                         r"animation:skelin [\d.]+s [a-z-]+ \.25s both")
+        self.assertRegex(DENSE, r"@keyframes skelin\{from\{opacity:0;?\}\}")
+        self.assertRegex(
+            css_block(".skelwrap{"), r"animation:skelin [\d.]+s [a-z-]+ 0?\.25s both"
+        )
         self.assertNotRegex(css_block(".skelwrap{"), r"(?<!-)opacity:0")
 
     def test_stats_ghosts_keep_the_delay_despite_display_contents(self):
@@ -91,11 +100,15 @@ class Markup(unittest.TestCase):
         # #stats is the collapsible section; its ghosts live one level in,
         # inside the grid the head strip now sits above.
         for cid in ("statsGrid", "liveWrap", "pane"):
-            m = re.search(r'id="%s"[^>]*>(.*?)</(?:section|div)>' % cid,
-                          server.PAGE, re.S)
+            m = re.search(
+                r'id="%s"[^>]*>(.*?)</(?:section|div)>' % cid, server.PAGE, re.S
+            )
             self.assertIsNotNone(m, f"#{cid} not found")
-            self.assertIn("skel", m.group(1),
-                          f"#{cid} ships empty -- it is a black region on boot")
+            self.assertIn(
+                "skel",
+                m.group(1),
+                f"#{cid} ships empty -- it is a black region on boot",
+            )
 
     def test_skeleton_is_hidden_from_assistive_tech(self):
         """Ghost rows carry no information; announcing them is noise."""
@@ -123,12 +136,12 @@ class Failure(unittest.TestCase):
         change only the header dot. Only a boot that never produced data may
         replace the body with an error."""
         i = server.PAGE.index("function bootFail")
-        head = server.PAGE[i:i + 200].replace(" ", "")
-        self.assertIn("if(booted)return", head,
-                      "bootFail must bail once real data has painted")
+        head = server.PAGE[i : i + 200].replace(" ", "")
+        self.assertIn(
+            "if(booted)return", head, "bootFail must bail once real data has painted"
+        )
         j = server.PAGE.index("function bootSlow")
-        self.assertIn("if(booted)return",
-                      server.PAGE[j:j + 200].replace(" ", ""))
+        self.assertIn("if(booted)return", server.PAGE[j : j + 200].replace(" ", ""))
 
     def test_closed_stream_error_names_the_stale_token(self):
         """Must be in the RENDERED string, not just a source comment -- the
@@ -140,7 +153,7 @@ class Failure(unittest.TestCase):
 
     def test_error_text_is_built_with_el_not_innerhtml(self):
         i = server.PAGE.index("function bootFail")
-        self.assertNotIn("innerHTML", server.PAGE[i:i + 900])
+        self.assertNotIn("innerHTML", server.PAGE[i : i + 900])
 
 
 class Csp(unittest.TestCase):
