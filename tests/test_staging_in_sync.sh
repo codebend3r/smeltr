@@ -13,16 +13,17 @@ rc=0
 for name in autopilot.sh watch-encode.sh; do
   LIVE="$X9/.$name"
   if [ ! -f "$LIVE" ]; then
-    echo "FAIL no live copy at $LIVE"
+    printf '\nFAIL no live copy at %s\n' "$LIVE"
     rc=1
     continue
   fi
   if diff -q "$REPO/staging/$name" "$LIVE" >/dev/null; then
-    echo "PASS staging/$name matches the live script"
+    printf '.'
   else
-    echo "FAIL staging/$name has drifted from $LIVE"
+    printf '\nFAIL staging/%s has drifted from %s\n' "$name" "$LIVE"
     diff -u "$REPO/staging/$name" "$LIVE" | head -40
     rc=1
   fi
 done
+echo
 exit $rc

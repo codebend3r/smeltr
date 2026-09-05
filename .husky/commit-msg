@@ -1,0 +1,15 @@
+# shellcheck shell=sh
+# Every commit subject is `SMLTR: <Capitalized verb> ...` -- the rules live in
+# commit-rules.sh and are shared with pre-push. Checked HERE, at write time,
+# because a rejected subject costs one --edit; the same subject refused at
+# push time costs a rebase.
+# Bypass: --no-verify, HUSKY=0, or SMELTR_SKIP_HOOKS=1.
+[ "${SMELTR_SKIP_HOOKS:-}" = "1" ] && exit 0
+cd "$(git rev-parse --show-toplevel)" || exit 1
+. ./.husky/commit-rules.sh
+if ! check_message "$1" allow_fixup; then
+  printf 'commit-msg: refused -- %s\n' "$(sed -n '/./{p;q;}' "$1")"
+  printf '%s\n' "$problems" | sed 's/^/  /'
+  printf 'rules: .claude/skills/commit-format/SKILL.md\nyour message is kept in .git/COMMIT_EDITMSG -- fix it with: git commit --edit -F .git/COMMIT_EDITMSG\n'
+  exit 1
+fi

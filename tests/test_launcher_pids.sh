@@ -27,8 +27,8 @@ PIDF="$DIR/server.pid"
 source "$TMP/helpers.sh"
 
 pass=0; fail=0
-ck(){ if [ "$2" = "$3" ]; then echo "PASS $1"; pass=$((pass+1))
-      else echo "FAIL $1: got '$2' want '$3'"; fail=$((fail+1)); fi; }
+ck(){ if [ "$2" = "$3" ]; then printf '.'; pass=$((pass+1))
+      else printf '\nFAIL %s: got %s want %s\n' "$1" "'$2'" "'$3'"; fail=$((fail+1)); fi; }
 
 # A real process, so kill -0 answers honestly. Its command line is irrelevant:
 # `ps` is shadowed below so each case can name the command line it is about.

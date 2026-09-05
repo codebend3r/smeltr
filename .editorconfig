@@ -1,5 +1,5 @@
-# Smeltr has no build step and no formatter running in CI (see the note in
-# pyproject.toml), so this file is what actually keeps whitespace consistent.
+# oxfmt formats JS/CSS (see .oxfmtrc.json); Python is not yet formatted (see
+# ruff.toml). For everything else this file is what keeps whitespace consistent.
 root = true
 
 [*]

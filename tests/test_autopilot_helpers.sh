@@ -8,8 +8,14 @@
 # a second ledger row and double-counts the reclaim -- that is what these guard.
 set -uo pipefail
 
-AP="${1:-/Volumes/Crucial X9/4K Movies/.autopilot.sh}"
-[ -f "$AP" ] || { echo "SKIP: $AP not found (staging drive not mounted?)"; exit 0; }
+# Prefer the LIVE script; with no argument and no drive, fall back to the
+# tracked mirror so a clone (and CI) still exercises the guards instead of
+# skipping the suite that keeps a folder from being recorded twice.
+LIVE="/Volumes/Crucial X9/4K Movies/.autopilot.sh"
+if [ -n "${1:-}" ]; then AP="$1"
+elif [ -f "$LIVE" ]; then AP="$LIVE"
+else AP="$(dirname "$0")/../staging/autopilot.sh"; echo "(staging drive not mounted - testing the tracked staging/autopilot.sh)"; fi
+[ -f "$AP" ] || { echo "FAIL: $AP not found"; exit 1; }
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 X9="$TMP/x9"; mkdir -p "$X9"
@@ -24,8 +30,8 @@ grep -q 'finished_folder()' "$TMP/helpers.sh" || { echo "FAIL: could not extract
 source "$TMP/helpers.sh"
 
 pass=0; fail=0
-ck(){ if [ "$2" = "$3" ]; then echo "PASS $1"; pass=$((pass+1))
-      else echo "FAIL $1: got '$2' want '$3'"; fail=$((fail+1)); fi; }
+ck(){ if [ "$2" = "$3" ]; then printf '.'; pass=$((pass+1))
+      else printf '\nFAIL %s: got %s want %s\n' "$1" "'$2'" "'$3'"; fail=$((fail+1)); fi; }
 
 mkdir -p "$X9/Alpha (2001)" "$X9/Beta (2002)" "$X9/Gamma (2003)"
 touch "$X9/Alpha (2001)/Alpha (2001) Remux-2160p.mkv"
@@ -46,10 +52,11 @@ ck "syncs_in_flight false once cleared"   "$(syncs_in_flight && echo yes || echo
 
 # The stale branch logs. finished_folder() is captured with $(...), so anything
 # it writes to stdout is prepended to the folder name and poisons the caller.
+# stderr is dropped here only to keep the run quiet: the assertion is on stdout.
 log() { printf 'NOISE\n'; }
 sleep 600 & dead=$!; kill -9 $dead 2>/dev/null; wait $dead 2>/dev/null
 echo "$dead" > "$X9/.syncing-$(slug_of "Beta (2002)")"
-ck "stale log never reaches stdout"       "$(finished_folder)" "Beta (2002)"
+ck "stale log never reaches stdout"       "$(finished_folder 2>/dev/null)" "Beta (2002)"
 log() { :; }
 
 # encoding_this: shadow pgrep/ps so this runs without a real encode.

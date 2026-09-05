@@ -1,0 +1,33 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "env": {
+    "browser": true,
+    "es2021": true
+  },
+  "ignorePatterns": ["staging/", "tests/fixtures/", ".claude/", "agents/"],
+  "rules": {
+    "no-unused-vars": [
+      "error",
+      {
+        "caughtErrors": "none",
+        "argsIgnorePattern": "^_",
+        "varsIgnorePattern": "^_"
+      }
+    ],
+    "no-unused-expressions": [
+      "error",
+      {
+        "allowTernary": true,
+        "allowShortCircuit": true
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": ["tests/**/*.js", "tests/**/*.mjs"],
+      "env": {
+        "node": true
+      }
+    }
+  ]
+}

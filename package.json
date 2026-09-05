@@ -9,14 +9,63 @@
     "url": "git+https://github.com/codebend3r/smeltr.git"
   },
   "scripts": {
-    "test": "bash tests/run-all.sh",
-    "test:py": "python3 -m unittest discover -s tests",
-    "lint": "bash tests/lint.sh",
-    "hooks": "bash ops/install-hooks.sh",
-    "visual": "node tests/visual/shoot.mjs",
-    "format": "uvx ruff format .",
-    "format:check": "uvx ruff format --check .",
-    "preversion": "bash tests/run-all.sh",
-    "postversion": "git push --follow-tags origin HEAD"
-  }
+    "build": "python3 tools/build_check.py",
+    "format": "bun run --sequential format:js format:py",
+    "format:check": "bun run --sequential format:js:check format:py:check",
+    "format:js": "oxfmt",
+    "format:js:check": "oxfmt --check",
+    "format:py": "uvx ruff@0.16.5 format .",
+    "format:py:check": "uvx ruff@0.16.5 format --check .",
+    "lint": "bun run --sequential lint:js lint:js:syntax lint:py lint:py:syntax lint:sh lint:sh:staging lint:ci format:js:check lint:page",
+    "lint:ci": "actionlint",
+    "lint:js": "oxlint --deny-warnings",
+    "lint:js:syntax": "for f in web/*.js tests/visual/*.mjs; do bun build --no-bundle \"$f\" --outfile /dev/null >/dev/null || exit 1; done",
+    "lint:page": "python3 tests/check_page.py",
+    "lint:py": "uvx ruff@0.16.5 check .",
+    "lint:py:syntax": "python3 -m compileall -q pipeline dashboard tools",
+    "lint:sh": "shellcheck -x -S warning smeltr .husky/[a-z]* $(git ls-files -co --exclude-standard '*.sh' ':!staging/*' ':!.husky/*')",
+    "lint:sh:staging": "shellcheck -x -S error staging/*.sh && (shellcheck -f gcc -x -S warning staging/*.sh || echo 'advisory above error level: staging/ mirrors the live X9 scripts -- fix on the drive, then copy back')",
+    "lint:staged": "lint-staged --no-stash --no-hide-partially-staged --relative",
+    "postversion": "git push --follow-tags origin HEAD",
+    "preinstall": "case \"$npm_config_user_agent\" in bun/*) ;; *) echo 'smeltr: this repo runs on bun -- use `bun install`, not npm/yarn/pnpm' >&2; exit 1 ;; esac",
+    "prepare": "husky",
+    "preversion": "bun run verify",
+    "release": "bun pm version -m \"SMLTR: Release v%s\"",
+    "system-check": "bun run --sequential format:check lint test build",
+    "test": "bun run --sequential --no-exit-on-error test:py 'test:sh:*' 'test:js:*'",
+    "test:js:crf": "bun tests/test_crf_picker.js",
+    "test:js:pause": "bun tests/test_pause_toggle.js",
+    "test:js:projection": "bun tests/test_projection_ui.js",
+    "test:js:repaint": "bun tests/test_repaint_key.js",
+    "test:js:sysmon-render": "bun tests/test_sysmon_render.js",
+    "test:js:sysmon-ui": "bun tests/test_sysmon_ui.js",
+    "test:py": "python3 -W error::ResourceWarning -m unittest discover -s tests",
+    "test:sh:autopilot": "bash tests/test_autopilot_helpers.sh",
+    "test:sh:drift": "bash tests/test_staging_in_sync.sh",
+    "test:sh:launcher": "bash tests/test_launcher_pids.sh",
+    "test:sh:watchdog": "bash tests/test_watchdog_triage.sh",
+    "verify": "bun run --sequential lint test build",
+    "visual": "bun tests/visual/shoot.mjs"
+  },
+  "devDependencies": {
+    "husky": "9.1.7",
+    "lint-staged": "17.5.0",
+    "oxfmt": "0.66.0",
+    "oxlint": "1.81.0"
+  },
+  "lint-staged": {
+    "*.{js,mjs}": [
+      "oxlint --deny-warnings",
+      "sh -c 'for f; do bun build --no-bundle \"$f\" --outfile /dev/null >/dev/null || exit 1; done' --"
+    ],
+    "*.{js,mjs,css,json,yml,yaml}": "oxfmt --check",
+    "*.py": [
+      "uvx ruff@0.16.5 check",
+      "python3 -m py_compile"
+    ],
+    "{smeltr,.husky/[a-z]*,**/*.sh}": "sh -c 'w=; e=; for f; do case $f in staging/*) e=\"$e $f\";; *) w=\"$w $f\";; esac; done; [ -z \"$w\" ] || shellcheck -x -S warning $w || exit 1; [ -z \"$e\" ] || { shellcheck -x -S error $e && (shellcheck -f gcc -x -S warning $e || echo \"advisory above error level: staging/ mirrors the live X9 scripts -- fix on the drive, then copy back\"); }' --",
+    ".github/workflows/*.yml": "actionlint",
+    "{web/*,dashboard/server.py}": "sh -c 'python3 tests/check_page.py' --"
+  },
+  "packageManager": "bun@1.4.1"
 }

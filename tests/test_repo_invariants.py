@@ -9,6 +9,7 @@ auth token pushed to a public remote.
 
 Nothing here touches the live pipeline. It reads tracked files only.
 """
+
 import json
 import os
 import re
@@ -18,8 +19,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pipeline import core                                   # noqa: E402
-from dashboard import server                                # noqa: E402
+from pipeline import core  # noqa: E402
+from dashboard import server  # noqa: E402
 
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -31,8 +32,9 @@ def read(rel):
 
 
 def _git(*args):
-    out = subprocess.run(("git",) + args, cwd=REPO,
-                         capture_output=True, text=True, check=True)
+    out = subprocess.run(
+        ("git",) + args, cwd=REPO, capture_output=True, text=True, check=True
+    )
     return out.stdout.splitlines()
 
 
@@ -67,8 +69,14 @@ def shell_scripts():
 # the commentary and the forced subs is not a smaller copy of the original, it
 # is a lossy one, and .sync-to-library.sh then DELETES the ~90 GB original that
 # still had them.
-TRACK_FLAGS = ("--all-audio", "--aencoder", "copy",
-               "--audio-fallback", "ac3", "--all-subtitles")
+TRACK_FLAGS = (
+    "--all-audio",
+    "--aencoder",
+    "copy",
+    "--audio-fallback",
+    "ac3",
+    "--all-subtitles",
+)
 
 
 class TrackPreservation(unittest.TestCase):
@@ -79,14 +87,15 @@ class TrackPreservation(unittest.TestCase):
     def test_every_encoder_passes_the_track_flags(self):
         for rel in self.ENCODERS:
             src = read(rel)
-            self.assertTrue("HandBrakeCLI" in src,
-                            f"{rel} no longer starts an encode?")
+            self.assertTrue("HandBrakeCLI" in src, f"{rel} no longer starts an encode?")
             for flag in TRACK_FLAGS:
                 # assertTrue, not assertIn: assertIn prints the whole haystack,
                 # and these haystacks are 3,700-line files.
-                self.assertTrue(flag in src,
-                                f"{rel} lost {flag} -- an encode from here would "
-                                f"drop tracks and the original still gets deleted")
+                self.assertTrue(
+                    flag in src,
+                    f"{rel} lost {flag} -- an encode from here would "
+                    f"drop tracks and the original still gets deleted",
+                )
 
     def test_no_track_selection_anywhere(self):
         """`--audio-lang-list` selects a subset. It must never appear."""
@@ -95,8 +104,10 @@ class TrackPreservation(unittest.TestCase):
                 continue
             if rel.startswith("tests/"):
                 continue
-            self.assertTrue("--audio-lang-list" not in read(rel),
-                            f"{rel} selects a subset of audio tracks")
+            self.assertTrue(
+                "--audio-lang-list" not in read(rel),
+                f"{rel} selects a subset of audio tracks",
+            )
 
 
 class EncodeFlagParity(unittest.TestCase):
@@ -112,7 +123,14 @@ class EncodeFlagParity(unittest.TestCase):
 
     # Flags that decide what the output IS. Deliberately excludes -i/-o/-q,
     # which are per-title by nature.
-    SHAPE = ("-f", "av_mkv", "-e", "x265_10bit", "--encoder-preset", "medium") + TRACK_FLAGS
+    SHAPE = (
+        "-f",
+        "av_mkv",
+        "-e",
+        "x265_10bit",
+        "--encoder-preset",
+        "medium",
+    ) + TRACK_FLAGS
 
     def test_both_build_the_same_encode(self):
         for rel in ("staging/autopilot.sh", "dashboard/server.py"):
@@ -133,9 +151,12 @@ class EncodeFlagParity(unittest.TestCase):
         self.assertIn(core.CRF_DEFAULT, core.CRF_CHOICES)
         watch = read("staging/watch-encode.sh")
         for rung in core.CRF_CHOICES:
-            self.assertIn(str(rung), watch,
-                          f"CRF {rung} is on the menu but .watch-encode.sh's "
-                          f"ladder never mentions it")
+            self.assertIn(
+                str(rung),
+                watch,
+                f"CRF {rung} is on the menu but .watch-encode.sh's "
+                f"ladder never mentions it",
+            )
 
     def test_the_driver_asks_for_the_planned_crf(self):
         """A picker the driver ignores is a lie on every row it starts.
@@ -147,11 +168,11 @@ class EncodeFlagParity(unittest.TestCase):
         """
         ap = read("staging/autopilot.sh")
         self.assertIn('"$SMELTR" crf "$title"', ap)
-        self.assertIn('crf) shift; exec "$PY" "$DIR/pipeline/crf.py"',
-                      read("smeltr"))
+        self.assertIn('crf) shift; exec "$PY" "$DIR/pipeline/crf.py"', read("smeltr"))
 
 
 # ------------------------------------------------------------- library roots
+
 
 class LibraryRoots(unittest.TestCase):
     """The root list is duplicated by hand in four places; two are in this repo.
@@ -166,21 +187,27 @@ class LibraryRoots(unittest.TestCase):
     def test_autopilot_resolves_every_root_core_queues(self):
         ap = read("staging/autopilot.sh")
         for root in core.LIBRARY_ROOTS:
-            self.assertTrue(root in ap,
-                            f"core.LIBRARY_ROOTS has {root}; staging/autopilot.sh "
-                            f"cannot resolve a library original under it")
+            self.assertTrue(
+                root in ap,
+                f"core.LIBRARY_ROOTS has {root}; staging/autopilot.sh "
+                f"cannot resolve a library original under it",
+            )
 
     def test_core_queues_every_root_autopilot_resolves(self):
         ap = read("staging/autopilot.sh")
         # Media/ scopes this to the NAS library roots. The staging drive
         # (/Volumes/Crucial X9/4K Movies) is core.X9, not a library root.
         for root in re.findall(r'"(/Volumes/[^"]*/Media/4K[^"]*Movies)"', ap):
-            self.assertIn(root, core.LIBRARY_ROOTS,
-                          f"staging/autopilot.sh reads {root}; core.py never "
-                          f"queues or offline-checks it")
+            self.assertIn(
+                root,
+                core.LIBRARY_ROOTS,
+                f"staging/autopilot.sh reads {root}; core.py never "
+                f"queues or offline-checks it",
+            )
 
 
 # -------------------------------------------------------------- decision path
+
 
 class DecisionPathIsolation(unittest.TestCase):
     """The four files the driver calls must not depend on the dashboard.
@@ -192,11 +219,25 @@ class DecisionPathIsolation(unittest.TestCase):
     port conflict able to halt an encode's verdict.
     """
 
-    DECISION_PATH = ("pipeline/core.py", "pipeline/verdict.py",
-                     "pipeline/next_title.py", "pipeline/record.py")
-    FORBIDDEN = ("server", "sysmon", "report",
-                 "dashboard", "dashboard.server", "dashboard.sysmon",
-                 "dashboard.report")
+    DECISION_PATH = (
+        "pipeline/core.py",
+        "pipeline/verdict.py",
+        "pipeline/next_title.py",
+        "pipeline/record.py",
+    )
+    FORBIDDEN = (
+        "server",
+        "sysmon",
+        "report",
+        "dashboard",
+        "dashboard.server",
+        "dashboard.sysmon",
+        "dashboard.report",
+        "events",
+        "notify",
+        "dashboard.events",
+        "dashboard.notify",
+    )
 
     def test_no_dashboard_import(self):
         for rel in self.DECISION_PATH:
@@ -204,12 +245,16 @@ class DecisionPathIsolation(unittest.TestCase):
                 m = re.match(r"\s*(?:import|from)\s+([A-Za-z_][\w.]*)", line)
                 if not m:
                     continue
-                self.assertNotIn(m.group(1), self.FORBIDDEN,
-                                 f"{rel} imports {m.group(1)} -- the decision "
-                                 f"path can now be broken by the dashboard")
+                self.assertNotIn(
+                    m.group(1),
+                    self.FORBIDDEN,
+                    f"{rel} imports {m.group(1)} -- the decision "
+                    f"path can now be broken by the dashboard",
+                )
 
 
 # ------------------------------------------------------------------- secrets
+
 
 class NothingSecretIsTracked(unittest.TestCase):
     """server.log and url carry the auth token; `token` IS the token.
@@ -220,8 +265,18 @@ class NothingSecretIsTracked(unittest.TestCase):
     deletion).
     """
 
-    NEVER = ("token", "url", "server.pid", "server.log", "sysmon.ring",
-             "ledger.jsonl", "queue_overrides.json", "pause")
+    NEVER = (
+        "token",
+        "url",
+        "server.pid",
+        "server.log",
+        "sysmon.ring",
+        "ledger.jsonl",
+        "queue_overrides.json",
+        "pause",
+        "notify.json",
+        "notify.cursor",
+    )
 
     def test_runtime_artifacts_are_untracked(self):
         files = set(tracked())
@@ -241,6 +296,7 @@ class NothingSecretIsTracked(unittest.TestCase):
 
 # --------------------------------------------------------------------- shell
 
+
 class ShellScriptsParse(unittest.TestCase):
     """`bash -n` on every tracked script.
 
@@ -253,9 +309,354 @@ class ShellScriptsParse(unittest.TestCase):
     def test_every_script_is_syntactically_valid(self):
         for rel in shell_scripts():
             with self.subTest(script=rel):
-                r = subprocess.run(["bash", "-n", os.path.join(REPO, rel)],
-                                   capture_output=True, text=True)
+                r = subprocess.run(
+                    ["bash", "-n", os.path.join(REPO, rel)],
+                    capture_output=True,
+                    text=True,
+                )
                 self.assertEqual(r.returncode, 0, f"{rel}: {r.stderr.strip()}")
+
+
+HOOKS = (
+    ".husky/pre-commit",
+    ".husky/commit-msg",
+    ".husky/pre-push",
+    ".husky/commit-rules.sh",
+)
+
+
+# ----------------------------------------------------------------- runner
+
+
+class BunIsTheOnlyRunner(unittest.TestCase):
+    """bun is the JS runtime, the package manager and the task runner.
+
+    npm was removed as the task runner on 2026-09-05. The failure this pins is
+    a quiet one: a script, hook or CI step that says `npm run` or `node` still
+    WORKS on a machine that happens to have both installed, and only fails on
+    the one that does not -- a fresh clone, or a runner. Every entry point must
+    spell bun so the requirement is one requirement.
+    """
+
+    NPM_ISH = re.compile(r"\b(npm|npx|yarn|pnpm|corepack)\b")
+    NODE_CALL = re.compile(r"(^|[\s;&|(`'\"])node(\s|$)")
+
+    def scripts(self):
+        return json.loads(read("package.json"))["scripts"]
+
+    def test_no_script_invokes_npm_or_node(self):
+        for name, cmd in self.scripts().items():
+            with self.subTest(script=name):
+                # The preinstall guard NAMES npm/yarn/pnpm in its refusal
+                # message; it is the one script allowed to.
+                if name != "preinstall":
+                    self.assertIsNone(self.NPM_ISH.search(cmd), cmd)
+                self.assertIsNone(self.NODE_CALL.search(cmd), cmd)
+
+    def test_umbrella_scripts_use_buns_own_sequencer(self):
+        for name in (
+            "lint",
+            "test",
+            "verify",
+            "system-check",
+            "format",
+            "format:check",
+        ):
+            with self.subTest(script=name):
+                self.assertTrue(
+                    self.scripts()[name].startswith("bun run --sequential"),
+                    self.scripts()[name],
+                )
+
+    def test_every_js_suite_runs_under_bun(self):
+        js = {k: v for k, v in self.scripts().items() if k.startswith("test:js:")}
+        self.assertTrue(js)
+        for name, cmd in js.items():
+            with self.subTest(script=name):
+                self.assertTrue(cmd.startswith("bun tests/"), cmd)
+        self.assertTrue(self.scripts()["visual"].startswith("bun tests/"))
+
+    def test_preinstall_turns_other_package_managers_away(self):
+        guard = self.scripts()["preinstall"]
+        self.assertIn("npm_config_user_agent", guard)
+        self.assertIn("bun/*)", guard)
+        self.assertIn("exit 1", guard)
+
+    def test_release_carries_the_commit_subject(self):
+        # bun pm version ignores .npmrc's `message`; without -m the release
+        # commit is a bare `v1.2.3`, which breaks the SMLTR: subject rule.
+        self.assertEqual(
+            self.scripts()["release"], 'bun pm version -m "SMLTR: Release v%s"'
+        )
+        self.assertEqual(self.scripts()["preversion"], "bun run verify")
+
+    def test_bun_is_the_pinned_package_manager(self):
+        pm = json.loads(read("package.json")).get("packageManager", "")
+        self.assertRegex(pm, r"^bun@\d+\.\d+\.\d+$")
+        self.assertNotIn(
+            "npm-run-all2", json.loads(read("package.json")).get("devDependencies", {})
+        )
+
+    def test_only_the_bun_lockfile_is_tracked(self):
+        files = set(tracked())
+        self.assertIn("bun.lock", files)
+        for stray in (
+            "package-lock.json",
+            "npm-shrinkwrap.json",
+            "yarn.lock",
+            "pnpm-lock.yaml",
+            ".npmrc",
+        ):
+            self.assertNotIn(stray, files)
+
+    def test_hooks_and_ci_spell_bun(self):
+        for rel in HOOKS + (
+            ".github/workflows/ci.yml",
+            ".github/workflows/pr.yml",
+            ".github/dependabot.yml",
+        ):
+            with self.subTest(file=rel):
+                for n, line in enumerate(read(rel).splitlines(), 1):
+                    code = line.split("#", 1)[0]
+                    self.assertIsNone(self.NPM_ISH.search(code), f"{rel}:{n}: {line}")
+                    self.assertIsNone(self.NODE_CALL.search(code), f"{rel}:{n}: {line}")
+        self.assertNotIn("setup-node", read(".github/workflows/ci.yml"))
+        self.assertIn("package-ecosystem: bun", read(".github/dependabot.yml"))
+
+
+# ------------------------------------------------------------------- hooks
+
+
+class HooksCoverTheGaps(unittest.TestCase):
+    """The 2026-09-05 hook audit, pinned so it cannot quietly un-happen.
+
+    Each of these is a check that was found MISSING: a commit-msg hook (pr.yml
+    only sees a PR; `bun run release` pushes straight to main), actionlint
+    outside CI, a rename onto `token` slipping past `--diff-filter=AM`, a
+    hand-written shellcheck file list CI did not share, staging scripts that
+    CI blocked on and the hook did not, and nothing at all enforcing
+    .editorconfig on Python and shell.
+    """
+
+    def scripts(self):
+        return json.loads(read("package.json"))["scripts"]
+
+    def test_all_four_hook_files_are_committable(self):
+        files = set(committable())
+        for rel in HOOKS:
+            self.assertIn(rel, files)
+
+    def test_pre_commit_names_every_runtime_artifact(self):
+        hook = read(".husky/pre-commit")
+        m = re.search(r"grep -Ex '([^']+)'", hook)
+        self.assertIsNotNone(m, "the artifact grep is gone from pre-commit")
+        names = set(m.group(1).split("|"))
+        for name in NothingSecretIsTracked.NEVER:
+            self.assertIn(name.replace(".", r"\."), names, name)
+        self.assertIn(r"\.claude/worktrees/.*", names)
+
+    def test_pre_commit_catches_a_rename_onto_an_artifact(self):
+        hook = read(".husky/pre-commit")
+        self.assertIn("--diff-filter=d", hook)
+        self.assertNotIn("--diff-filter=AM", hook)
+
+    def test_pre_commit_runs_diff_check_and_the_mirrors_opt_out(self):
+        self.assertIn("git diff --cached --check", read(".husky/pre-commit"))
+        attrs = read(".gitattributes")
+        self.assertRegex(attrs, r"(?m)^staging/\*\*\s+-whitespace$")
+        self.assertRegex(attrs, r"(?m)^tests/fixtures/\*\*\s+-whitespace$")
+
+    def test_commit_msg_and_pre_push_share_one_rules_file(self):
+        for rel in (".husky/commit-msg", ".husky/pre-push"):
+            with self.subTest(hook=rel):
+                self.assertIn(". ./.husky/commit-rules.sh", read(rel))
+                self.assertIn("check_message", read(rel))
+        # pre-push judges only what no remote has, and refuses a fixup!.
+        push = read(".husky/pre-push")
+        self.assertIn("--not --remotes", push)
+        self.assertIn("--no-merges", push)
+        self.assertNotIn("allow_fixup", push)
+        self.assertIn("allow_fixup", read(".husky/commit-msg"))
+
+    def test_lint_runs_actionlint_and_the_hooks_are_shellchecked(self):
+        s = self.scripts()
+        self.assertEqual(s["lint:ci"], "actionlint")
+        self.assertIn("lint:ci", s["lint"].split())
+        self.assertIn(".husky/[a-z]*", s["lint:sh"])
+        self.assertIn("git ls-files -co --exclude-standard '*.sh'", s["lint:sh"])
+        self.assertIn(":!staging/*", s["lint:sh"])
+        self.assertTrue(
+            s["lint:sh:staging"].startswith("shellcheck -x -S error staging/*.sh &&"),
+            s["lint:sh:staging"],
+        )
+
+    def test_ci_installs_the_pinned_actionlint_for_bun_run_lint(self):
+        ci = read(".github/workflows/ci.yml")
+        self.assertRegex(
+            ci, r"go install github\.com/rhysd/actionlint/cmd/actionlint@v\d+\.\d+\.\d+"
+        )
+        self.assertNotIn("rhysd/actionlint@sha256", ci)
+
+
+class LintStagedMirrorsLint(unittest.TestCase):
+    """pre-commit runs lint-staged, whose per-glob commands are a SECOND
+    rendition of the `lint:*` scripts. Two renditions of one gate drift the
+    moment one is edited alone -- a ruff bump in `lint:py` that the hook keeps
+    running at the old pin is a commit that passes locally and fails in CI.
+    `--no-stash --no-hide-partially-staged` are pinned because lint-staged's
+    default stashes unstaged work to lint the exact index content, and that
+    round-trip loses edits.
+    """
+
+    def pkg(self):
+        return json.loads(read("package.json"))
+
+    def staged(self):
+        cfg = self.pkg()["lint-staged"]
+        flat = []
+        for glob, cmds in cfg.items():
+            for c in cmds if isinstance(cmds, list) else [cmds]:
+                flat.append((glob, c))
+        return flat
+
+    def test_pre_commit_runs_lint_staged_and_not_the_whole_tree(self):
+        hook = read(".husky/pre-commit")
+        self.assertIn("bun run --silent lint:staged", hook)
+        self.assertNotRegex(hook, r"(?m)^bun run --silent lint$")
+        s = self.pkg()["scripts"]["lint:staged"]
+        self.assertTrue(s.startswith("lint-staged "), s)
+        self.assertIn("--no-stash", s)
+        # --no-stash ALONE still checks out the index copy of a partially
+        # staged file and, when a task fails, does not put the unstaged half
+        # back (2026-09-05: one failing run wiped the unstaged edits on seven
+        # files; .git/lint-staged_unstaged.patch was the only copy).
+        self.assertIn("--no-hide-partially-staged", s)
+        self.assertIn("--relative", s)
+        self.assertIn("lint-staged", self.pkg()["devDependencies"])
+
+    def test_every_staged_command_is_check_only(self):
+        # The hook never writes: a formatter that FIXES silently re-adds the
+        # rewritten file to a commit the author did not review.
+        for glob, c in self.staged():
+            with self.subTest(glob=glob):
+                self.assertNotRegex(c, r"\boxfmt(?! --check)")
+                self.assertNotIn("ruff@", c) if "format" in c else None
+                self.assertNotIn("--fix", c)
+                self.assertNotIn("--write", c)
+
+    def test_ruff_pin_matches_lint_py(self):
+        s = self.pkg()["scripts"]
+        pin = re.search(r"uvx ruff@(\S+) check", s["lint:py"]).group(1)
+        py = [c for g, c in self.staged() if "ruff" in c]
+        self.assertEqual(len(py), 1, py)
+        self.assertIn("uvx ruff@%s check" % pin, py[0])
+
+    def test_flags_match_the_lint_scripts(self):
+        s = self.pkg()["scripts"]
+        cmds = dict(self.staged())
+        flat = "\n".join(c for _, c in self.staged())
+        self.assertIn(s["lint:js"], flat)  # oxlint --deny-warnings
+        self.assertIn(s["lint:ci"], flat)  # actionlint
+        self.assertIn("shellcheck -x -S warning", flat)
+        self.assertIn("shellcheck -x -S error", flat)
+        self.assertIn("bun build --no-bundle", flat)
+        self.assertIn("tests/check_page.py", flat)
+        self.assertIn("py_compile", flat)
+        # staging/ blocks at error and is advisory above it, as lint:sh:staging.
+        sh = [c for g, c in self.staged() if "shellcheck" in c]
+        self.assertEqual(len(sh), 1)
+        self.assertIn("staging/*)", sh[0])
+        self.assertIn("advisory above error level", sh[0])
+        # Every shell entry point lint:sh covers is reachable by the glob.
+        globs = list(cmds)
+        shglob = next(g for g in globs if "*.sh" in g)
+        for part in ("smeltr", ".husky/[a-z]*", "**/*.sh"):
+            self.assertIn(part, shglob)
+        # The page-assembly check fires on the files that assemble the page.
+        pg = next(g for g in globs if "check_page" in cmds[g])
+        self.assertIn("web/*", pg)
+        self.assertIn("dashboard/server.py", pg)
+        wf = next(g for g in globs if cmds[g] == "actionlint")
+        self.assertEqual(wf, ".github/workflows/*.yml")
+
+
+class CommitRules(unittest.TestCase):
+    """Runs the REAL `check_message` out of .husky/commit-rules.sh.
+
+    The rules are pr.yml's `commits` job transcribed into POSIX sh; the
+    messages here are the ones that job would reject, plus the exemptions it
+    grants (merges) and the one the hook adds (fixup!/squash! at commit time
+    only). A string assertion on the hook could not tell a working regex from
+    a broken one.
+    """
+
+    def check(self, message, *args):
+        import tempfile
+
+        with tempfile.NamedTemporaryFile("w", suffix=".msg", delete=False) as f:
+            f.write(message)
+        try:
+            r = subprocess.run(
+                [
+                    "sh",
+                    "-c",
+                    '. ./.husky/commit-rules.sh; check_message "$1" $2; rc=$?; '
+                    "printf '%s' \"$problems\"; exit $rc",
+                    "_",
+                    f.name,
+                    *args,
+                ],
+                cwd=REPO,
+                capture_output=True,
+                text=True,
+            )
+        finally:
+            os.unlink(f.name)
+        return r.returncode, r.stdout
+
+    def test_a_house_style_message_passes(self):
+        rc, why = self.check("SMLTR: Add a thing\n\n- `x` now does y\n")
+        self.assertEqual((rc, why), (0, ""))
+
+    def test_comments_and_the_scissors_diff_are_not_body(self):
+        rc, why = self.check(
+            "SMLTR: Add a thing\n# Please enter the commit message\n"
+            "# ------------------------ >8 ------------------------\n"
+            "* Co-Authored-By: Claude\n"
+        )
+        self.assertEqual((rc, why), (0, ""))
+
+    def test_each_rule_fires_on_its_own(self):
+        cases = {
+            "add a thing\n": "SMLTR: ",
+            "SMLTR: add a thing\n": "Capitalized",
+            "SMLTR: feat: Add a thing\n": "conventional-commits",
+            "SMLTR: Add a thing.\n": "trailing period",
+            "SMLTR: " + "Add a thing " * 6 + "\n": "max 72",
+            "SMLTR: Generated by a robot\n": "AI-authorship credit in the subject",
+            "SMLTR: Add a thing\n\n* bullet\n": "bullets are '-'",
+            "SMLTR: Add a thing\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n": "AI-authorship trailer",
+            "SMLTR: Add a thing\n\nGenerated with [Claude Code](https://claude.ai)\n": "AI-authorship trailer",
+        }
+        for msg, expect in cases.items():
+            with self.subTest(msg=msg.splitlines()[0]):
+                rc, why = self.check(msg)
+                self.assertEqual(rc, 1, why)
+                self.assertIn(expect, why)
+
+    def test_fixup_passes_at_commit_time_and_never_at_push_time(self):
+        for prefix in ("fixup! ", "squash! "):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(
+                    self.check(prefix + "SMLTR: Add a thing\n", "allow_fixup")[0], 0
+                )
+                rc, why = self.check(prefix + "SMLTR: Add a thing\n")
+                self.assertEqual(rc, 1)
+                self.assertIn("autosquash", why)
+
+    def test_merge_and_empty_are_left_to_git(self):
+        self.assertEqual(self.check("Merge branch 'feature'\n")[0], 0)
+        self.assertEqual(self.check("\n# nothing but comments\n")[0], 0)
 
 
 # ---------------------------------------------------------------------- page
@@ -265,6 +666,9 @@ class ShellScriptsParse(unittest.TestCase):
 # ASSEMBLED result, not the sources: that is what a browser receives, and it
 # fails loudly if a placeholder ever stops resolving.
 PAGE = server._PAGE
+# The dense form of the page (no whitespace around { } : ; > ,): oxfmt writes
+# the CSS one declaration per line, and these pin rules, not layout.
+DENSE = re.sub(r"\s*([{}:;>,])\s*", r"\1", PAGE)
 
 
 class UnitsSurviveCSS(unittest.TestCase):
@@ -278,19 +682,22 @@ class UnitsSurviveCSS(unittest.TestCase):
     UNIT = re.compile(r"\b(?:[KMGT]i?[Bb]/s|Mb/s|GiB|MiB|%)")
 
     def test_every_unit_bearing_header_opts_out_of_uppercase(self):
-        headers = re.findall(r'\{label:"([^"]*)"((?:,[^{}]*)?)\}', PAGE)
+        headers = re.findall(r'\{\s*label:\s*"([^"]*)"((?:,[^{}]*)?)\}', PAGE)
         checked = 0
         for label, rest in headers:
             if not self.UNIT.search(label):
                 continue
             checked += 1
-            self.assertIn("unit", rest,
-                          f'header "{label}" lacks cls:"unit" and will render '
-                          f'uppercased -- its unit becomes a different unit')
+            self.assertIn(
+                "unit",
+                rest,
+                f'header "{label}" lacks cls:"unit" and will render '
+                f"uppercased -- its unit becomes a different unit",
+            )
         self.assertTrue(checked, "no unit-bearing header found; regex has rotted")
 
     def test_the_rule_it_relies_on_still_exists(self):
-        self.assertTrue("th.unit{text-transform:none}" in PAGE)
+        self.assertIn("th.unit{text-transform:none", DENSE)
 
 
 class StickyHeaderOutranksTheTitleColumn(unittest.TestCase):
@@ -319,17 +726,20 @@ class StickyHeaderOutranksTheTitleColumn(unittest.TestCase):
                     depth -= 1
                     if depth == 0:
                         break
-            css = css[:i] + css[k + 1:]
+            css = css[:i] + css[k + 1 :]
         for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
             if not re.search(r"(^|[\s,>+~])\.title-cell\b", sel):
                 continue
-            self.assertNotIn("position:", body,
-                             f"bare `.title-cell` sets position in `{sel.strip()}` "
-                             f"-- it outranks th{{position:sticky}} and unsticks "
-                             f"the TITLE header")
+            self.assertNotIn(
+                "position:",
+                body,
+                f"bare `.title-cell` sets position in `{sel.strip()}` "
+                f"-- it outranks th{{position:sticky}} and unsticks "
+                f"the TITLE header",
+            )
 
     def test_the_rule_it_protects_still_exists(self):
-        self.assertIn("th{position:sticky;top:0;z-index:1", PAGE)
+        self.assertIn("th{position:sticky;top:0;z-index:1", DENSE)
 
 
 class ThemeTokens(unittest.TestCase):
@@ -343,25 +753,28 @@ class ThemeTokens(unittest.TestCase):
 
     def blocks(self):
         def one(sel):
-            j = PAGE.index(sel)
-            return PAGE[j:PAGE.index("}", j)]
+            j = DENSE.index(sel)
+            return DENSE[j : DENSE.index("}", j)]
+
         return one(":root{"), one(':root[data-theme="light"]{')
 
     def test_every_token_used_is_defined(self):
         dark, _ = self.blocks()
         defined = set(re.findall(r"(--[a-z0-9-]+)\s*:", dark))
         for tok in set(re.findall(r"var\((--[a-z0-9-]+)", PAGE)):
-            self.assertIn(tok, defined,
-                          f"{tok} is used but defined in neither root block")
+            self.assertIn(
+                tok, defined, f"{tok} is used but defined in neither root block"
+            )
 
     def test_every_colour_token_exists_in_both_themes(self):
         dark, light = self.blocks()
         light_names = set(re.findall(r"(--[a-z0-9-]+)\s*:", light))
         for name, value in re.findall(r"(--[a-z0-9-]+)\s*:([^;]+);", dark):
             if not self.COLOUR.search(value):
-                continue          # --r (radius), --mono (font stack)
-            self.assertIn(name, light_names,
-                          f"{name} is a colour with no light-theme value")
+                continue  # --r (radius), --mono (font stack)
+            self.assertIn(
+                name, light_names, f"{name} is a colour with no light-theme value"
+            )
 
 
 class CSPNonces(unittest.TestCase):
@@ -382,6 +795,7 @@ class CSPNonces(unittest.TestCase):
 
 
 # -------------------------------------------------------------------- ledger
+
 
 class LedgerFixture(unittest.TestCase):
     """The frozen calibration corpus must stay parseable and complete."""
