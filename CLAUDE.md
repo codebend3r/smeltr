@@ -5,7 +5,13 @@ remuxes (60–100 Mb/s) are re-encoded with HandBrakeCLI, verified, and moved ba
 to a NAS — replacing an ~80 GB original with an ~30 GB file that keeps every
 audio and subtitle track.
 
-Python 3 stdlib + vanilla JS. **No dependencies, no build step, no CDN.**
+Python 3 stdlib + vanilla JS. **No runtime dependencies, no build step, no
+CDN.** The only `devDependencies` are lint/format tooling (oxlint, oxfmt,
+husky, lint-staged) — nothing the app imports or serves. **bun is the only JS runtime,
+package manager and task runner** (`packageManager` pins it; a `preinstall`
+guard turns `npm install`/`yarn`/`pnpm` away; `bun.lock` is the lockfile,
+there is no `package-lock.json` and no `.npmrc`). No `node`, no `npm`,
+anywhere — `test_repo_invariants.py::BunIsTheOnlyRunner` pins it.
 Run `./smeltr report` or open <http://127.0.0.1:8787/>.
 
 ## THIS IS LIVE INFRASTRUCTURE — read before editing
@@ -26,6 +32,7 @@ on a `good` verdict. It calls this repo on every cycle.
 | `pipeline/record.py` | **YES** — writes the ledger | no |
 | `dashboard/server.py` | no — never imported by the decision path (but see below: it now spawns/kills encodes) | mostly |
 | `dashboard/sysmon.py` | no — imported only by `server.py` | mostly |
+| `dashboard/events.py` · `dashboard/notify.py` | no — imported only by `server.py` | **yes** |
 | `dashboard/report.py` | no | **yes** |
 | `web/*` | no — markup, CSS and JS for the page | **yes** |
 | `ops/watchdog.sh` | no — relaunches the driver | mostly |
@@ -39,14 +46,16 @@ Repo layout:
 
 ```
 smeltr              launcher — the only interface `.autopilot.sh` calls
-                    (`next` · `verdict` · `record` · `crf`)
+                    (`next` · `verdict` · `record` · `crf`); `notify-test`
+                    proves a notify.json before the first real event
 pipeline/           DECISION PATH. pause the driver before editing
 dashboard/          server, resource sampler, terminal report
 web/                index.html · app.css · theme.js · app.js
 ops/                watchdog.sh · com.smeltr.watchdog.plist
+.husky/             pre-commit (lint) · commit-msg (subject) · pre-push (subjects + full suite) — installed by `bun install`
 staging/            byte-for-byte mirrors of the live X9 scripts
 tools/              one-off maintenance (`seed_ledger.py` · `render_favicon.sh`)
-tests/              run-all.sh · lint.sh · suites
+tests/              check_page.py · suites (run via `bun run test`)
 ledger.jsonl        the irreplaceable record, beside the launcher
 ```
 
@@ -485,12 +494,15 @@ muxer wrote its duration up front and so probes "fine" but runs short.
 
 ### Tests
 
-`bash tests/run-all.sh`. They pin the log-matching and downscale gates, the
+`bun run test` (`bun run --sequential --no-exit-on-error test:py 'test:sh:*'
+'test:js:*'` — every suite is also its own `test:*` script; bun's built-in
+`--sequential` runs them in order with a label on every line, and
+`--no-exit-on-error` runs every suite before reporting the first failure's
+exit code). They pin the log-matching and downscale gates, the
 concurrency markers, the watchdog's corpse/finished boundary, the projection
 band's boundaries and wording, the stage pull queue's hold-vs-drop split, and
-repo/live drift. The projection and repaint-key suites run under `node`
-against the functions pulled straight out of `web/app.js`, and skip cleanly where
-`node` is absent.
+repo/live drift. The projection and repaint-key suites run under `bun`
+against the functions pulled straight out of `web/app.js`.
 
 Two suites used to need the X9 mounted and now do not, because a suite that
 skips is a suite nobody notices has stopped running:
@@ -552,20 +564,20 @@ passed every arithmetic test and still shipped a chart that was 92% empty
 wash, and the fix for THAT shipped a 15 min window whose line rendered
 dotted. Neither was visible in a number.
 
-- **`tests/test_sysmon_render.js`** (in `run-all.sh` and CI) hands the real
+- **`tests/test_sysmon_render.js`** (in `bun run test` and CI) hands the real
   `drawMon()` a RECORDING 2D context and asserts the ops it emits: every one
   of the twelve stops draws a line across the full plot width, the wash
   appears if and only if the window overhangs the ring and is that overhang
   to the pixel, the no-data stretch rides 0 *and* carries its wash, a gap
   inside the history still breaks the path, gridlines stay at 3–16 per
   window, and no two tick labels collide. No browser, no dependency, no
-  golden images — it runs wherever the other node suites do.
-- **`node tests/visual/shoot.mjs`** (`npm run visual`) is the eyeball half
+  golden images — it runs wherever the other bun suites do.
+- **`bun tests/visual/shoot.mjs`** (`bun run visual`) is the eyeball half
   and is NOT wired into CI. It seeds a synthetic 7 d ring
   (`tests/visual/seed_ring.py`) into a temp `SMELTR_DIR`, starts a
   THROWAWAY dashboard against it — the live ring beside the ledger is never
   touched — drives the Chrome already installed on this Mac over the
-  DevTools Protocol with node's built-in `WebSocket` (no npm package, no
+  DevTools Protocol with bun's built-in `WebSocket` (no package, no
   Playwright, nothing installed; it SKIPS LOUDLY with no Chrome), and
   screenshots all twelve stops in both themes, then montages them into one
   contact sheet per theme. `--depth-seconds N` seeds a PARTIAL ring, which
@@ -590,11 +602,25 @@ themes; and the three CSP nonces are still there.
 
 ### Linting and formatting
 
-`bash tests/lint.sh` (also `npm run lint`, and the first step of
-`run-all.sh`). Nothing is installed into the repo and there is still no build
-step: `ruff` is reached through `uvx`, `shellcheck` and `node` are system
-tools, and every one of them **skips loudly** when absent rather than passing
-silently. Config is `ruff.toml` + `.editorconfig`.
+`bun run lint` is the whole gate — `bun run verify` and CI's `lint` job run
+exactly it, and the pre-commit hook runs the SAME checks over the staged
+files only (`bun run lint:staged`, see *Git hooks*). It is
+`bun run --sequential` (built into bun — no `npm-run-all`) over these scripts
+in order, stopping at the first failure: `lint:js` (oxlint) · `lint:js:syntax`
+(`bun build --no-bundle`, which parses and fails on a syntax error) ·
+`lint:py` (`uvx ruff@<pinned>`) · `lint:py:syntax` (compileall) · `lint:sh`
+(shellcheck) · `lint:sh:staging` (blocks at `-S error`, advisory above it) ·
+`lint:ci` (actionlint over `.github/workflows/`) · `format:js:check`
+(oxfmt) · `lint:page` (`tests/check_page.py`). Each is runnable alone. Output
+is label-prefixed tool output only; there is no wrapper script and no
+summary line. There is still no build step: `ruff` is reached through `uvx`,
+`shellcheck` and `actionlint` are system tools (`brew install shellcheck
+actionlint`; CI `go install`s the same actionlint version), `bun` is the
+runtime, oxlint/oxfmt come from `bun install`. A missing tool now FAILS the
+script rather than skipping — the old
+`tests/lint.sh` skipped loudly, and that was replaced 2026-09-04 because a
+gate with an optional half is a gate nobody can compare across machines.
+Config is `ruff.toml`, `.oxlintrc.json`, `.oxfmtrc.json` + `.editorconfig`.
 
 - **ruff** runs a deliberately TIGHT set — `F, E9, B, PLE`. The wide default
   flags 123 mostly-stylistic issues across the decision path, and a gate that
@@ -607,50 +633,131 @@ silently. Config is `ruff.toml` + `.editorconfig`.
   replacement field (PEP 701) and was a `SyntaxError` there; it was fixed, not
   declared away. Nothing may assume newer syntax or newer stdlib signatures —
   `zip(strict=)` is 3.10+ and is spelled as a bare `zip()` in `sysmon.py`.
-- **shellcheck** gates `smeltr`, `ops/*.sh`, `tests/*.sh` and `tools/*.sh`
-  at `-S warning`. `staging/*.sh` is **advisory only** — those are byte-for-byte
-  mirrors of the live X9 scripts, so a finding must be fixed on the drive
-  during a pause window and copied back. Editing the mirror alone
-  manufactures the drift `test_staging_in_sync.sh` exists to catch.
-- **`node --check web/*.js`** — the dashboard's JS had never been
-  syntax-checked at all before this. `lint.sh` also asserts the page
-  assembles with no `__PLACEHOLDER__` left, because a missing asset would
-  otherwise render as a blank screen behind a working HTTP 200.
-- **The formatter is configured but NOT adopted.** `ruff format` rewrites 862
+- **shellcheck** gates `smeltr`, every hook in `.husky/`, and every `.sh`
+  `git ls-files -co` can see outside `staging/` — tracked OR untracked, so a
+  new script is linted before it is ever added, and a script in a new
+  directory cannot be linted by CI and missed here (2026-09-05; the list used
+  to be four hand-written globs). `-S warning`. `staging/*.sh` **blocks at
+  `-S error` and is advisory above that** (the same line CI draws) — those
+  are byte-for-byte mirrors of the live X9 scripts, so a finding must be
+  fixed on the drive during a pause window and copied back. Editing the
+  mirror alone manufactures the drift `test_staging_in_sync.sh` exists to
+  catch.
+- **actionlint** (`bun run lint:ci`) checks `.github/workflows/*.yml` — the
+  expression syntax, the `runs-on` labels, the action inputs, and (through
+  its shellcheck integration) every `run:` block as the shell it declares.
+  It was CI-only until 2026-09-05, which meant a workflow edit was checked
+  only by the workflow it broke.
+- **`bun build --no-bundle web/*.js`** (`lint:js:syntax`) — the dashboard's
+  JS had never been syntax-checked at all before 2026-09-04. bun has no
+  `--check` flag; a no-bundle build parses every file and exits 1 on a
+  syntax error, writing nothing (`--outfile /dev/null`). `lint:page` (`tests/check_page.py`)
+  asserts the page assembles with no `__PLACEHOLDER__` left, because a
+  missing asset would otherwise render as a blank screen behind a working
+  HTTP 200.
+- **oxlint** (`bun run lint:js`, `oxlint --deny-warnings`) lints every
+  `.js`/`.mjs` at its default `correctness` category — the same TIGHT-set
+  reasoning as ruff. `.oxlintrc.json` allows unused `catch (e)` bindings and
+  ternaries-as-statements, both of which `web/app.js` uses on purpose.
+- **oxfmt** (`bun run format:js`, checked by `bun run format:js:check`) formats
+  JS, CSS, JSON and YAML — 2026-09-04 was the "format the world" commit for
+  those. `web/index.html` is EXCLUDED: it is a template, and the HTML
+  formatter rewrote `<script nonce>__THEME_JS__</script>` with a stray `;`.
+  Markdown, `staging/` and `tests/fixtures/` are excluded too. **The UI
+  suites pull code out of `web/app.js` and `web/app.css` by string match**,
+  so every anchor there is whitespace-tolerant (`var NAME\s*=`, the
+  `DENSE` view in the Python suites); a new anchor must be too.
+- **The Python formatter is configured but NOT adopted** (`bun run format:py`,
+  checked by `bun run format:py:check`). `ruff format` rewrites 862
   lines across all 14 Python files, including every decision-path module, and
   it expands the compact dict literals this codebase deliberately keeps dense
   (`verdict.py`'s `json.dumps` goes 9 lines → 12). Adopting it is a single
   "format the world" commit that lands during a pause window, never mixed
   into a behaviour change. CI gates on `lint`, never on `format --check`.
+- **`bun run format` / `bun run format:check` are the umbrellas** — each runs
+  the JS half then the Python half (`format:js` + `format:py`, `format:js:check`
+  + `format:py:check`). Because the Python half is not adopted, `format:check`
+  is RED today; every gate (`lint`, `system-check`, the hooks, CI) runs
+  `format:js:check` alone until the Python "format the world" commit lands,
+  at which point they can widen to `format:check`.
 
-`npm version` now runs the **full suite** as its `preversion` gate, not just
-`compileall`. A release therefore cannot be cut while the repo's
+`bun run release` now runs the **full suite** as its `preversion` gate, not
+just `compileall`. A release therefore cannot be cut while the repo's
 `staging/autopilot.sh` differs from what the X9 is actually running.
 
 ### Git hooks
 
-`ops/hooks/` holds tracked `pre-commit` and `pre-push`; `bash ops/install-hooks.sh`
-(`npm run hooks`) points `core.hooksPath` at it. **Per clone** — `.git/hooks` is
-not versioned, and `core.hooksPath` REPLACES it, so every hook must live in
-`ops/hooks/`. Both are shellchecked by `lint.sh`, which lists them separately
-because git requires bare names with no `.sh`.
+`.husky/pre-commit`, `.husky/commit-msg`, `.husky/pre-push` and the rules
+file they share, `.husky/commit-rules.sh`, are tracked; `bun install` runs
+the `prepare` script (`husky`), which points `core.hooksPath` at `.husky/_`.
+**Per clone** — `.git/hooks` is not versioned and `core.hooksPath` REPLACES it.
+husky runs each hook with `sh -e`, so they are POSIX sh (no bashisms) and any
+command allowed to fail carries `|| true`. All four are shellchecked by
+`lint:sh` (the `.husky/[a-z]*` glob — `.husky/_` is husky's own).
 
-- **pre-commit (~1 s)** refuses a staged runtime artifact (`token`, `url`,
-  `server.log`, `ledger.jsonl`, …) and then runs `tests/lint.sh`. The artifact
-  check duplicates `test_repo_invariants.py::RuntimeArtifacts` on purpose:
-  that test reads `git ls-files`, so a `git add -f token` only trips it once
-  the commit already exists — this reads the INDEX and refuses first.
-  `lint.sh` reads the **working tree, not the index**. Deliberate: stashing
-  unstaged work to lint a partial commit exactly is how a hook loses somebody's
-  edits, and lint is a whole-tree check anyway.
-- **pre-push (~10 s)** runs `tests/run-all.sh` — the same gate `npm version`
-  uses, so a push and a release are held to one standard. A push that only
-  DELETES refs skips it (an all-zero local sha on stdin): there is no tree to
-  test, and running the suite there would only be a way to refuse a branch
-  cleanup.
+- **pre-commit (~5 s)** refuses a staged runtime artifact (`token`, `url`,
+  `server.log`, `ledger.jsonl`, …), refuses trailing whitespace or a conflict
+  marker in a staged hunk (`git diff --cached --check` — Python and shell
+  have no formatter, so this is the only thing enforcing `.editorconfig` on
+  them; `staging/` and `tests/fixtures/` opt out in `.gitattributes` because
+  they are byte-for-byte copies of something else), and then runs `bun run
+  lint:staged`. The artifact check duplicates
+  `test_repo_invariants.py::RuntimeArtifacts` on purpose: that test reads
+  `git ls-files`, so a `git add -f token` only trips it once the commit
+  already exists — this reads the INDEX and refuses first. Its diff filter
+  is `d` (everything but a deletion): a rename or copy onto `token` shows as
+  `R`/`C` and slipped past the old `AM`. The lint is **lint-staged**
+  (`bun run lint:staged` = `lint-staged --no-stash
+  --no-hide-partially-staged --relative`, config in `package.json` under
+  `lint-staged`): the same tools and flags as the `lint:*` scripts, run
+  only over the files in the commit, so a one-file commit is not held for
+  a whole-tree shellcheck+actionlint+page-assembly pass. **Both flags are
+  the point, not options.** lint-staged's default stashes unstaged work to
+  lint the exact index content, and that stash round-trip is how a hook
+  loses somebody's edits — so the checks read the **working-tree copy of
+  each staged file**. `--no-stash` ALONE is not enough: it still checks
+  out the index copy of every partially staged file and, when a task
+  FAILS, does not put the unstaged half back — confirmed 2026-09-05, when
+  one failing run wiped the unstaged edits on seven files and the
+  `.git/lint-staged_unstaged.patch` it left behind was the only copy
+  (`git apply --unidiff-zero` on it is the recovery). The per-glob commands are
+  check-only (`oxfmt --check`, never `oxfmt`): the hook never writes and
+  nothing is silently re-added. `web/*` and `dashboard/server.py` trigger
+  the page-assembly check; `.github/workflows/*.yml` triggers actionlint;
+  `staging/*.sh` blocks at `-S error` and everything else at `-S warning`,
+  the same line `lint:sh`/`lint:sh:staging` draw.
+  `test_repo_invariants.py::LintStagedMirrorsLint` pins the parity — the
+  ruff pin, `--deny-warnings`, the shellcheck levels, `--no-stash` — because
+  two renditions of one gate drift the moment one is edited alone. The
+  whole-tree `bun run lint` still runs at pre-push and in CI.
+- **commit-msg (instant)** holds the subject to the `commit-format`
+  rules — `SMLTR: ` + Capitalized verb, ≤72 chars, no trailing period, no
+  conventional-commits prefix behind it, no AI-authorship trailer, `-`
+  bullets. The rules are the `commits` job of `.github/workflows/pr.yml`
+  transcribed into POSIX sh, and they exist locally because that job only
+  ever sees a pull request: `bun run release` and a plain `git push` land on
+  `main` with no PR, so a direct-to-main commit was checked nowhere.
+  `fixup!`/`squash!` subjects pass here (git writes them for `--fixup` and
+  autosquash consumes them) and are refused by pre-push, so one can never
+  reach a remote. Merge subjects are exempt, as in pr.yml. Comment lines and
+  everything below git's scissors line are ignored, so a `commit -v` diff is
+  never read as body text. `test_repo_invariants.py::CommitRules` runs the
+  real function against a dozen messages.
+- **pre-push (~20 s)** first re-checks every commit not yet on ANY remote
+  against the same rules (`--amend` on an old commit, a rebase and
+  `--no-verify` all bypass commit-msg), then runs `bun run verify` (lint →
+  every suite → build) — the same gate `bun run release` uses as
+  `preversion`, so a push and a release are held to one standard. `bun run
+  system-check` is `format:js:check` → `lint` → `test`, the check-only
+  sequence with no build step and no write. A push that only DELETES refs
+  skips both (an all-zero local sha on stdin): there is no tree to test, and
+  running the suite there would only be a way to refuse a branch cleanup.
 
-Neither touches the NAS, the staging drive, or the running driver. Bypass with
-`--no-verify` or `SMELTR_SKIP_HOOKS=1`.
+None of them WRITES to the NAS, the staging drive, or the running driver.
+pre-push does READ both: `build` calls `build_state()`, which stats the
+library roots over SMB, and `test:sh:drift` compares `staging/` against the
+X9 — so a stalled mount stalls the push rather than the suite lying about
+it. Bypass with `--no-verify`, `HUSKY=0`, or `SMELTR_SKIP_HOOKS=1`.
 
 ### CI
 
@@ -661,7 +768,7 @@ behind one required `ci` check:
 |---|---|---|
 | `lint` | ubuntu | actionlint, `shellcheck -S error`, ruff (`F, E9, B, PLE`) |
 | `python` | ubuntu 3.9/3.11/3.12/3.13 + macOS 3.13 | the whole `unittest` suite |
-| `browser-logic` | ubuntu | the three `node` suites out of `web/app.js` |
+| `browser-logic` | ubuntu | the six `bun` suites out of `web/app.js` |
 | `shell` | **macOS** | the bash suites, with `ffmpeg` installed |
 | `smoke` | ubuntu | the entry points with NOTHING mounted |
 
@@ -970,6 +1077,60 @@ second request.
   `QUARTER` progress noise never becomes an event. Severity chips reuse the
   page's three colour tokens; an unmapped kind renders as a plain pill,
   never an error.
+- **Notifications (2026-09-05)** — `dashboard/notify.py`, imported ONLY by
+  `server.py`, started from `main()` when `notify.json` sits beside the
+  ledger (gitignored, holds the Slack webhook and the Gmail app password;
+  `./smeltr notify-test` sends one message per channel). Email via stdlib
+  `smtplib` + STARTTLS, Slack via `urllib` to an incoming webhook — no
+  dependency, no decision-path import (`test_layering.py` lists it in
+  `DASHBOARD_ONLY`). It is an OBSERVER of `events.events()`, the same parser
+  the Events tab reads, so a message can never disagree with the tab. One
+  daemon thread ticks when `events.rev()` moves (5 s poll), diffs the
+  snapshot against a persisted seen-set (`notify.cursor`), classifies what
+  is new, and delivers: `complete` → "Encode done · verdict pending"
+  (COMPLETE is HandBrake exiting, not a result — Little Mermaid's only
+  message would otherwise have been a green tick on a halt-decoder-errors
+  verdict), `failed` → failed, driver `LADDER` → Ladder UP/DOWN, driver
+  `ERROR` (and an old-log `HALTED:`) → error state, `CYCLE COMPLETE` →
+  "Original deleted". **The ladder anchors on the driver's stamped `LADDER`
+  line, not the watcher's `KILLED` line**: the driver truncates the watch
+  log within 30 s of a kill, so a 5 s poll could miss it, whereas the
+  LADDER line is permanent. Both rungs and the direction follow from the
+  target rung alone (one rung per retry; every rung above `CRF_DEFAULT` is
+  an up-rung); the kill's projection is added only when the watcher line
+  is still there. Watcher `killed`/`exhausted` are therefore silent on
+  their own; the kill's projection is REMEMBERED from the earlier tick
+  that saw it and added to the ladder message when known. The deletion
+  message is built from the LEDGER row (`record` writes it before the
+  sync; subject carries the original's GiB), never from the folded shell
+  output under the SYNC line — syncs are backgrounded and unstamped, so
+  that text can be ANOTHER title's size guard, and it carried the ssh
+  user@host and, once, an unrelated "autopilot already running" line
+  inside a deletion notice; with no ledger row it says so. Also notified:
+  `SYNC FAILED`/`SYNC ABORTED` (the deletion path's failures were silent
+  while its successes were loud) and `STOP CONDITION`. The seen-set is a
+  UNION bounded at 4000 keys, never a replacement — events.py degrades per
+  source, so one unreadable watch log leaves a non-empty snapshot and a
+  replaced set would re-send every deletion notice a tick later. A landed
+  channel is persisted BEFORE the next channel is tried (`smeltr restart`
+  SIGKILLs inside a 15 s SMTP handshake), a failed channel backs off
+  60 s → 1 h, and `notify.json` must be 0600 or it is refused — it holds
+  the app password. `start()` never raises: it runs in `main()` above the
+  socket bind. A watcher stamp that
+  the Events tab draws as `~` (mtime-derived) renders as `~` here too, and
+  every clock carries a weekday and date because a retried message can be
+  a day late. A burst keeps the most severe ten (deleted > error > failed
+  > ladder > done) and the summary names what it dropped. Rules pinned in
+  `tests/test_notify.py`: the FIRST snapshot is a baseline, never a backlog;
+  an EMPTY snapshot (X9 unmounted) is neither a baseline nor a diff, or the
+  whole tail would arrive as "new" on mount; identity omits `ts` for
+  watcher lines because the KILLED line's mtime stamp flips to None once
+  the log is re-used; a failed send stays pending (persisted, so a restart
+  cannot lose the deletion notice), each channel is ticked off separately
+  so the half that landed is never resent, and pending older than 24 h is
+  dropped with a `server.log` line; a burst above 10 sends 10 plus one
+  summary. Never in `LAN_WRITE_ROUTES` territory: there is no endpoint, the
+  config is a file only this Mac can write.
 - **A push renders on the History tab ONLY** (operator's call 2026-09-01): a
   recorded title has left the queue, and the synthetic "transferring" row the
   Queue tab used to draw up top read as work still waiting to encode. The
@@ -1014,7 +1175,7 @@ The page is four real files in `web/`, read once at import by
 Until 2026-08-28 all of this was one 2383-line `_PAGE` r-string inside
 `server.py`, which is why the UI suites still pull functions out by
 brace-matching. They now read `web/app.js` instead of a Python string, and
-`node --check` covers the files for the first time.
+`bun build --no-bundle` covers the files for the first time.
 
 **This is still not a build step.** The files are inlined at import, so the
 browser receives one self-contained document and CSP stays `default-src
@@ -1266,14 +1427,17 @@ transfer bar frozen at 0% for the length of the entire push.
 
 ## Releasing and pull requests
 
-`npm version patch|minor|major` is the entire release: it bumps `package.json`,
-commits as `SMLTR: Release vX.Y.Z`, creates the annotated tag, and pushes the
-commit and tag to `origin`. No build, no publish, no deploy — the tag is the
-release. `package.json`, `.npmrc`, and `.github/` are outside the decision path
-and are safe to edit while the driver runs.
+`bun run release patch|minor|major` is the entire release: it bumps
+`package.json`, commits as `SMLTR: Release vX.Y.Z`, creates the annotated tag,
+and pushes the commit and tag to `origin`. No build, no publish, no deploy —
+the tag is the release. The `release` script is `bun pm version -m "SMLTR:
+Release v%s"`: bun does NOT read `.npmrc`'s `message`, so a bare `bun pm
+version` would commit as `v0.1.9` with no prefix. `package.json`, `bun.lock`,
+and `.github/` are outside the decision path and are safe to edit while the
+driver runs.
 
-Commit messages follow the `smeltr-commit-format` skill. PR titles and bodies
-follow `smeltr-pr-format` — five required sections, and `## What changed` copies
+Commit messages follow the `commit-format` skill. PR titles and bodies
+follow `pr-format` — five required sections, and `## What changed` copies
 the commit bullets verbatim. `.github/pull_request_template.md` is that same
 structure mechanically; if one changes, change the other.
 

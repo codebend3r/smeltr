@@ -26,8 +26,15 @@
 #     `smeltr` resolves ${SMELTR_PYTHON:-python3}, so a clone on an unprepared
 #     Mac runs on 3.9 -- and a 3.12-only f-string in report.py had already made
 #     `smeltr report` a SyntaxError there.
+#   * Every job and every step carries a `name:`. The Actions UI shows an
+#     unnamed step as its `uses:`/`run:` line, which for `actions/checkout@<sha>`
+#     is a 40-character hash and for a `run:` is its first line -- neither says
+#     what the step is FOR when it is the one that went red.
+#   * PR hygiene (title, body sections, commit subjects) is a separate workflow,
+#     .github/workflows/pr.yml. It only makes sense on a pull_request event and
+#     has nothing to do with whether the code is green.
 
-name: CI
+name: 🔥 CI
 
 on:
   push:
@@ -52,137 +59,182 @@ defaults:
 jobs:
   # ---------------------------------------------------------------- static
   lint:
-    name: lint
+    name: 🧹 lint
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out the repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: actionlint (this workflow's own syntax)
+      # actionlint is part of `bun run lint` (lint:ci) since 2026-09-05 -- the
+      # hook and the runner check the workflows the same way -- so the binary
+      # has to exist here. Installed through Go's module system: pinned to the
+      # version brew ships locally, and the Go checksum database verifies the
+      # source, where a curl'd release binary would be trusted on faith.
+      - name: 🎬 Install actionlint (same version as `brew install actionlint`)
         run: |
-          docker run --rm -v "$PWD:/repo" -w /repo \
-            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
-            -color
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
-      - name: shellcheck (errors are blocking)
+      - name: 🐚 shellcheck (errors are blocking)
         run: |
           shellcheck --version
           mapfile -t scripts < <(git ls-files '*.sh'; echo smeltr)
           printf 'checking: %s\n' "${scripts[@]}"
           shellcheck -S error "${scripts[@]}"
 
-      - name: shellcheck (warnings and style, advisory only)
+      - name: 💅 shellcheck (warnings and style, advisory only)
         continue-on-error: true
         run: |
           mapfile -t scripts < <(git ls-files '*.sh'; echo smeltr)
           shellcheck -S style "${scripts[@]}"
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - name: 🐍 Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
-      # F, E9, B, PLE: undefined names, unused imports, syntax/IO errors,
-      # likely-bug patterns, genuine pylint errors. No style rules -- and
-      # ruff.toml is the ONLY ruff config in the repo. See tests/lint.sh for
-      # the same checks run locally.
-      - name: ruff
-        run: |
-          pip install --quiet 'ruff==0.16.5'
-          ruff check --output-format=github .
+      # `bun run lint` is the SAME command the pre-commit hook runs: oxlint,
+      # bun build --no-bundle (syntax), ruff (F, E9, B, PLE -- ruff.toml is the
+      # only ruff config; the version is pinned by `uvx ruff@<ver>` in
+      # package.json), compileall, shellcheck, actionlint, oxfmt --check, and
+      # the page-assembly check. bun is the ONLY JS runtime and task runner here;
+      # there is no node and no npm on this runner. --ignore-scripts skips
+      # husky's `prepare` (and the preinstall guard, which only exists to turn
+      # npm/yarn/pnpm away): git hooks have no business on a runner.
+      - name: 🥟 Set up bun (version from package.json `packageManager`)
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+
+      - name: 📦 bun install (frozen lockfile, no lifecycle scripts, no husky)
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: ⚡ Install uv (provides `uvx ruff@<pinned>`)
+        run: pip install --quiet uv
+
+      - name: 🔍 bun run lint (the same gate as the pre-commit hook)
+        env:
+          RUFF_OUTPUT_FORMAT: github
+        run: bun run lint
 
   # ---------------------------------------------------------------- python
   # The floor matters as much as the ceiling here: 3.9 is what stock macOS
   # ships, and `smeltr` will happily run on it.
   python:
-    name: python ${{ matrix.python }} (${{ matrix.os }})
+    name: 🐍 python ${{ matrix.python }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04]
-        python: ['3.9', '3.11', '3.12', '3.13']
+        python: ["3.9", "3.11", "3.12", "3.13"]
         include:
           # The platform the job actually runs on. One version is enough: the
           # ubuntu leg above already covers the version spread.
           - os: macos-15
-            python: '3.13'
+            python: "3.13"
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out the repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - name: 🐍 Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python }}
 
-      - name: every module compiles
+      - name: 🧱 Every module compiles
         run: python -m compileall -q pipeline dashboard tools
 
       # There is no ledger.jsonl on a fresh clone (it is gitignored -- the driver
       # appends to it every cycle, so a tracked copy conflicts constantly). The
       # calibration suite falls back to tests/fixtures/ledger-calibration.jsonl,
       # the 22 rows the thresholds were reasoned about.
-      - name: unit tests
+      - name: 🧪 Unit tests (verdict calibration, layering, HTTP gates, …)
         run: python -m unittest discover -s tests -v
 
-  # ------------------------------------------------------------------ node
-  # The projection strip, the repaint key, and the sysmon charts are pulled
-  # straight out of web/app.js and executed. No package.json, no install step.
+  # ------------------------------------------------------------------- bun
+  # The projection strip, the repaint key, the pause toggle, the CRF picker and
+  # the sysmon charts are pulled straight out of web/app.js and executed under
+  # bun -- the runtime every `test:js:*` script uses. No install step: the
+  # suites have no dependencies. Keep this list in step with the `test:js:*`
+  # scripts in package.json -- test_crf_picker.js was in `bun test`'s
+  # predecessor for four days before it was here.
   browser-logic:
-    name: browser logic (node)
+    name: 🌐 browser logic (bun)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out the repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: 🥟 Set up bun (version from package.json `packageManager`)
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          node-version: '22'
+          bun-version-file: package.json
 
       # web/*.js are real files now: a plain parse, no extraction needed.
-      - run: for f in web/*.js; do node --check "$f"; done
+      # `bun build --no-bundle` parses without bundling and fails on a syntax
+      # error -- the same check as the `lint:js:syntax` script.
+      - name: 🔤 bun build --no-bundle every web/*.js
+        run: for f in web/*.js; do bun build --no-bundle "$f" --outfile /dev/null >/dev/null; done
 
-      - run: node tests/test_projection_ui.js
-      - run: node tests/test_repaint_key.js
-      - run: node tests/test_pause_toggle.js
-      - run: node tests/test_sysmon_ui.js
-      - run: node tests/test_sysmon_render.js
+      - name: 📐 Projection strip (`test_projection_ui.js`)
+        run: bun tests/test_projection_ui.js
+
+      - name: 🔑 Repaint key — shape, never a live number (`test_repaint_key.js`)
+        run: bun tests/test_repaint_key.js
+
+      - name: ⏯️ Pause toggle is ONE native button (`test_pause_toggle.js`)
+        run: bun tests/test_pause_toggle.js
+
+      - name: 🎚️ CRF picker — the menu IS the ladder (`test_crf_picker.js`)
+        run: bun tests/test_crf_picker.js
+
+      - name: 📊 Sysmon chart logic (`test_sysmon_ui.js`)
+        run: bun tests/test_sysmon_ui.js
+
+      - name: 🖼️ Sysmon render — recording 2D context (`test_sysmon_render.js`)
+        run: bun tests/test_sysmon_render.js
 
   # ----------------------------------------------------------------- shell
   # macOS on purpose: these test BSD-targeted scripts. See the header.
   shell:
-    name: shell suites (macOS)
+    name: 🐚 shell suites (macOS)
     runs-on: macos-15
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out the repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The concurrency guards that decide whether a folder is judged and
       # RECORDED. core.record() appends with no duplicate guard, so a folder
       # judged twice writes a second ledger row and double-counts the reclaim.
       # Run against the tracked copy: the live script is on a drive no runner
       # can see, and the drift suite below is what keeps the two identical.
-      - name: autopilot concurrency guards
+      - name: 🔒 Autopilot concurrency guards
         run: bash tests/test_autopilot_helpers.sh staging/autopilot.sh
 
       # Whether `stop` can SEE the running dashboard. When it cannot, `start`
       # binds a SECOND server to a second port with a second token. Needs no
       # drive and no network -- it shadows ps/pgrep and fakes the processes.
-      - name: launcher server discovery
+      - name: 🔎 Launcher server discovery
         run: bash tests/test_launcher_pids.sh
 
       # ffprobe is what makes the corpse test meaningful -- a truncated encode
       # that probes "fine" and merely runs short is one of the two corpse shapes
       # and a missing-duration check walks straight past it.
-      - name: install ffmpeg
+      - name: 🍺 Install ffmpeg (ffprobe for the corpse test)
         run: brew install ffmpeg
 
-      - name: watchdog corpse/finished boundary
+      - name: 🐕 Watchdog corpse/finished boundary
         run: bash tests/test_watchdog_triage.sh ops/watchdog.sh
 
       # Skips cleanly here (the staging drive is not mounted on a runner). Kept
       # in CI so the skip is visible rather than assumed: if it ever starts
       # FAILING instead of skipping, the reason is worth seeing.
-      - name: staging drift
+      - name: 🪞 Staging drift (skips — no X9 on a runner)
         run: bash tests/test_staging_in_sync.sh
 
   # ----------------------------------------------------------------- smoke
@@ -192,17 +244,19 @@ jobs:
   # non-negotiable, and the code path that renders it is only reachable when
   # the roots really are gone.
   smoke:
-    name: smoke (nothing mounted)
+    name: 💨 smoke (nothing mounted)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out the repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - name: 🐍 Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
-      - name: report renders with the library offline
+      - name: 📴 Report renders with the library offline
         env:
           SMELTR_DIR: ${{ runner.temp }}/smeltr
         run: |
@@ -214,7 +268,7 @@ jobs:
           grep -q 'LIBRARY INCOMPLETE' <<<"$out"
           grep -q 'PARTIAL' <<<"$out"
 
-      - name: next_title never claims the stop condition while blind
+      - name: 🙈 next_title never claims the stop condition while blind
         env:
           SMELTR_DIR: ${{ runner.temp }}/smeltr
         run: |
@@ -233,7 +287,7 @@ jobs:
           fi
           echo "ok: exit $rc"
 
-      - name: the dashboard imports and builds a page
+      - name: 🖥️ The dashboard imports and builds a page
         env:
           SMELTR_DIR: ${{ runner.temp }}/smeltr
         run: |
@@ -254,14 +308,17 @@ jobs:
           PY
 
   # A single required check for branch protection. Adding a job above does not
-  # mean remembering to add it to the protected-branch list.
+  # mean remembering to add it to the protected-branch list. A required-check
+  # rule matches the DISPLAY name, so the check to require is "✅ ci" -- rename
+  # it and the rule silently stops requiring anything. The job id stays `ci`.
   ci:
-    name: ci
+    name: ✅ ci
     if: always()
     needs: [lint, python, browser-logic, shell, smoke]
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - name: verdict
+      - name: ⚖️ Verdict — every job must be exactly "success"
         run: |
           # Every result must be exactly "success". A substring test would pass
           # on "success failure" -- the string still contains "success".

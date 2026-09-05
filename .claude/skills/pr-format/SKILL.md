@@ -1,5 +1,5 @@
 ---
-name: smeltr-pr-format
+name: pr-format
 description: Use when opening, retitling, or rewriting the body of any pull request in the smeltr repo (path contains `smeltr`) — `gh pr create`, `gh pr edit`, "open a PR", "write the PR description", "update the PR body". Covers the `SMLTR:` title, the five required sections, and how the PR body reuses the commit bullets verbatim.
 ---
 
@@ -18,7 +18,7 @@ mechanical form; keep the two in step.
 **Violating the letter of these rules is violating the spirit of these rules.**
 No "close enough."
 
-**REQUIRED BACKGROUND:** `smeltr-commit-format` defines the title rules, the
+**REQUIRED BACKGROUND:** `commit-format` defines the title rules, the
 bullet style, the backtick rules, and the AI-attribution ban. All of them apply
 here unchanged. This skill does not restate them — it says where they land.
 

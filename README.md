@@ -11,7 +11,10 @@ HandBrakeCLI at CRF 16, verified, and moved back to the NAS — replacing an
 track. 12 encodes in, the job has reclaimed just over 500 GiB with ~5.7 TiB
 projected to go.
 
-Python 3 stdlib and vanilla JS. **No dependencies, no build step, no CDN.**
+Python 3 stdlib and vanilla JS. **No runtime dependencies, no build step, no
+CDN.** The only `devDependencies` are lint/format tooling (oxlint, oxfmt, husky, lint-staged),
+installed and run with **bun** — the one JS runtime and task runner here; there
+is no npm, no node.
 
 ```bash
 ./smeltr report      # terminal snapshot
@@ -56,6 +59,7 @@ leaves the drive as-is.
 ./smeltr next <min-mbps>       # highest-bitrate staged title not yet encoded
 ./smeltr record "<Folder>" --source-path <path-to-original> \
     [--dest Vhagar/S] [--note "..."] [--verified "ssim 0.9931/0.9945"]
+./smeltr notify-test           # one test message through every channel in notify.json
 ```
 
 `report` starts the dashboard automatically if it isn't up. The dashboard
@@ -143,6 +147,51 @@ parity check that passed on zero evidence, a ledger write with no liveness
 gate, an uppercase transform quietly turning Mb/s into MB/S, and a progress
 row that painted once and froze for an entire 45-minute transfer.
 
+## Notifications (email + Slack)
+
+The dashboard can tell you when an encode is **done** (HandBrake exited —
+the verdict is still pending, and the message says so), **fails** (HandBrake
+died), **ladders UP or DOWN** (the band watcher killed it and the driver
+retries at the next CRF — the message names both rungs, which side of the
+30–80% band was violated, and the projection when it is still in the watch
+log), goes to the **error state** (a bad verdict, a track mismatch, an
+exhausted ladder — the row turns red and the queue moves on; the message
+says nothing was deleted), or has its **original deleted** (the sync
+verified the output and removed the library copy — the one irreversible
+step, so the subject carries the original's size and the body the ledger
+row's figures, never the raw log), plus a **failed sync** and the driver's
+**stop condition**.
+
+Off by default. Drop a `notify.json` beside the ledger (it is gitignored, and
+it MUST be `chmod 600` — it holds secrets, and a looser mode is refused):
+
+```json
+{
+  "slack": {"webhook": "https://hooks.slack.com/services/T000/B000/xxxx"},
+  "email": {
+    "host": "smtp.gmail.com", "port": 587,
+    "user": "you@gmail.com", "password": "abcd efgh ijkl mnop",
+    "to": "you@gmail.com"
+  }
+}
+```
+
+Either block may be left out. Slack is an [Incoming Webhook]
+(https://api.slack.com/messaging/webhooks); email is Gmail SMTP with an
+[app password](https://myaccount.google.com/apppasswords) (2-step
+verification must be on). Then `./smeltr notify-test` sends one message
+through each channel, and `./smeltr restart` picks the file up.
+
+How it stays honest: it is an observer of the same driver and watcher logs
+the Events tab reads, so a message can never disagree with the tab, and the
+decision path never loads it — a dead webhook cannot stall a verdict. The
+first run records a baseline and sends nothing (no replaying history into a
+channel); an unmounted X9 is never a baseline either. A failed send is
+retried with a backoff that doubles from a minute to an hour, for 24 h; a
+half-sent event does not resend the half that landed, even across a restart;
+and pending work survives a dashboard restart. More than ten new events in
+one pass send the ten most important plus one line naming what was dropped.
+
 ## Reaching it from other devices
 
 The launcher binds the dashboard to this machine's LAN IPv4 **and** loopback
@@ -187,9 +236,9 @@ trace in `~/.claude/skills`:
 .claude/skills/4k-hevc-reencoding/     the CRF ladder and the mandatory track passthrough
 .claude/skills/4k-hevc-library-sync/   verified sync back to the NAS
 .claude/skills/4k-hevc-preview-encode/ 5-minute sample before committing to a long run
-.claude/skills/smeltr-commit-format/   `SMLTR:` commit subjects and bullet bodies
-.claude/skills/smeltr-pr-format/       the five required pull request sections
-.claude/skills/smeltr-release/         `npm version` -> tag -> push
+.claude/skills/commit-format/          `SMLTR:` commit subjects and bullet bodies
+.claude/skills/pr-format/              the five required pull request sections
+.claude/skills/release/                `bun run release` -> tag -> push
 ```
 
 The two review agents are **not** project-scoped — they are symlinked into
@@ -207,18 +256,23 @@ ln -s "$PWD/agents/<name>.md" ~/.claude/agents/<name>.md
 ## Tests and CI
 
 ```bash
-bash tests/run-all.sh
+bun install            # dev tooling only (oxlint, oxfmt, husky, lint-staged); refuses npm/yarn/pnpm
+bun run system-check   # format:js:check, lint, every test suite
+bun run verify         # lint, every test suite, build (pre-push / preversion)
+bun run test           # the suites only
 ```
 
-145 Python tests plus three `node` suites executed against functions pulled
+145 Python tests plus three `bun` suites executed against functions pulled
 straight out of the embedded page, and three bash suites against the shipped
-driver and watchdog scripts. Nothing in the suite touches the NAS, the staging
-drive, or the running pipeline.
+driver and watchdog scripts. Nothing in the suite writes to the NAS, the
+staging drive, or the running pipeline; the drift suite reads the X9 (and
+skips without it) and `build` stats the library roots, read-only.
 
 CI (`.github/workflows/ci.yml`) runs all of it on every push to `main` and
-every pull request, behind one required `ci` check: lint (actionlint,
+every pull request, behind one required `ci` check: lint (actionlint — also
+in `bun run lint` locally as `lint:ci`,
 `shellcheck -S error`, ruff), the Python suite across 3.9/3.11/3.12/3.13 on
-Linux and 3.13 on macOS, the node suites, the bash suites **on macOS** (they
+Linux and 3.13 on macOS, the bun suites, the bash suites **on macOS** (they
 test BSD-targeted scripts — `stat -f %m` returns nothing under GNU
 coreutils), and a smoke job that runs the entry points with nothing mounted.
 
@@ -235,7 +289,7 @@ Actions are pinned to commit SHAs rather than tags, the workflow's
 ## Releasing
 
 ```bash
-npm version patch     # 0.1.1 -> 0.1.2
+bun run release patch     # 0.1.1 -> 0.1.2
 ```
 
 That one command bumps `package.json`, commits as `SMLTR: Release v0.1.2`,
@@ -246,4 +300,4 @@ tagged over a syntax error in the decision path. `package.json` exists only to
 drive this and is `"private": true`; the version lives in `package.json` and
 the tag and nowhere else.
 
-See `.claude/skills/smeltr-release/SKILL.md`, including how to undo a bump.
+See `.claude/skills/release/SKILL.md`, including how to undo a bump.

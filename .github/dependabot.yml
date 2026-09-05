@@ -9,6 +9,14 @@ updates:
     schedule:
       interval: monthly
     commit-message:
-      # Matches the smeltr-commit-format skill: SMLTR: <imperative subject>.
+      # Matches the commit-format skill: SMLTR: <imperative subject>.
+      prefix: "SMLTR:"
+    labels: ["ci"]
+  # bun.lock is the only lockfile; there is no package-lock.json to bump.
+  - package-ecosystem: bun
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
       prefix: "SMLTR:"
     labels: ["ci"]

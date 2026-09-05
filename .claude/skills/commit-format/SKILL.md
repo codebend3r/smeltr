@@ -1,5 +1,5 @@
 ---
-name: smeltr-commit-format
+name: commit-format
 description: Use when authoring, amending, squashing, fixup-ing, rebasing, or cherry-picking any git commit message in the smeltr repo (path contains `smeltr`). Covers the `SMLTR:` subject prefix, bullet body, backticked code references, and agent attribution.
 ---
 

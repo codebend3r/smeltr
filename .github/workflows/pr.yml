@@ -1,0 +1,233 @@
+# PR hygiene for smeltr.
+#
+# ci.yml already runs the whole test suite on every pull request; this workflow
+# is the half that only makes sense ON a pull request and has nothing to do
+# with whether the code is green: does the PR itself follow the house rules?
+#
+#   * The title is a commit subject: `SMLTR: ` + capitalized imperative verb,
+#     <=72 chars, no trailing period, no conventional-commits prefix.
+#   * The body has exactly the five sections of .github/pull_request_template.md
+#     in exactly that order, and none of them is empty -- `## Blast radius` is
+#     the one a reviewer needs without opening the diff, because this pipeline
+#     permanently deletes ~70-90 GB originals.
+#   * Every commit in the PR carries the same `SMLTR:` subject rules.
+#   * No AI-authorship trailer anywhere (`Co-Authored-By: Claude`, "Generated
+#     with Claude Code", "AI-assisted"). Naming CLAUDE.md as subject matter is
+#     fine and expected -- the check looks for CREDIT, not the string.
+#
+# The rules are the ones in .claude/skills/pr-format/SKILL.md and
+# .claude/skills/commit-format/SKILL.md; if one of those changes, this
+# changes with it.
+#
+# Design notes:
+#   * `edited` is in the trigger list on purpose: a title or body fix must
+#     re-run the check, or the red X sticks to a PR that is now fine.
+#   * Title and body reach the shell through `env:`, never inline in `run:`.
+#     A PR title is attacker-controlled text; interpolating it into a script
+#     is command injection with extra steps.
+#   * Dependabot PRs are exempt from the BODY check only. Its bodies are its
+#     own format, but its subjects already carry `SMLTR:` (dependabot.yml sets
+#     the prefix) and are held to the same line.
+#   * Read-only. `contents: read` is for the checkout; title and body come from
+#     the event payload, so no API call and no wider permission is needed.
+
+name: 📝 PR
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ------------------------------------------------------------------ title
+  title:
+    name: 🏷️ title is a `SMLTR:` commit subject
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: 🔍 Check the title against the commit-subject rules
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          rc=0
+          fail() { echo "::error title=PR title::$1"; rc=1; }
+          echo "title: $TITLE"
+          echo "length: ${#TITLE}"
+
+          [[ "$TITLE" == "SMLTR: "* ]] \
+            || fail "must start with exactly 'SMLTR: ' (uppercase, no vowel, one space)"
+          [[ "$TITLE" =~ ^SMLTR:\ [A-Z] ]] \
+            || fail "the word after 'SMLTR: ' must be a Capitalized imperative verb"
+          [[ "$TITLE" =~ ^SMLTR:\ (feat|fix|chore|docs|refactor|test|ci|build|perf|style)(\(|:) ]] \
+            && fail "'SMLTR:' REPLACES conventional-commits prefixes -- drop the '${BASH_REMATCH[1]}:'"
+          [[ "$TITLE" =~ \.$ ]] \
+            && fail "no trailing period"
+          (( ${#TITLE} <= 72 )) \
+            || fail "${#TITLE} chars -- the whole subject including the prefix must be <=72"
+          [[ "$TITLE" =~ ^SMLTR:\ (Generated|Co-authored|AI) ]] \
+            && fail "no AI-authorship credit in the title"
+
+          [ $rc -eq 0 ] && echo "✅ title ok"
+          exit $rc
+
+  # ------------------------------------------------------------------- body
+  body:
+    name: 📋 body has the five sections
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: 🧾 Check the sections, their order, and that none is empty
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          rc=0
+          fail() { echo "::error title=PR body::$1"; rc=1; }
+          expected=$'## What changed\n## Why\n## Blast radius\n## Verification\n## Review'
+
+          # Strip the template's <!-- --> guidance so a placeholder comment can
+          # never count as content, then take every heading in order.
+          stripped=$(perl -0pe 's/<!--.*?-->//gs' <<<"$BODY")
+          found=$(grep -E '^## ' <<<"$stripped" || true)
+
+          if [ "$found" != "$expected" ]; then
+            fail "sections must be exactly, in order: What changed · Why · Blast radius · Verification · Review"
+            echo "found:"
+            awk '{ print "  " $0 }' <<<"${found:-<no ## headings at all>}"
+          fi
+
+          # Every section needs at least one real bullet. `- none` is a real
+          # answer; a bare `-` (the template placeholder) is not.
+          empty=$(awk '
+            /^## / { if (h != "" && n == 0) print h; h = $0; n = 0; next }
+            h != "" && /^- [^[:space:]]/ { n++ }
+            END { if (h != "" && n == 0) print h }
+          ' <<<"$stripped")
+          while IFS= read -r h; do
+            [ -n "$h" ] && fail "'$h' is empty -- one bullet minimum ('- none' is a real answer)"
+          done <<<"$empty"
+
+          grep -qE '^\s*- \[[ xX]\]' <<<"$stripped" \
+            && fail "no checkbox lists -- Verification is what was run, not what is planned"
+
+          grep -qiE 'Generated with \[?Claude Code|Co-Authored-By:.*(Claude|Anthropic)|AI-assisted|drafted with (Claude|an AI)' <<<"$stripped" \
+            && fail "no AI-authorship credit anywhere in the body"
+
+          [ $rc -eq 0 ] && echo "✅ body ok"
+          exit $rc
+
+  # ---------------------------------------------------------------- commits
+  commits:
+    name: 🧾 every commit is a `SMLTR:` subject
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: 📥 Check out the repo (full history for the PR range)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: 🔎 Check every non-merge commit in the PR range
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          rc=0
+          mapfile -t shas < <(git rev-list --no-merges "$BASE..$HEAD")
+          echo "${#shas[@]} commit(s) in $BASE..$HEAD"
+          for sha in "${shas[@]}"; do
+            subject=$(git log -1 --format=%s "$sha")
+            bodytxt=$(git log -1 --format=%b "$sha")
+            short=${sha:0:7}
+            fail() { echo "::error title=commit $short::$1 -- '$subject'"; rc=1; }
+            echo "  $short $subject"
+
+            [[ "$subject" =~ ^SMLTR:\ [A-Z] ]] \
+              || fail "subject must start with 'SMLTR: ' + Capitalized verb"
+            [[ "$subject" =~ \.$ ]] \
+              && fail "no trailing period on the subject"
+            (( ${#subject} <= 72 )) \
+              || fail "subject is ${#subject} chars, max 72"
+            [[ "$subject" =~ ^SMLTR:\ (feat|fix|chore|docs|refactor|test|ci|build|perf|style)(\(|:) ]] \
+              && fail "'SMLTR:' replaces conventional-commits prefixes"
+            grep -qiE 'Generated with \[?Claude Code|Co-Authored-By:.*(Claude|Anthropic)|AI-assisted' <<<"$bodytxt" \
+              && fail "AI-authorship trailer in the commit body"
+            grep -qE '^\*' <<<"$bodytxt" \
+              && fail "bullets are '-', never '*'"
+          done
+
+          [ $rc -eq 0 ] && echo "✅ ${#shas[@]} commit(s) ok"
+          exit $rc
+
+  # ------------------------------------------------------------ blast radius
+  # Annotations only -- this job never fails. It points a reviewer at the
+  # files whose change has consequences OUTSIDE the repo, which the diff view
+  # does not say: pipeline/ is the decision path (pause the driver before it
+  # is deployed), and staging/*.sh are mirrors of the live X9 scripts (edit the
+  # mirror alone and test_staging_in_sync.sh goes red until the drive is
+  # updated with ops/deploy-staging.sh).
+  blast-radius:
+    name: 💥 blast-radius map (annotations only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: 📥 Check out the repo (full history for the PR range)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: 🗺️ Annotate the files that reach the live pipeline
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          mapfile -t files < <(git diff --name-only "$BASE...$HEAD")
+          echo "${#files[@]} file(s) changed"
+          printf '  %s\n' "${files[@]}"
+          for f in "${files[@]}"; do
+            case "$f" in
+              pipeline/*)
+                echo "::warning file=$f,title=🚨 decision path::$f decides what the driver encodes, judges, records or deletes -- pause the driver before deploying; PR body must state the blast radius" ;;
+              staging/*.sh)
+                echo "::warning file=$f,title=🪞 live-script mirror::$f mirrors a script on the X9 -- the drive copy is what runs; deploy with ops/deploy-staging.sh or test_staging_in_sync.sh stays red" ;;
+              smeltr)
+                echo "::notice file=$f,title=🚀 launcher::$f is the only interface .autopilot.sh calls (next · verdict · record · crf)" ;;
+              ops/watchdog.sh)
+                echo "::notice file=$f,title=🐕 watchdog::$f relaunches the driver -- a running --supervise loop must be restarted to pick this up" ;;
+              dashboard/server.py)
+                echo "::notice file=$f,title=🖥️ server::$f spawns and kills encodes and stage pulls -- ./smeltr restart to pick it up; never imported by the decision path" ;;
+            esac
+          done
+          echo "✅ annotated"
+
+  # A single check for the whole workflow, same shape as ci.yml's `✅ ci`.
+  pr:
+    name: ✅ pr
+    if: always()
+    needs: [title, body, commits, blast-radius]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: ⚖️ Verdict — every job succeeded or was deliberately skipped
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          # `skipped` is the body job standing down for Dependabot, which is
+          # by design. Anything else that is not "success" fails the check.
+          rc=0
+          for r in $RESULTS; do
+            echo "  $r"
+            case "$r" in success|skipped) ;; *) rc=1 ;; esac
+          done
+          [ $rc -eq 0 ] || echo "one or more PR checks did not succeed"
+          exit $rc
