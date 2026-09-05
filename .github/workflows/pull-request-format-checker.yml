@@ -17,6 +17,14 @@
 # changes with it.
 #
 # Design notes:
+#   * `pull_request` is the ONLY trigger, and that is not a preference. Every
+#     job here reads `github.event.pull_request` -- the title, the body, and
+#     the base/head shas the commit range is built from. On a `push` or a
+#     `workflow_dispatch` that payload is absent, so the title check sees an
+#     empty string and fails, the body check finds no headings and fails, and
+#     the `pr` verdict goes red on a branch that has no PR to be wrong about.
+#     A green X on `main` for a rule that only describes pull requests is a
+#     broken check, not a stricter one.
 #   * `edited` is in the trigger list on purpose: a title or body fix must
 #     re-run the check, or the red X sticks to a PR that is now fine.
 #   * Title and body reach the shell through `env:`, never inline in `run:`.
@@ -32,8 +40,7 @@ name: 📝 Pull request format checker
 
 on:
   pull_request:
-  push:
-  workflow_dispatch:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
