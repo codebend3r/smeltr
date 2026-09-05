@@ -766,11 +766,27 @@ behind one required `ci` check:
 
 | Job | Runner | What it proves |
 |---|---|---|
-| `lint` | ubuntu | actionlint, `shellcheck -S error`, ruff (`F, E9, B, PLE`) |
-| `python` | ubuntu 3.9/3.11/3.12/3.13 + macOS 3.13 | the whole `unittest` suite |
-| `browser-logic` | ubuntu | the six `bun` suites out of `web/app.js` |
-| `shell` | **macOS** | the bash suites, with `ffmpeg` installed |
-| `smoke` | ubuntu | the entry points with NOTHING mounted |
+| `lint` | ubuntu | `bun run lint` unrolled — one step per member (`lint:js` … `lint:page`) |
+| `python` | ubuntu 3.9/3.11/3.12/3.13 + macOS 3.13 | `lint:py:syntax` + `test:py` |
+| `browser-logic` | ubuntu | one step per `test:js:*` script |
+| `shell` | **macOS** | one step per `test:sh:*` script, with `ffmpeg` installed |
+| `smoke` | ubuntu | `bun run smoke` unrolled — the entry points with NOTHING mounted |
+
+**Every check is `bun run <script>` — nothing is called directly (2026-09-05).**
+A step that ran `shellcheck …` or `python -m unittest …` by hand was a second
+rendition of the gate the hooks run, and two renditions drift the moment one
+is edited alone (`test_crf_picker.js` was in the local runner for four days
+before CI ran it). The lint job is `bun run lint`'s sequence unrolled one
+member per step, in the same order, so the Actions UI names the tool that
+went red; the test jobs unroll `bun run test` the same way. The only commands
+called directly are the ones that INSTALL a tool the scripts need (`bun
+install`, `pip install uv`, `go install actionlint`, `brew install ffmpeg`).
+`bun run smoke` (`smoke:report` · `smoke:next` · `build`, backed by
+`tests/smoke_offline.sh`) is deliberately NOT part of `bun run test`: on the
+Mac the roots are mounted and its assertions are false by construction.
+`test_repo_invariants.py::CiRunsThroughBun` pins all of it — every `run:` is
+`bun run` or a tool install, every member of `lint` and every leaf `test:*`
+script is a step somewhere, and no step is a bare `bun run lint`/`test`.
 
 Three choices worth not undoing:
 

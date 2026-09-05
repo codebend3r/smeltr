@@ -502,6 +502,114 @@ class HooksCoverTheGaps(unittest.TestCase):
         self.assertNotIn("rhysd/actionlint@sha256", ci)
 
 
+class CiRunsThroughBun(unittest.TestCase):
+    """Every check in ci.yml is `bun run <script>`, one script per step.
+
+    A step that ran `shellcheck ...` or `python -m unittest ...` by hand was a
+    SECOND rendition of the gate the hooks run, and two renditions drift the
+    moment one is edited alone -- test_crf_picker.js was in the local runner
+    for four days before CI ran it. So: every `run:` in a checking job is
+    `bun run <script>` naming a script that exists, every member of `lint`
+    and every leaf `test:*` script is a step somewhere, and the only commands
+    called directly are the ones that INSTALL a tool the scripts need.
+    """
+
+    SETUP = (
+        "bun install --frozen-lockfile --ignore-scripts",
+        "pip install --quiet uv",
+        "brew install ffmpeg",
+        "go install github.com/rhysd/actionlint/cmd/actionlint@",
+    )
+
+    def scripts(self):
+        return json.loads(read("package.json"))["scripts"]
+
+    def runs(self):
+        """(job id, run text) for every `run:` step, block runs joined."""
+        out, job, lines = [], None, read(".github/workflows/ci.yml").splitlines()
+        i = lines.index("jobs:")  # `defaults: run:` above it is not a job
+        while i < len(lines):
+            line = lines[i]
+            m = re.match(r"^  ([a-z-]+):\s*$", line)
+            if m:
+                job = m.group(1)
+            m = re.match(r"^(\s+)run:\s*(.*)$", line)
+            if m and job:
+                indent, text = m.group(1), m.group(2).strip()
+                if text == "|":
+                    block = []
+                    i += 1
+                    while i < len(lines) and (
+                        not lines[i].strip() or lines[i].startswith(indent + " ")
+                    ):
+                        block.append(lines[i].strip())
+                        i += 1
+                    text = "\n".join(b for b in block if b and not b.startswith("#"))
+                    out.append((job, text))
+                    continue
+                out.append((job, text))
+            i += 1
+        self.assertTrue(out)
+        return out
+
+    def bun_run_steps(self):
+        return {
+            r.split()[2]
+            for j, r in self.runs()
+            if j != "ci" and r.startswith("bun run ")
+        }
+
+    def test_every_checking_step_is_bun_run_or_a_tool_install(self):
+        scripts = self.scripts()
+        for job, run in self.runs():
+            if job == "ci":  # the verdict loop over needs.*.result
+                continue
+            with self.subTest(job=job, run=run.splitlines()[0]):
+                if run.startswith("bun run "):
+                    parts = run.split()
+                    self.assertEqual(len(parts), 3, run)
+                    self.assertIn(parts[2], scripts, "no such package.json script")
+                else:
+                    self.assertTrue(
+                        any(run.startswith(s) for s in self.SETUP),
+                        f"called directly, not through bun: {run}",
+                    )
+
+    def test_every_member_of_lint_is_its_own_step(self):
+        members = self.scripts()["lint"].split()[3:]  # after `bun run --sequential`
+        self.assertGreater(len(members), 5)
+        steps = self.bun_run_steps()
+        for name in members:
+            with self.subTest(script=name):
+                self.assertIn(name, steps)
+        self.assertNotIn("lint", steps, "unrolled: never one `bun run lint` step")
+
+    def test_every_leaf_test_script_is_its_own_step(self):
+        leaves = [k for k in self.scripts() if k.startswith("test:")]
+        self.assertIn("test:py", leaves)
+        steps = self.bun_run_steps()
+        for name in leaves:
+            with self.subTest(script=name):
+                self.assertIn(name, steps)
+        self.assertNotIn("test", steps, "unrolled: never one `bun run test` step")
+
+    def test_smoke_is_unrolled_too(self):
+        members = self.scripts()["smoke"].split()[3:]
+        self.assertEqual(members, ["smoke:report", "smoke:next", "build"])
+        steps = self.bun_run_steps()
+        for name in members:
+            with self.subTest(script=name):
+                self.assertIn(name, steps)
+        # smoke_offline.sh is what those two scripts run, and it is NOT a
+        # `test:sh:*` suite: on the Mac the roots are mounted and its
+        # assertions are false by construction.
+        self.assertIn("tests/smoke_offline.sh", self.scripts()["smoke:report"])
+        self.assertNotIn(
+            "smoke_offline",
+            " ".join(v for k, v in self.scripts().items() if k.startswith("test:")),
+        )
+
+
 class LintStagedMirrorsLint(unittest.TestCase):
     """pre-commit runs lint-staged, whose per-glob commands are a SECOND
     rendition of the `lint:*` scripts. Two renditions of one gate drift the

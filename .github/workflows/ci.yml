@@ -11,6 +11,17 @@
 # auth token has crept into the index.
 #
 # Design notes worth keeping:
+#   * EVERY check is `bun run <script>` -- one package.json script per step,
+#     nothing called directly. The lint job is `bun run lint` unrolled one
+#     member per step, the test jobs are `bun run test` unrolled the same way,
+#     and the smoke job is `bun run smoke`. A step that ran `shellcheck ...` or
+#     `python -m unittest ...` by hand was a SECOND rendition of the gate the
+#     hooks run, and two renditions drift the moment one is edited alone
+#     (test_crf_picker.js was in the local runner for four days before it was
+#     here). Unrolled rather than one `bun run lint` step so the Actions UI
+#     names the check that went red. `test_repo_invariants.py::CiRunsThroughBun`
+#     pins both: every run step is `bun run`, and every member of `lint` and
+#     every `test:*` script is a step somewhere.
 #   * Every action is pinned to a full commit SHA, not a tag. A tag is mutable;
 #     `@v4` is a promise from someone else that today's v4 is yesterday's.
 #     Dependabot (.github/dependabot.yml) proposes the bumps.
@@ -58,6 +69,10 @@ defaults:
 
 jobs:
   # ---------------------------------------------------------------- static
+  # `bun run lint` is `bun run --sequential` over the nine `lint:*` /
+  # `format:js:check` scripts. Each one is its own step here, in the same
+  # order, so a red step names the tool. The hook runs the same scripts over
+  # the staged files (`bun run lint:staged`).
   lint:
     name: 🧹 lint
     runs-on: ubuntu-24.04
@@ -65,6 +80,28 @@ jobs:
     steps:
       - name: 📥 Check out the repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # bun is the ONLY JS runtime and task runner here; there is no node and
+      # no npm on this runner. --ignore-scripts skips husky's `prepare` (and
+      # the preinstall guard, which only exists to turn npm/yarn/pnpm away):
+      # git hooks have no business on a runner.
+      - name: 🥟 Set up bun (version from package.json `packageManager`)
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+
+      - name: 📦 bun install (frozen lockfile, no lifecycle scripts, no husky)
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: 🐍 Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # ruff.toml is the only ruff config; the version is pinned by
+      # `uvx ruff@<ver>` in package.json, so the runner only needs `uvx`.
+      - name: ⚡ Install uv (provides `uvx ruff@<pinned>`)
+        run: pip install --quiet uv
 
       # actionlint is part of `bun run lint` (lint:ci) since 2026-09-05 -- the
       # hook and the runner check the workflows the same way -- so the binary
@@ -76,51 +113,39 @@ jobs:
           go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
-      - name: 🐚 shellcheck (errors are blocking)
-        run: |
-          shellcheck --version
-          mapfile -t scripts < <(git ls-files '*.sh'; echo smeltr)
-          printf 'checking: %s\n' "${scripts[@]}"
-          shellcheck -S error "${scripts[@]}"
+      - name: 🔍 lint:js — oxlint --deny-warnings
+        run: bun run lint:js
 
-      - name: 💅 shellcheck (warnings and style, advisory only)
-        continue-on-error: true
-        run: |
-          mapfile -t scripts < <(git ls-files '*.sh'; echo smeltr)
-          shellcheck -S style "${scripts[@]}"
+      - name: 🔤 lint:js:syntax — bun build --no-bundle every web/*.js
+        run: bun run lint:js:syntax
 
-      - name: 🐍 Set up Python 3.12
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
-      # `bun run lint` is the SAME command the pre-commit hook runs: oxlint,
-      # bun build --no-bundle (syntax), ruff (F, E9, B, PLE -- ruff.toml is the
-      # only ruff config; the version is pinned by `uvx ruff@<ver>` in
-      # package.json), compileall, shellcheck, actionlint, oxfmt --check, and
-      # the page-assembly check. bun is the ONLY JS runtime and task runner here;
-      # there is no node and no npm on this runner. --ignore-scripts skips
-      # husky's `prepare` (and the preinstall guard, which only exists to turn
-      # npm/yarn/pnpm away): git hooks have no business on a runner.
-      - name: 🥟 Set up bun (version from package.json `packageManager`)
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version-file: package.json
-
-      - name: 📦 bun install (frozen lockfile, no lifecycle scripts, no husky)
-        run: bun install --frozen-lockfile --ignore-scripts
-
-      - name: ⚡ Install uv (provides `uvx ruff@<pinned>`)
-        run: pip install --quiet uv
-
-      - name: 🔍 bun run lint (the same gate as the pre-commit hook)
+      - name: 🐍 lint:py — ruff (F, E9, B, PLE)
         env:
           RUFF_OUTPUT_FORMAT: github
-        run: bun run lint
+        run: bun run lint:py
+
+      - name: 🧱 lint:py:syntax — every module compiles
+        run: bun run lint:py:syntax
+
+      - name: 🐚 lint:sh — shellcheck -S warning (smeltr, hooks, every .sh)
+        run: bun run lint:sh
+
+      - name: 🪞 lint:sh:staging — shellcheck (errors block, the rest is advisory)
+        run: bun run lint:sh:staging
+
+      - name: 🎬 lint:ci — actionlint over .github/workflows
+        run: bun run lint:ci
+
+      - name: 💅 format:js:check — oxfmt --check
+        run: bun run format:js:check
+
+      - name: 🖼️ lint:page — the page assembles with no placeholder left
+        run: bun run lint:page
 
   # ---------------------------------------------------------------- python
   # The floor matters as much as the ceiling here: 3.9 is what stock macOS
-  # ships, and `smeltr` will happily run on it.
+  # ships, and `smeltr` will happily run on it. `test:py` is the first member
+  # of `bun run test`; the shell and bun halves have their own jobs below.
   python:
     name: 🐍 python ${{ matrix.python }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -144,23 +169,29 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: 🧱 Every module compiles
-        run: python -m compileall -q pipeline dashboard tools
+      # No `bun install`: the scripts below are shell + python. bun is here
+      # only as the task runner, so the step is the same command a person
+      # types locally.
+      - name: 🥟 Set up bun (version from package.json `packageManager`)
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+
+      - name: 🧱 lint:py:syntax — every module compiles on this Python
+        run: bun run lint:py:syntax
 
       # There is no ledger.jsonl on a fresh clone (it is gitignored -- the driver
       # appends to it every cycle, so a tracked copy conflicts constantly). The
       # calibration suite falls back to tests/fixtures/ledger-calibration.jsonl,
       # the 22 rows the thresholds were reasoned about.
-      - name: 🧪 Unit tests (verdict calibration, layering, HTTP gates, …)
-        run: python -m unittest discover -s tests -v
+      - name: 🧪 test:py — the unittest suite (calibration, layering, gates, …)
+        run: bun run test:py
 
   # ------------------------------------------------------------------- bun
   # The projection strip, the repaint key, the pause toggle, the CRF picker and
   # the sysmon charts are pulled straight out of web/app.js and executed under
-  # bun -- the runtime every `test:js:*` script uses. No install step: the
-  # suites have no dependencies. Keep this list in step with the `test:js:*`
-  # scripts in package.json -- test_crf_picker.js was in `bun test`'s
-  # predecessor for four days before it was here.
+  # bun. No install step: the suites have no dependencies. One step per
+  # `test:js:*` script -- the invariant suite fails if a script has no step.
   browser-logic:
     name: 🌐 browser logic (bun)
     runs-on: ubuntu-24.04
@@ -174,32 +205,27 @@ jobs:
         with:
           bun-version-file: package.json
 
-      # web/*.js are real files now: a plain parse, no extraction needed.
-      # `bun build --no-bundle` parses without bundling and fails on a syntax
-      # error -- the same check as the `lint:js:syntax` script.
-      - name: 🔤 bun build --no-bundle every web/*.js
-        run: for f in web/*.js; do bun build --no-bundle "$f" --outfile /dev/null >/dev/null; done
+      - name: 🎚️ test:js:crf — CRF picker, the menu IS the ladder
+        run: bun run test:js:crf
 
-      - name: 📐 Projection strip (`test_projection_ui.js`)
-        run: bun tests/test_projection_ui.js
+      - name: ⏯️ test:js:pause — pause toggle is ONE native button
+        run: bun run test:js:pause
 
-      - name: 🔑 Repaint key — shape, never a live number (`test_repaint_key.js`)
-        run: bun tests/test_repaint_key.js
+      - name: 📐 test:js:projection — projection strip
+        run: bun run test:js:projection
 
-      - name: ⏯️ Pause toggle is ONE native button (`test_pause_toggle.js`)
-        run: bun tests/test_pause_toggle.js
+      - name: 🔑 test:js:repaint — repaint key carries shape, never a live number
+        run: bun run test:js:repaint
 
-      - name: 🎚️ CRF picker — the menu IS the ladder (`test_crf_picker.js`)
-        run: bun tests/test_crf_picker.js
+      - name: 🖼️ test:js:sysmon-render — drawMon() against a recording 2D context
+        run: bun run test:js:sysmon-render
 
-      - name: 📊 Sysmon chart logic (`test_sysmon_ui.js`)
-        run: bun tests/test_sysmon_ui.js
-
-      - name: 🖼️ Sysmon render — recording 2D context (`test_sysmon_render.js`)
-        run: bun tests/test_sysmon_render.js
+      - name: 📊 test:js:sysmon-ui — sysmon chart logic
+        run: bun run test:js:sysmon-ui
 
   # ----------------------------------------------------------------- shell
-  # macOS on purpose: these test BSD-targeted scripts. See the header.
+  # macOS on purpose: these test BSD-targeted scripts. See the header. One
+  # step per `test:sh:*` script.
   shell:
     name: 🐚 shell suites (macOS)
     runs-on: macos-15
@@ -208,19 +234,10 @@ jobs:
       - name: 📥 Check out the repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # The concurrency guards that decide whether a folder is judged and
-      # RECORDED. core.record() appends with no duplicate guard, so a folder
-      # judged twice writes a second ledger row and double-counts the reclaim.
-      # Run against the tracked copy: the live script is on a drive no runner
-      # can see, and the drift suite below is what keeps the two identical.
-      - name: 🔒 Autopilot concurrency guards
-        run: bash tests/test_autopilot_helpers.sh staging/autopilot.sh
-
-      # Whether `stop` can SEE the running dashboard. When it cannot, `start`
-      # binds a SECOND server to a second port with a second token. Needs no
-      # drive and no network -- it shadows ps/pgrep and fakes the processes.
-      - name: 🔎 Launcher server discovery
-        run: bash tests/test_launcher_pids.sh
+      - name: 🥟 Set up bun (version from package.json `packageManager`)
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
 
       # ffprobe is what makes the corpse test meaningful -- a truncated encode
       # that probes "fine" and merely runs short is one of the two corpse shapes
@@ -228,21 +245,38 @@ jobs:
       - name: 🍺 Install ffmpeg (ffprobe for the corpse test)
         run: brew install ffmpeg
 
-      - name: 🐕 Watchdog corpse/finished boundary
-        run: bash tests/test_watchdog_triage.sh ops/watchdog.sh
+      # The concurrency guards that decide whether a folder is judged and
+      # RECORDED. core.record() appends with no duplicate guard, so a folder
+      # judged twice writes a second ledger row and double-counts the reclaim.
+      # With no X9 on the runner the suite falls back to the tracked
+      # staging/autopilot.sh; the drift suite below is what keeps the two
+      # identical.
+      - name: 🔒 test:sh:autopilot — autopilot concurrency guards
+        run: bun run test:sh:autopilot
 
       # Skips cleanly here (the staging drive is not mounted on a runner). Kept
       # in CI so the skip is visible rather than assumed: if it ever starts
       # FAILING instead of skipping, the reason is worth seeing.
-      - name: 🪞 Staging drift (skips — no X9 on a runner)
-        run: bash tests/test_staging_in_sync.sh
+      - name: 🪞 test:sh:drift — staging drift (skips, no X9 on a runner)
+        run: bun run test:sh:drift
+
+      # Whether `stop` can SEE the running dashboard. When it cannot, `start`
+      # binds a SECOND server to a second port with a second token. Needs no
+      # drive and no network -- it shadows ps/pgrep and fakes the processes.
+      - name: 🔎 test:sh:launcher — launcher server discovery
+        run: bun run test:sh:launcher
+
+      - name: 🐕 test:sh:watchdog — watchdog corpse/finished boundary
+        run: bun run test:sh:watchdog
 
   # ----------------------------------------------------------------- smoke
-  # Everything above tests parts. This runs the actual entry points in the
-  # condition CI is inherently in -- no NAS, no staging drive, no ledger --
-  # because "an unmounted NAS must not look like a finished job" is a
-  # non-negotiable, and the code path that renders it is only reachable when
-  # the roots really are gone.
+  # Everything above tests parts. `bun run smoke` runs the actual entry points
+  # in the condition CI is inherently in -- no NAS, no staging drive, no
+  # ledger -- because "an unmounted NAS must not look like a finished job" is
+  # a non-negotiable, and the code path that renders it is only reachable when
+  # the roots really are gone. It is NOT part of `bun run test`: on the Mac
+  # that runs the job the roots are mounted and these assertions are false by
+  # construction.
   smoke:
     name: 💨 smoke (nothing mounted)
     runs-on: ubuntu-24.04
@@ -256,56 +290,32 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: 📴 Report renders with the library offline
-        env:
-          SMELTR_DIR: ${{ runner.temp }}/smeltr
-        run: |
-          mkdir -p "$SMELTR_DIR"
-          out=$(python dashboard/report.py)
-          printf '%s\n' "$out"
-          # The whole point: it must say the library is incomplete, and must not
-          # present an empty queue as a finished job.
-          grep -q 'LIBRARY INCOMPLETE' <<<"$out"
-          grep -q 'PARTIAL' <<<"$out"
+      - name: 🥟 Set up bun (version from package.json `packageManager`)
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
 
-      - name: 🙈 next_title never claims the stop condition while blind
+      # SMELTR_DIR is an EMPTY scratch dir, per step (`runner` is not a
+      # context a job-level env: may read): no ledger, no overrides, no flag.
+      - name: 📴 smoke:report — the report says LIBRARY INCOMPLETE and PARTIAL
         env:
           SMELTR_DIR: ${{ runner.temp }}/smeltr
-        run: |
-          mkdir -p "$SMELTR_DIR"
-          set +e
-          python pipeline/next_title.py 70 >/dev/null 2>err.txt
-          rc=$?
-          set -e
-          cat err.txt
-          # 1 is the stop condition and would tell the driver to EXIT. With the
-          # roots unreachable the only honest answers are 2 (not mounted) or
-          # 3 (wait). Anything else, and a blind machine ends the job.
-          if [ "$rc" = "1" ] || [ "$rc" = "0" ]; then
-            echo "FAIL: exit $rc with no library mounted -- a blind run must never look finished"
-            exit 1
-          fi
-          echo "ok: exit $rc"
+        run: bun run smoke:report
 
-      - name: 🖥️ The dashboard imports and builds a page
+      - name: 🙈 smoke:next — next_title never claims the stop condition while blind
         env:
           SMELTR_DIR: ${{ runner.temp }}/smeltr
-        run: |
-          mkdir -p "$SMELTR_DIR"
-          python - <<'PY'
-          from dashboard import server
-          # Never bind a socket in CI; just prove the page and the state payload
-          # can be built. _PAGE is assembled from web/index.html + app.css +
-          # theme.js + app.js at import, so this is also the check that every
-          # placeholder still resolves -- a missing asset would otherwise render
-          # as a blank screen behind a working HTTP 200.
-          page = server._PAGE
-          assert "__APP_JS__" not in page and "__APP_CSS__" not in page, "asset left unsubstituted"
-          assert page.count('nonce="__NONCE__"') == 3, "CSP nonces changed"
-          state = server.build_state()
-          assert "summary" in state and "queue" in state, sorted(state)
-          print("page %d bytes, state keys: %s" % (len(page), ", ".join(sorted(state))))
-          PY
+        run: bun run smoke:next
+
+      # Never binds a socket: proves the page and the state payload can be
+      # built. _PAGE is assembled from web/* at import, so this is also the
+      # check that every placeholder resolves and the three CSP nonces are
+      # still there -- a missing asset would otherwise render as a blank
+      # screen behind a working HTTP 200.
+      - name: 🖥️ build — the dashboard imports and builds a page
+        env:
+          SMELTR_DIR: ${{ runner.temp }}/smeltr
+        run: bun run build
 
   # A single required check for branch protection. Adding a job above does not
   # mean remembering to add it to the protected-branch list. A required-check
@@ -319,11 +329,13 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: ⚖️ Verdict — every job must be exactly "success"
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
           # Every result must be exactly "success". A substring test would pass
           # on "success failure" -- the string still contains "success".
           rc=0
-          for r in ${{ join(needs.*.result, ' ') }}; do
+          for r in $RESULTS; do
             echo "  $r"
             [ "$r" = success ] || rc=1
           done

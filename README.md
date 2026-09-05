@@ -269,12 +269,14 @@ staging drive, or the running pipeline; the drift suite reads the X9 (and
 skips without it) and `build` stats the library roots, read-only.
 
 CI (`.github/workflows/ci.yml`) runs all of it on every push to `main` and
-every pull request, behind one required `ci` check: lint (actionlint — also
-in `bun run lint` locally as `lint:ci`,
-`shellcheck -S error`, ruff), the Python suite across 3.9/3.11/3.12/3.13 on
-Linux and 3.13 on macOS, the bun suites, the bash suites **on macOS** (they
-test BSD-targeted scripts — `stat -f %m` returns nothing under GNU
-coreutils), and a smoke job that runs the entry points with nothing mounted.
+every pull request, behind one required `ci` check. Every step is `bun run
+<script>` — the same scripts the hooks run, nothing called directly: `bun run
+lint` unrolled one member per step (oxlint, syntax, ruff, compileall,
+shellcheck, actionlint, oxfmt, page assembly), the Python suite across
+3.9/3.11/3.12/3.13 on Linux and 3.13 on macOS, one step per `test:js:*`
+suite, one step per `test:sh:*` suite **on macOS** (they test BSD-targeted
+scripts — `stat -f %m` returns nothing under GNU coreutils), and `bun run
+smoke`, which runs the entry points with nothing mounted.
 
 That last job is the one worth explaining. "An unmounted NAS must not look
 like a finished job" is a safety rule, and a runner with no `/Volumes` is the
