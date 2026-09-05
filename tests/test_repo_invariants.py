@@ -421,7 +421,11 @@ class BunIsTheOnlyRunner(unittest.TestCase):
                     self.assertIsNone(self.NPM_ISH.search(code), f"{rel}:{n}: {line}")
                     self.assertIsNone(self.NODE_CALL.search(code), f"{rel}:{n}: {line}")
         self.assertNotIn("setup-node", read(".github/workflows/ci.yml"))
-        self.assertIn("package-ecosystem: bun", read(".github/dependabot.yml"))
+        # No `bun` ecosystem either, for now: Dependabot's bun updater cannot
+        # parse the lockfileVersion 2 that bun 1.4 writes, and the entry made
+        # every update run fail (dependabot/dependabot-core#16026). The guard
+        # above already refuses `npm`; this pins that the reason is on record.
+        self.assertIn("dependabot-core#16026", read(".github/dependabot.yml"))
 
 
 # ------------------------------------------------------------------- hooks

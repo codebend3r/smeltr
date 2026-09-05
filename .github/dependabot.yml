@@ -12,11 +12,9 @@ updates:
       # Matches the commit-format skill: SMLTR: <imperative subject>.
       prefix: "SMLTR:"
     labels: ["ci"]
-  # bun.lock is the only lockfile; there is no package-lock.json to bump.
-  - package-ecosystem: bun
-    directory: "/"
-    schedule:
-      interval: monthly
-    commit-message:
-      prefix: "SMLTR:"
-    labels: ["ci"]
+  # NO `bun` ecosystem yet (removed 2026-09-05). bun 1.4 writes bun.lock as
+  # lockfileVersion 2 and Dependabot's bun updater parses only version 1, so
+  # every run failed with "Unsupported bun.lock 'lockfileVersion' 2" before
+  # reading a single dependency (dependabot/dependabot-core#16026; the fix is
+  # PR #16071). Re-add it once that ships. Never `npm` -- there is no
+  # package-lock.json and the preinstall guard refuses npm anyway.
