@@ -606,6 +606,18 @@ body:not(.booted) #liveWrap .card {
 .card.collapsed .live-top > .chip:last-child {
   display: inline-block;
 }
+/* The running encode's fold keeps its progress bar: a folded live card
+   that showed only a title and a verdict chip read as "nothing moving".
+   Same persistent `.bar > i` node, so the width transition still runs;
+   the row just sits tighter under the title with a smaller figure. */
+.card.collapsed > .barrow {
+  display: flex;
+  margin: 8px 0 0;
+  gap: 12px;
+}
+.card.collapsed > .barrow .pctbig {
+  font-size: 15px;
+}
 #sysmon.collapsed > * {
   display: none;
 }
@@ -1769,6 +1781,35 @@ footer {
 #monZoom:focus-visible {
   outline: 2px solid var(--cool);
   outline-offset: 2px;
+}
+/* Folded, the head keeps ONE thing beside the title: a CPU sparkline over
+   the slider's window and the latest reading. The sampling note, the
+   history stamp and the slider are expanded-only -- a control for a chart
+   that is not on screen is noise, and the note describes shading the
+   sparkline does not draw. */
+.monmini {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.monmini canvas {
+  display: block;
+  width: 140px;
+  height: 20px;
+}
+.monmini b {
+  color: var(--ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+#sysmon.collapsed .monmini {
+  display: inline-flex;
+}
+#sysmon.collapsed .monnote,
+#sysmon.collapsed .monzoom {
+  display: none;
 }
 .monchart {
   margin-top: 10px;
