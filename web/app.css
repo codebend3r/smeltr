@@ -1253,6 +1253,15 @@ tr.xrow .minibar {
   color: var(--ink-2);
   border-style: dashed;
 }
+/* SOLID and red on the Errors tab, beside a dashed "skipped": the two states
+   sit in one column there and must not read as two shades of the same thing.
+   A skip is a preference and changes nothing on disk (dashed, like every
+   other intent mark on this page); an error is a fact the pipeline recorded
+   and a file it wrote. */
+.mark.err {
+  color: var(--bad);
+  border-color: var(--bad-bd);
+}
 /* A pending pull is INTENT, not arrival: dashed, like "skipped", because
    nothing about the title has changed on disk yet. Solid marks on this page
    all assert a fact about the file. */
@@ -1446,6 +1455,32 @@ tr:focus-within .rowacts,
 .err-emoji {
   margin-right: 6px;
   flex: none;
+}
+/* ---- the Errors tab. An errored row is NOT faded the way a skipped one is:
+   .rowskip dims to 0.45 because a skip is settled and needs no attention,
+   and the same treatment on an error would quietly retire the one row on the
+   page that still owes a human a decision. ---- */
+.rowerr td {
+  opacity: 1;
+}
+/* The marker's own first line. Wrapped rather than truncated — it carries the
+   failure and its timestamp, and an ellipsis in the middle of "2 HEVC decoder
+   errors in the source" hides the only part worth reading. */
+.err-note {
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.45;
+  max-width: 42ch;
+  white-space: normal;
+}
+.rowskip .err-note {
+  color: var(--ink-3);
+}
+/* The tab itself goes red only while something is actually ERRORED. A tab
+   counting three hand-skips is information; a red one is an alarm, and an
+   alarm that is on for a preference is an alarm nobody reads. */
+.tab.hasErr {
+  color: var(--bad);
 }
 /* Queue control. The grip drags, the button skips; both write only the
    overrides file on the server, nothing else. */

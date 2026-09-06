@@ -451,7 +451,7 @@ def _arrivals() -> dict:
         except OSError:
             continue
         partials = [n for n in names if n.endswith(".partial")]
-        full = [n for n in names if n.endswith((".mkv", ".mp4", ".m2ts"))]
+        full = [n for n in names if n.endswith(core.SOURCE_EXTS)]
         if partials and not full:
             found[folder.lower()] = os.path.join(stage, partials[0])
     try:
@@ -610,11 +610,26 @@ def build_state() -> dict:
         # One pgrep serves both fields: can_start and driver_alive read the
         # same processes, and two calls could disagree within one payload.
         driver = bool(_driver_pids())
+        # THE QUEUE TAB IS LIVE WORK ONLY (2026-09-06). Everything set aside
+        # -- errored out by the pipeline, or skipped by hand -- lifts onto the
+        # Errors tab. Rows used to stay in place, greyed, so a skip could
+        # never read as a title that had silently vanished; a tab that names
+        # them, counts them and says WHY says that far more loudly, and it
+        # keeps a dead title from sitting between two live ones in a column
+        # that now claims to be a running order.
+        #
+        # The SPLIT IS PRESENTATION ONLY. summary() and _mark_ready() above
+        # both ran against the whole list, so the skipped-title totals and
+        # the driver's own pick are computed from exactly what they always
+        # were -- core.queue() still returns every row.
+        errors = [r for r in q if r.get("error") or r.get("skipped")]
+        active = [r for r in q if not (r.get("error") or r.get("skipped"))]
         payload = {
             "summary": summary,
             "live": live,
             "ledger": hist,
-            "queue": q,
+            "queue": active,
+            "errors": errors,
             "transfers": _transfers(),
             "syncing": _sync_in_flight(),
             "encode_note": note,
@@ -645,6 +660,17 @@ def build_state() -> dict:
             _state_cache["at"] = time.monotonic()
             _state_cache["payload"] = payload
     return payload
+
+
+def _all_rows(state: dict) -> list[dict]:
+    """Every queue row the payload carries, in queue order.
+
+    build_state() splits core.queue() into the Queue tab's live work and the
+    Errors tab's set-aside titles. Anything reasoning about the QUEUE rather
+    than about a tab -- the endpoints' "is this a title we just reported",
+    the stage pump's candidate scan -- wants the whole thing back.
+    """
+    return list(state["queue"]) + list(state.get("errors") or [])
 
 
 # ------------------------------------------------------------ encode control
@@ -741,7 +767,13 @@ def _driver_pids() -> list:
 
 
 def _staging_files(title: str):
-    """(folder, source mkv, finished-or-partial HEVC output) for a staged title."""
+    """(folder, source file, finished-or-partial HEVC output) for a staged title.
+
+    The source may be any core.SOURCE_EXTS container -- .scan-bitrates.sh has
+    always indexed .mp4 too, and this used to test .mkv alone, so "start
+    encode" on a staged .mp4 answered "no source file in the staging folder".
+    The OUTPUT is always .mkv: HandBrake runs -f av_mkv.
+    """
     d = os.path.join(core.X9, title)
     try:
         names = sorted(n for n in os.listdir(d) if not n.startswith("._"))
@@ -749,11 +781,9 @@ def _staging_files(title: str):
         return None, None, None
     src = out = None
     for n in names:
-        if not n.endswith(".mkv"):
-            continue
-        if "2160p HEVC" in n:
+        if "2160p HEVC" in n and n.endswith(".mkv"):
             out = out or os.path.join(d, n)
-        elif src is None:
+        elif src is None and n.endswith(core.SOURCE_EXTS):
             src = os.path.join(d, n)
     return d, src, out
 
@@ -1172,7 +1202,7 @@ def _stage_pump_loop() -> None:
             # queue, so holding it here would deadlock the pump against every
             # open page. A slightly stale snapshot is fine -- it only chooses
             # whether to try; _begin_pull_locked is what commits.
-            rows = build_state()["queue"] if idle else []
+            rows = _all_rows(build_state()) if idle else []
             with _stage_lock:
                 before = (_stage_wait["why"], len(_stage_queue), _stage_active["title"])
                 if idle and _stage_queue and _stage_active["title"] is None:
@@ -1303,7 +1333,7 @@ def _finish_orphan_locked(title: str, hidden: str) -> None:
     except OSError:
         return
     real = [f for f in files if not f.startswith("._")]
-    complete = any(f.endswith(".mkv") for f in real) and not any(
+    complete = any(f.endswith(core.SOURCE_EXTS) for f in real) and not any(
         f.endswith(".partial") for f in real
     )
     if complete:
@@ -1749,7 +1779,7 @@ class Handler(BaseHTTPRequestHandler):
                     "it first, or let the driver record and sync it"
                 )
             if not src:
-                return "no source .mkv in the staging folder"
+                return "no source file in the staging folder"
             slug = _slug_of(row["title"])
             log = os.path.join(core.X9, ".hb-%s.log" % slug)
             dest = os.path.join(folder, "%s 2160p HEVC.mkv" % row["title"])
@@ -2002,7 +2032,11 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def _queue_rows(self) -> list[dict]:
-        return build_state()["queue"]
+        # queue + errors, i.e. everything core.queue() returned. The split is
+        # for the PAGE; an endpoint that validated against the visible half
+        # alone would answer "title is not in the queue" to the one click a
+        # set-aside row still offers -- restore.
+        return _all_rows(build_state())
 
     def _apply_skip(self, body: dict):
         title, skipped = body.get("title"), body.get("skipped")

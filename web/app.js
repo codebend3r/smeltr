@@ -293,7 +293,19 @@
       "weighted · " + gib(s.source_total_bytes) + " → " + gib(s.output_total_bytes),
     );
     var complete = s.library_complete !== false;
-    var skipnote = s.queue_skipped ? " · excludes " + s.queue_skipped + " skipped" : "";
+    /* Set-aside titles are out of every queue total, and the cards have to
+     say so or the numbers read as the whole job. Skipped and errored are
+     counted SEPARATELY on purpose: one is a preference you can undo from
+     the Errors tab, the other is work the pipeline refused and cannot
+     resume until a marker file is deleted. Rolling them into one "excluded"
+     figure would hide the half that needs you. */
+    function asideNote(verb) {
+      var bits = [];
+      if (s.queue_errored) bits.push(s.queue_errored + " errored");
+      if (s.queue_skipped) bits.push(s.queue_skipped + " skipped");
+      return bits.length ? " · " + verb + " " + bits.join(" + ") : "";
+    }
+    var skipnote = asideNote("excludes");
     if (complete) {
       add(
         "Still queued",
@@ -303,7 +315,7 @@
           s.stop_mbps +
           " Mb/s" +
           (s.queue_encoding ? " · incl. " + s.queue_encoding + " encoding" : "") +
-          (s.queue_skipped ? " · " + s.queue_skipped + " skipped" : ""),
+          asideNote("excludes"),
         "cool",
       );
       add(
@@ -314,8 +326,7 @@
       add(
         "Job progress",
         s.job_progress_pct == null ? "—" : "~" + pct(s.job_progress_pct),
-        "by reclaimed bytes, not titles" +
-          (s.queue_skipped ? " · goal still counts " + s.queue_skipped + " skipped" : ""),
+        "by reclaimed bytes, not titles" + asideNote("goal still counts"),
       );
     } else {
       /* An unmounted NAS empties the queue; a hard 0 in these slots is the
@@ -1826,6 +1837,121 @@
     }
   }
 
+  /* ---- the Errors tab -------------------------------------------------------
+   Titles that will NOT encode until a person does something about them. Two
+   kinds, and the tab keeps them apart because the remedies are different:
+
+     ERROR   the pipeline gave up on this title and moved on -- a
+             $X9/.error-<title> marker written by .autopilot.sh when the band
+             ladder ran out of rungs, or when a verdict needed a human. It
+             ends when someone deletes that file, which is deliberately NOT a
+             button here: un-erroring re-arms an unattended ~90 GiB deletion.
+     SKIPPED your click on the Queue tab. "restore" undoes it, right here.
+
+   They used to sit in place in the queue, greyed, on the reasoning that a
+   skip which vanished would read as "finished". That reasoning holds and is
+   why this tab is COUNTED IN ITS LABEL and never hidden when empty-ish --
+   but four dead rows scattered through 130 live ones is not visibility, and
+   since the queue's rank column became a running order (2026-09-06) a row
+   that will never run cannot sit inside it. */
+  /* The driver writes each marker as "<title>: <what happened>". That is the
+   right shape for a bare file on the drive and the wrong one in a table whose
+   previous column is the title — so the echo comes off here rather than being
+   read twice on every row. */
+  function trimNote(note, title) {
+    note = (note || "CRF ladder exhausted").trim();
+    var lead = title + ":";
+    return note.slice(0, lead.length).toLowerCase() === lead.toLowerCase()
+      ? note.slice(lead.length).trim()
+      : note;
+  }
+
+  function eShape(r) {
+    return [
+      r.title,
+      r.mbps,
+      r.bytes,
+      r.location,
+      r.src_dir,
+      !!r.error,
+      r.error_note || null,
+      !!r.skipped,
+    ];
+  }
+
+  function renderErrors(rows) {
+    var pane = document.getElementById("pane");
+    pane.replaceChildren();
+    if (!rows.length) {
+      pane.appendChild(el("div", "empty", "Nothing set aside — no errored titles, no hand-skips."));
+      return;
+    }
+    pane.appendChild(
+      table(
+        [
+          { label: "State" },
+          { label: "SRC Mb/s", n: true, cls: "unit" },
+          { label: "Src size", n: true },
+          { label: "Title", cls: "title-cell" },
+          { label: "NAS" },
+          { label: "Src folder" },
+          { label: "What happened" },
+        ],
+        rows,
+        function (r) {
+          var tr = el("tr", r.error ? "rowerr" : "rowskip");
+          tr.dataset.title = r.title;
+          var st = el("td");
+          /* Both chips when a title is both. The error one comes first: a
+           skipped row that ALSO errored is still a title the pipeline could
+           not finish, and reading only "skipped" there would credit the
+           operator with a decision the pipeline actually made. */
+          if (r.error) st.appendChild(el("span", "mark err", "error"));
+          if (r.skipped) st.appendChild(el("span", "mark skip", "skipped"));
+          tr.appendChild(st);
+          var band = r.mbps >= 90 ? "mbps-hi" : r.mbps >= 80 ? "mbps-mid" : "mbps-lo";
+          tr.appendChild(el("td", "n mono q-mbps " + band, r.mbps.toFixed(1)));
+          tr.appendChild(el("td", "n mono q-size", gib(r.bytes)));
+          var titleTd = el("td", "title-cell");
+          var cell = el("div", "tcell");
+          var name = el("span", "tname" + (r.error ? " err" : r.skipped ? " struck" : ""), r.title);
+          if (r.error) {
+            var em = el("span", "err-emoji", "❗");
+            em.setAttribute("role", "img");
+            em.setAttribute("aria-label", "error");
+            cell.appendChild(em);
+          }
+          cell.appendChild(name);
+          cell.appendChild(rowActions(r, null));
+          titleTd.appendChild(cell);
+          tr.appendChild(titleTd);
+          var nasTd = el("td");
+          nasTd.appendChild(nasMark(r.location));
+          tr.appendChild(nasTd);
+          tr.appendChild(srcDirTd(r.src_dir, r.title, r.location));
+          /* The marker's own first line, verbatim — it names the failure and
+           carries the timestamp the driver wrote. A hand-skip has no note
+           and says so plainly rather than borrowing the error column's
+           vocabulary for a thing that is not a failure. */
+          var why = el(
+            "td",
+            "err-note",
+            r.error
+              ? trimNote(r.error_note, r.title)
+              : "Skipped from the Queue tab — nothing wrong with it.",
+          );
+          if (r.error)
+            why.title =
+              "The pipeline moved on. Delete the .error-" +
+              r.title +
+              " marker file on the staging drive to put this title back in play.";
+          tr.appendChild(why);
+          return tr;
+        },
+      ),
+    );
+  }
+
   /* ---- the Events tab -------------------------------------------------------
    The driver/watcher timeline, for debugging: every stamped line of
    .autopilot.log plus the band ladder's KILLED/COMPLETE verdicts, newest
@@ -2015,7 +2141,9 @@
             ]
           : tab === "ledger"
             ? [s.ledger, (s.transfers || []).map(xShape)]
-            : [evRev, evData === null, evErr],
+            : tab === "errors"
+              ? [(s.errors || []).map(eShape)]
+              : [evRev, evData === null, evErr],
       );
     if (last.key !== key) {
       /* An armed confirm or an active drag must survive the 2s SSE repaint. */
@@ -2041,7 +2169,9 @@
             )
           : tab === "ledger"
             ? renderLedger(s.ledger, s.transfers)
-            : renderEvents(s.summary.x9_online);
+            : tab === "errors"
+              ? renderErrors(s.errors || [])
+              : renderEvents(s.summary.x9_online);
       }
     }
     /* EVERY frame, rebuilt or not: this is what keeps the bars moving now that
@@ -2070,12 +2200,26 @@
           "arrival, or a sync replacing a library original"
         : "";
     }
+    /* The queue count is summary()'s, which already excludes skipped rows —
+     and now excludes nothing else, because the rows this tab no longer shows
+     are exactly the ones it counted separately. The "· N skipped" suffix
+     that used to ride here has moved to the Errors tab's own label, where
+     the rows it counts actually are. */
     var nq = s.summary.queue_count != null ? s.summary.queue_count : s.queue.length;
-    document.getElementById("tabQueue").textContent =
-      "Queue (" +
-      nq +
-      (s.summary.queue_skipped ? " · " + s.summary.queue_skipped + " skipped" : "") +
+    document.getElementById("tabQueue").textContent = "Queue (" + nq + ")";
+    /* Named for the serious half. A tab reading "Errors (0)" while three
+     titles sit skipped would be wrong, so the label counts BOTH and the
+     breakdown rides behind it whenever the two differ. */
+    var errs = s.errors || [];
+    var nerr = errs.filter(function (r) {
+      return r.error;
+    }).length;
+    document.getElementById("tabErrors").textContent =
+      "Errors (" +
+      errs.length +
+      (nerr && nerr !== errs.length ? " · " + nerr + " errored" : "") +
       ")";
+    document.getElementById("tabErrors").classList.toggle("hasErr", nerr > 0);
     document.getElementById("tabLedger").textContent = "History (" + s.ledger.length + ")";
     /* "(250 of 266)" — a bare "(250)" read as a count of everything that
      exists, while both a row limit and the log-tail window cut it. */
@@ -2100,6 +2244,7 @@
     if (tw && tw.classList.contains("collapsed") && tableFold) tableFold.click();
     document.getElementById("tabQueue").setAttribute("aria-selected", String(name === "queue"));
     document.getElementById("tabLedger").setAttribute("aria-selected", String(name === "ledger"));
+    document.getElementById("tabErrors").setAttribute("aria-selected", String(name === "errors"));
     document.getElementById("tabEvents").setAttribute("aria-selected", String(name === "events"));
     if (last.state) paint(last.state);
   }
@@ -2108,6 +2253,9 @@
   });
   document.getElementById("tabLedger").addEventListener("click", function () {
     setTab("ledger");
+  });
+  document.getElementById("tabErrors").addEventListener("click", function () {
+    setTab("errors");
   });
   document.getElementById("tabEvents").addEventListener("click", function () {
     setTab("events");

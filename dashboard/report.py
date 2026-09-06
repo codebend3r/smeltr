@@ -161,7 +161,7 @@ def section_stats(s) -> str:
         (
             "Job progress",
             f"~{s['job_progress_pct']:.1f}%   (by reclaimed bytes, not title count"
-            f"{'; goal still counts the skipped titles' if s.get('queue_skipped') else ''})"
+            f"{'; goal still counts the set-aside titles' if (s.get('queue_skipped') or s.get('queue_errored')) else ''})"
             if s.get("job_progress_pct") is not None
             else (
                 "cannot be computed — "
@@ -181,9 +181,23 @@ def section_stats(s) -> str:
             f" = {gib(s['staged_unencoded_bytes'])})",
         ),
     ]
-    if s.get("queue_skipped"):
+    # Two separate lines, never one "excluded" total: a skip is a preference
+    # you can undo, an error is work the pipeline refused and will not resume
+    # until a marker file is deleted. Merging them hides the half that needs
+    # a human.
+    if s.get("queue_errored"):
         pairs.insert(
             4,
+            (
+                "!! Errored",
+                f"{s['queue_errored']} titles ({gib(s['queue_errored_bytes'])})"
+                " — out of Still queued and Still to reclaim;"
+                " Job progress keeps them in its goal. See SET ASIDE below",
+            ),
+        )
+    if s.get("queue_skipped"):
+        pairs.insert(
+            5 if s.get("queue_errored") else 4,
             (
                 "Skipped by hand",
                 f"{s['queue_skipped']} titles ({gib(s['queue_skipped_bytes'])})"
@@ -307,8 +321,68 @@ def _arriving_on_x9(title: str, staged: bool) -> bool:
     except OSError:
         return False
     return any(n.endswith(".partial") for n in names) and not any(
-        n.endswith((".mkv", ".mp4", ".m2ts")) for n in names
+        n.endswith(core.SOURCE_EXTS) for n in names
     )
+
+
+def split_set_aside(q):
+    """(live queue, set-aside rows) -- the terminal's half of the dashboard's
+    Queue/Errors tab split (2026-09-06). core.queue() still returns one list
+    in one order; both views cut it in the same place so the rank a person
+    reads here is the rank they read there.
+    """
+    aside = [r for r in q if r.get("error") or r.get("skipped")]
+    return [r for r in q if not (r.get("error") or r.get("skipped"))], aside
+
+
+# The driver writes the marker as "<title>: <what happened>", which is right
+# for a bare file on disk and wrong in a table that already has a TITLE
+# column: repeating it pushed this column past 200 chars and off the screen.
+# Truncated rather than WRAPPED because render_table() measures cells by
+# len() and draws one line per row -- a newline inside a cell breaks the box
+# borders around it. The dashboard's Errors tab wraps and shows it whole.
+_NOTE_MAX = 92
+
+
+def _trim_note(note, title: str) -> str:
+    note = " ".join((note or "CRF ladder exhausted").split())
+    if note.lower().startswith(title.lower() + ":"):
+        note = note[len(title) + 1 :].strip()
+    if len(note) > _NOTE_MAX:
+        # Cut on a word boundary so the tail is not a half-word, and keep the
+        # ellipsis so nobody reads a clipped sentence as the whole reason.
+        note = note[:_NOTE_MAX].rsplit(" ", 1)[0] + " …"
+    return note
+
+
+def section_errors(aside) -> str:
+    """Titles that will not encode until a person acts. Never truncated: the
+    whole point is that there are few of them and each one is owed a decision.
+    """
+    rows = []
+    for r in aside:
+        if r.get("error"):
+            state = c("ERROR", "1;31")
+            why = _trim_note(r.get("error_note"), r["title"])
+            if r.get("skipped"):
+                state += " + skipped"
+        else:
+            state = "skipped"
+            why = "skipped by hand — nothing wrong with it"
+        rows.append([state, f"{r['mbps']:.1f}", gib(r["bytes"]), r["title"], why])
+    body = render_table(
+        ["STATE", "SRC Mb/s", "SRC SIZE", "TITLE", "WHAT HAPPENED"],
+        rows,
+        ["l", "r", "r", "l", "l"],
+    )
+    note = c(
+        "\n  Notes are trimmed; the Errors tab shows each in full."
+        "\n  An ERROR ends when you delete its "
+        f"{os.path.join(core.X9, '.error-<title>')} marker. "
+        "A skip ends from the dashboard's restore button.",
+        "2",
+    )
+    return indent(body, 2) + note + "\n"
 
 
 def section_queue(q, limit) -> str:
@@ -324,14 +398,10 @@ def section_queue(q, limit) -> str:
             status = "staged"
         else:
             status = "library"
-        if r.get("skipped"):
-            status = "SKIPPED"
-            rank = "—"
-        else:
-            if r.get("pinned"):
-                status = "pinned · " + status
-            rank_n += 1
-            rank = rank_n
+        if r.get("pinned"):
+            status = "pinned · " + status
+        rank_n += 1
+        rank = rank_n
         rows.append(
             [
                 rank,
@@ -352,13 +422,10 @@ def section_queue(q, limit) -> str:
     note = ""
     hidden = q[len(shown) :]
     if hidden:
-        hw = sum(1 for r in hidden if not r.get("skipped"))
-        hs = len(hidden) - hw
-        parts = ([f"{hw} more waiting"] if hw else []) + (
-            [f"{hs} skipped by hand"] if hs else []
-        )
         note = c(
-            f"\n  … {' + '.join(parts)} not shown — use --all for the full queue.", "2"
+            f"\n  … {len(hidden)} more waiting not shown — "
+            "use --all for the full queue.",
+            "2",
         )
     return indent(body, 2) + note + "\n"
 
@@ -513,6 +580,7 @@ def main() -> int:
         print(f"  {c('NOW ENCODING', '1')}")
         print(section_live(live))
 
+    q_live, aside = split_set_aside(q)
     if want_queue:
         sub = (
             f"{s['queue_waiting']} waiting above {s['stop_mbps']:.0f} Mb/s"
@@ -521,7 +589,22 @@ def main() -> int:
         if not s.get("library_complete", True):
             sub += "  [PARTIAL — library not fully mounted]"
         print(f"  {c('QUEUE', '1')}  {c(sub, '2')}")
-        print(section_queue(q, limit))
+        print(section_queue(q_live, limit))
+        # Printed under the queue, ALWAYS when non-empty and never truncated.
+        # These rows used to sit greyed inside the queue table; four of them
+        # scattered through 130 live ones is not visibility, and since the
+        # rank column became a running order a row that will never run
+        # cannot sit inside it.
+        if aside:
+            n_err = sum(1 for r in aside if r.get("error"))
+            bits = ([f"{n_err} errored"] if n_err else []) + (
+                [f"{len(aside) - n_err} skipped by hand"]
+                if len(aside) - n_err
+                else []
+            )
+            print(f"  {c('SET ASIDE', '1;31' if n_err else '1')}  "
+                  f"{c(' · '.join(bits) + ' — not encoding until you act', '2')}")
+            print(section_errors(aside))
 
     if want_hist:
         sub = f"{len(hist)} encodes · {gib(s['reclaimed_bytes'])} reclaimed"

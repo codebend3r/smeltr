@@ -1024,6 +1024,40 @@ def staged_folders() -> list[str]:
         return []
 
 
+# What a staged folder holds. The integers ARE the queue sort's second key,
+# so the names and the numbers must stay together -- and the numbers are
+# ordered by "how soon does this title need the encoder", NOT by pipeline
+# stage: READY is first because rank 1 of the queue table has to be the title
+# that starts next. An OUTPUT folder has already had its turn and is waiting
+# on judge/record/sync, so it sorts below the row it would otherwise displace.
+STAGE_READY = 0  # a source file and no output -- this is what pick_next starts
+STAGE_OUTPUT = 1  # a *2160p HEVC*.mkv exists: encoding now, or awaiting sync
+STAGE_ARRIVING = 2  # only a .partial: a replenish or stage pull still landing
+STAGE_NOSOURCE = 3  # a visible folder with neither. See SOURCE_EXTS.
+
+
+def staged_state(folder: str) -> Optional[int]:
+    """Which STAGE_* the folder on the drive is in, or None if it is not there.
+
+    ONE reading of the drive for three callers -- pick_next()'s predicate,
+    queue()'s ordering, and the dashboard's status column -- because these
+    were drifting renditions of the same listdir and the drift is invisible:
+    a folder classed "arriving" by one and "ready" by another shows a bar on
+    the page for a title the driver will never start.
+    """
+    try:
+        files = [f for f in os.listdir(os.path.join(X9, folder)) if not f.startswith("._")]
+    except OSError:
+        return None
+    if any("2160p HEVC" in f and f.endswith(".mkv") for f in files):
+        return STAGE_OUTPUT
+    if any(f.endswith(SOURCE_EXTS) and not f.endswith(".partial") for f in files):
+        return STAGE_READY
+    if any(f.endswith(".partial") for f in files):
+        return STAGE_ARRIVING
+    return STAGE_NOSOURCE
+
+
 # The queue costs one SMB stat() per candidate -- ~23 s cold across a mounted
 # NAS. Its contents change when an encode finishes or the drive is restaged,
 # i.e. on the order of hours, so it is cached far longer than the live panel.
@@ -1125,12 +1159,52 @@ def queue(
         note = error_marker(r["title"])
         r["error"] = note is not None
         r["error_note"] = note
-    # Skipped rows stay IN PLACE in the bitrate ranking -- the views grey
-    # them out as disabled rows rather than sinking or dropping them, so a
-    # skip can never read as a vanished (or finished) title. Pinned rows come
-    # first in the hand-chosen order; everything else keeps the bitrate
-    # ranking. (A skip clears any pin, so pinned rows are never skipped.)
-    rows.sort(key=lambda r: (pri.get(r["title"].lower(), len(pri)), -r["mbps"]))
+        # One listdir per staged folder, cached onto the row: pick_next() and
+        # the sort below both need it, and the dashboard renders it.
+        r["stage_state"] = staged_state(r["title"]) if r["staged"] else None
+
+    # ---- QUEUE ORDER (2026-09-06, operator's rule: "sort it by queue order
+    # ALWAYS without exception"). Rank 1 is WHAT ENCODES NEXT.
+    #
+    # It used to be plain descending bitrate, which is the job's ranking key
+    # but is NOT the order titles run in: on 2026-09-06 the table's rank 1
+    # was Skyscraper while the driver was encoding Bloodsport at rank 47,
+    # because ranks 1-3 were variously unencodable and nothing on screen
+    # said so. A rank column that does not predict the next title is a rank
+    # column a person has to reverse-engineer every time they look at it.
+    #
+    # Bitrate still decides everything WITHIN a band -- and it is still what
+    # .replenish-queue.sh pulls by, which is untouched by this. The bands:
+    _ENCODING, _STAGED, _LIBRARY, _ERRORED, _SKIPPED = 0, 1, 2, 3, 4
+
+    def _band(r: dict) -> tuple:
+        if r["encoding"]:
+            return (_ENCODING, 0)
+        # error BEFORE skipped, so a title that is both (Little Mermaid was,
+        # on 2026-09-06) files under the more serious fact. A skip is a
+        # preference; an error is the pipeline reporting it could not finish.
+        if r["error"]:
+            return (_ERRORED, 0)
+        if r["skipped"]:
+            return (_SKIPPED, 0)
+        if r["staged"]:
+            # STAGE_* orders the drive's own bands: the one that can start
+            # now, then an output awaiting sync, then bytes still landing,
+            # then a folder holding nothing usable.
+            return (_STAGED, r["stage_state"] if r["stage_state"] is not None else STAGE_NOSOURCE)
+        return (_LIBRARY, 0)
+
+    # Errored and skipped rows sort LAST rather than staying in place. They
+    # used to hold their rank so a skip could never read as a vanished title;
+    # they are now lifted onto the Errors tab instead, which says far more
+    # loudly that they exist and why. Keeping them here as well would put a
+    # dead title between two live ones in the column that claims to be a
+    # running order.
+    #
+    # Pins are the operator's explicit order and win inside a band -- never
+    # across one: a pinned LIBRARY title still cannot encode before a staged
+    # one, and promising otherwise is the same lie in a new column.
+    rows.sort(key=lambda r: (_band(r), pri.get(r["title"].lower(), len(pri)), -r["mbps"]))
     return rows
 
 
@@ -1182,11 +1256,17 @@ def pick_next(rows: list) -> tuple[Optional[dict], set]:
     an encode the driver would not start.
 
     Returns (row, wait_reasons): the first row in queue order that is staged,
-    holds a source .mkv, has no 2160p HEVC output yet, and is not
-    hand-skipped -- or None. wait_reasons says why staged work was passed
-    over: "arriving" (a folder holding only a replenish .partial) and/or
-    "skipped". A row that is both counts as arriving: no source file exists
-    to encode regardless of the skip.
+    holds a source file in any SOURCE_EXTS container, has no 2160p HEVC
+    output yet, and is not hand-skipped -- or None. wait_reasons says why
+    staged work was passed over: "arriving" (a folder holding only a
+    replenish .partial, or nothing usable) and/or "skipped". A row that is
+    both counts as arriving: no source file exists to encode regardless of
+    the skip.
+
+    Since 2026-09-06 queue() returns rows already in PICK order, so the
+    answer is normally rows[0] or the row just after the live encode. The
+    scan is kept because the ordering is a presentation guarantee and this
+    is the correctness one -- they must not be able to disagree.
 
     A LIVE encode's own folder is excluded by the output check -- its
     in-progress file already matches *2160p HEVC*.mkv -- never by pgrep
@@ -1196,16 +1276,17 @@ def pick_next(rows: list) -> tuple[Optional[dict], set]:
     for row in rows:
         if not row.get("staged"):
             continue
-        d = os.path.join(X9, row["title"])
-        try:
-            files = [f for f in os.listdir(d) if not f.startswith("._")]
-        except OSError:
-            continue
-        if any("2160p HEVC" in f and f.endswith(".mkv") for f in files):
-            continue  # already encoded (or encoding), awaiting sync
-        if not any(f.endswith(".mkv") for f in files):
-            # A replenish pull still landing: picking this title would make
-            # start_encode halt on "no source file" mid-pull.
+        # queue() already read the drive once and put the answer on the row;
+        # fall back to reading it here for a caller that built rows by hand.
+        st = row.get("stage_state")
+        if st is None:
+            st = staged_state(row["title"])
+        if st is None or st == STAGE_OUTPUT:
+            continue  # gone, or already encoded (or encoding), awaiting sync
+        if st != STAGE_READY:
+            # A replenish pull still landing, or a folder holding nothing we
+            # can feed to HandBrake: picking either would make start_encode
+            # error out on "no source file".
             reasons.add("arriving")
             continue
         if row.get("error"):
@@ -1334,10 +1415,16 @@ def summary(
     # disagree -- an encode starting between them yields a payload whose live
     # card and stat cards describe different worlds.
     live = live_encodes() if live is None else live
-    # Hand-skipped rows are OUT of every queue total: a skipped title is work
-    # the pipeline will not do, and counting it would overstate what is left.
-    q_active = [r for r in q if not r.get("skipped")]
-    q_skipped = [r for r in q if r.get("skipped")]
+    # Rows that are SET ASIDE are out of every queue total: a skipped title is
+    # work the pipeline will not do, and an errored one is work it has already
+    # refused to do until a human clears the marker. Counting either overstates
+    # what is left -- and since 2026-09-06 both are lifted off the queue view
+    # onto their own tab, so a total that still counted them would disagree
+    # with the table directly under it (it did: "132 waiting" over 129 rows).
+    # error is checked FIRST so a title that is both lands in one bucket only.
+    q_errored = [r for r in q if r.get("error")]
+    q_skipped = [r for r in q if r.get("skipped") and not r.get("error")]
+    q_active = [r for r in q if not (r.get("error") or r.get("skipped"))]
     queue_bytes = sum(r["bytes"] or 0 for r in q_active)
     # Count RUNNING PROCESSES, not queue rows. A title whose library file is
     # unreachable drops out of the queue, and counting rows then reported
@@ -1353,11 +1440,13 @@ def summary(
     # NAS space is how much of it comes back, so project it at the rate we have
     # measured rather than making them do it in their head.
     reclaimable = int(queue_bytes * shrink / 100) if shrink is not None else None
-    # Job progress measures against the ORIGINAL scope: skipped bytes stay in
-    # the goal, so skipping work can never render as finishing it.
+    # Job progress measures against the ORIGINAL scope: set-aside bytes stay
+    # in the goal, so neither skipping work nor erroring out of it can render
+    # as finishing it.
     skipped_bytes = sum(r["bytes"] or 0 for r in q_skipped)
+    errored_bytes = sum(r["bytes"] or 0 for r in q_errored)
     goal = (
-        int((queue_bytes + skipped_bytes) * shrink / 100)
+        int((queue_bytes + skipped_bytes + errored_bytes) * shrink / 100)
         if shrink is not None
         else None
     )
@@ -1373,6 +1462,8 @@ def summary(
         "queue_waiting": max(0, len(q_active) - encoding),
         "queue_skipped": len(q_skipped),
         "queue_skipped_bytes": skipped_bytes,
+        "queue_errored": len(q_errored),
+        "queue_errored_bytes": errored_bytes,
         "queue_encoding": encoding,
         "queue_bytes": queue_bytes,
         "queue_reclaimable_bytes": reclaimable,
