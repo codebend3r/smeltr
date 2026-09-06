@@ -270,16 +270,69 @@ class LastRungFinishes(unittest.TestCase):
         self.assertIn("next: Q ${NEXTQ}", we)
         self.assertIn("none*)", _read_repo_file("staging", "autopilot.sh"))
 
+    def test_the_final_line_carries_its_own_clock(self):
+        """It does NOT exit, so QUARTER lines follow it.
+
+        KILLED and FAILED are stamped from the log's mtime because the
+        watcher writes them and leaves. FINAL keeps running, so within the
+        hour it stops being the last line and an mtime stamp decays to "—"
+        on the one row that records the ladder ending.
+        """
+        end = self._arm("none")
+        self.assertIn("date '+%Y-%m-%d %H:%M:%S'", end)
+        ev = _read_repo_file("dashboard", "events.py")
+        self.assertIn('"ts": parts[2]', ev.split('word == "FINAL"', 1)[1])
+
+    def test_the_quality_carries_its_scale(self):
+        """CRF and CQ are mirrored scales; a bare Q10 beside a Q70 for the
+        same situation cannot be read."""
+        src = _read_repo_file("staging", "watch-encode.sh")
+        self.assertIn("q_label()", src)
+        self.assertIn("${QL}", self._arm("none"))
+
+    def test_the_wording_does_not_claim_a_rung_it_is_not_on(self):
+        """Four of the eight cases that reach FINAL are the oscillation
+        guard -- a rung violated in the direction its own arm cannot step.
+        Calling a too-small projection at CRF 16 "the last rung of the small
+        arm" names a rung that is not on that arm at all."""
+        end = self._arm("none")
+        self.assertIn("no rung left", end)
+        self.assertNotIn("last rung on the", end)
+
+    def test_neither_arm_is_told_nothing_is_deleted(self):
+        """The too-SMALL arm lands where the verdict says `good`.
+
+        15.0-30.0% of source is below the band but above the floor, which
+        syncs and deletes the ~90 GB library original unattended -- the old
+        behaviour killed that encode so it never existed to be judged. A
+        message averaging the two arms into one reassurance is the one a
+        tired person goes back to sleep on.
+        """
+        src = _read_repo_file("dashboard", "notify.py")
+        block = src.split('if kind == "lastrung":', 1)[1].split("if kind ==", 1)[0]
+        self.assertIn('"too-small" in rest', block)
+        self.assertIn("SYNCS and deletes", block)
+        self.assertIn("no-saving", block)
+        self.assertNotIn("nothing is deleted on this", src)
+        # ...and the verdict really does say that, on the live baseline.
+        hist = core.history_ratios()
+        if len(hist) >= core.MIN_HISTORY:
+            self.assertEqual(core._verdict(15.1, hist, 15.1)[0], "good")
+            self.assertEqual(core._verdict(29.9, hist, 29.9)[0], "good")
+            self.assertEqual(core._verdict(86.4, hist, 86.4)[0], "no-saving")
+
     def test_the_finish_is_reported_where_a_human_reads(self):
         """No driver line follows a FINAL, so the tab and the notifier are
         the only places it can surface."""
         ev = _read_repo_file("dashboard", "events.py")
         self.assertIn('"FINAL"', ev)
-        self.assertIn('kind = "lastrung"', ev)
+        self.assertIn('"kind": "lastrung"', ev)
         # Both watcher wordings of an OLD exhaustion still classify.
         self.assertIn('"next: CRF none-" in line', ev)
         self.assertIn('"next: Q none-" in line', ev)
-        self.assertIn("lastrung:", _read_repo_file("web", "app.js"))
+        app = _read_repo_file("web", "app.js")
+        self.assertIn('lastrung: "bad"', app)
+        self.assertIn('lastrung: "last rung"', app)
         self.assertIn('"last-rung"', _read_repo_file("dashboard", "notify.py"))
 
 

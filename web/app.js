@@ -1872,15 +1872,22 @@
    "exhausted" and "failed" are deliberately distinct labels from "killed":
    a routine ladder retry heals itself; those two need a human.
    "lastrung" is the end of the ladder (2026-09-06): the encode was NOT
-   killed, it is still running at the terminal rung and heading out of band,
-   so it is a warning — a human will want to look at the finished file, but
-   nothing has been lost and nothing needs doing yet. */
+   killed, it is still running and heading out of band. It is "bad", not
+   "warn", even though nothing has been lost yet — on the too-small arm the
+   file it is about to finish can be a `good` verdict (15-30% of source is
+   below the band but above the floor), which syncs and DELETES the library
+   original. Its predecessor `exhausted` was red and ended with the original
+   safe; this ends with the original at risk, so the colour may not fall. */
+  /* Chip wording where the kind itself is not a phrase a person reads.
+   Anything unlisted renders as its bare kind, which is how every other one
+   already read. */
+  var EV_LABEL = { up: "driver up", lastrung: "last rung" };
   var EV_CLS = {
     halted: "bad",
     killed: "bad",
     failed: "bad",
     exhausted: "bad",
-    lastrung: "warn",
+    lastrung: "bad",
     stale: "warn",
     defer: "warn",
     cycle: "good",
@@ -1931,9 +1938,7 @@
         tr.appendChild(td);
         var ev = el("td");
         var cls = EV_CLS[e.kind];
-        ev.appendChild(
-          el("span", "mark" + (cls ? " ev-" + cls : ""), e.kind === "up" ? "driver up" : e.kind),
-        );
+        ev.appendChild(el("span", "mark" + (cls ? " ev-" + cls : ""), EV_LABEL[e.kind] || e.kind));
         ev.appendChild(el("span", "evtext", e.text));
         if (e.count > 1) {
           var c = el("span", "evcount", "× " + e.count);

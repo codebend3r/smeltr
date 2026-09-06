@@ -109,7 +109,15 @@ PRIORITY = (
 )
 
 _LADDER = re.compile(r"^LADDER (.+) -> CRF (\d+)$")
-_KILL = re.compile(r"projected ([\d.]+)% of original at ([\d.]+)% \(CRF (\d+)\)")
+# Both watcher wordings: "(CRF 14)" pre-2026-08-25, "(x265_10bit Q14)" since,
+# and "(x265_10bit CRF 14)" / "(vt_h265_10bit VT CQ 60)" on a FINAL line. The
+# CRF-only pattern had matched nothing since the encoder-aware watcher
+# deployed, so every Ladder UP/DOWN message silently shipped without the
+# projection it is documented to carry.
+_KILL = re.compile(
+    r"projected ([\d.]+)% of original at ([\d.]+)% "
+    r"\([\w ]*?(?:CRF|CQ|Q) ?(\d+)\)"
+)
 _SYNC_FAILED = re.compile(r"^SYNC FAILED for (.+?) - (.*)$")
 _SYNC_ABORTED = re.compile(r"^SYNC ABORTED: (.+?) for (.+?) - (.*)$")
 _SEP = " — "
@@ -168,14 +176,32 @@ def classify(e: dict, err=_err):
         # driver line behind it — the watcher leaves the encode running and
         # .autopilot.sh never learns the ladder ran out — so if this is not
         # sent here it is not sent at all.
+        #
+        # THE TWO ARMS DO NOT END THE SAME WAY, and the message must not
+        # average them into one reassurance. A too-BIG file is >80% of source,
+        # which is `no-saving` — the original is safe. A too-SMALL file
+        # anywhere from the 15.0 floor to the 30% band edge is a `good`
+        # verdict (the band is a target, not a defect threshold), which syncs
+        # and DELETES the ~90 GB library original unattended — and that is
+        # precisely where a too-small terminal rung lands. Saying "nothing is
+        # deleted" here would be false in the one direction where it matters.
         title, rest = _split_watcher(text)
+        small = "too-small" in rest
+        tail = (
+            "a below-band result is still a `good` verdict once it clears the "
+            f"{core.OUTLIER_FLOOR_NORM:.0f}% floor, which SYNCS and deletes "
+            "the library original unattended — check it before then if you "
+            "want it kept"
+            if small
+            else "an above-band result is `no-saving`, so it will not sync "
+            "and the library original is safe"
+        )
         return dict(
             base,
             what="last-rung",
             title=title,
             text=f"{rest} · the encode is still running and will finish · "
-            f"the verdict decides whether it syncs, nothing is deleted on "
-            f"this",
+            f"nothing is deleted yet, the verdict decides · {tail}",
         )
     if kind == "ladder":
         m = _LADDER.match(text)

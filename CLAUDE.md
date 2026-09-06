@@ -467,14 +467,40 @@ CQ 50 (too big) / CQ 70 (too small)**, the same rule on the mirrored scale.
 The one-directional rungs go the same way: a violation a rung cannot step
 towards finishes there too, because the alternative was never a better rung,
 only an oscillation. Killing at the end produced no output at all and burned
-hours; an out-of-band file is something a human can look at. **Nothing about
-deletion changes**: `verdict.py` never reads the ladder, so a terminal-rung
-output that is still out of band gets a non-good verdict, the driver marks the
-title's ERROR state, and the library original survives. The ladder stops
-deciding; the verdict still does. Because the driver is never told (there is
-no KILLED line), the `FINAL` line is the ONLY record — it reaches the Events
-tab as kind `lastrung` (a warn chip) and the notifier as `last-rung`, and both
-had to be taught it. The driver's `none*` branch stays as a LEGACY path: a
+hours; an out-of-band file is something a human can look at.
+
+**The two arms do NOT end the same way, and "nothing is deleted" is false on
+one of them.** The ladder stops deciding; the verdict still does — and the
+verdict reads 30–80% as a TARGET, not a defect threshold:
+
+- **too big** → the finished file is >80% of source → `no-saving` → ERROR
+  state, and the library original survives.
+- **too small** → anything from the 15.0 floor to the 30% band edge is a
+  **`good` verdict**, which syncs and **deletes the ~90 GB library original
+  unattended**. That is exactly where a too-small terminal rung lands — Kubo
+  23.7% and Minions 17.2% are the documented examples. Under the old
+  kill-at-the-end behaviour that encode never existed to be judged, so this
+  change moves those titles from "red row, original kept" to "synced, original
+  deleted". Below 15.0 the absolute floor still catches it (`suspect`).
+
+Verified against the live 33-row baseline: 14.9% → `suspect`, 15.1% → `good`,
+29.9% → `good`, 80.5% → `no-saving`. Every surface reporting a `FINAL` names
+which arm it is on and what that arm's verdict does — a message that averaged
+the two into one reassurance is the one a tired person goes back to sleep on.
+
+Because the driver is never told (there is no KILLED line), the `FINAL` line is
+the ONLY record — it reaches the Events tab as kind `lastrung` and the notifier
+as `last-rung`, and both had to be taught it. It is a **`bad` chip, not
+`warn`**: its predecessor `exhausted` was red and ended with the original safe,
+this ends with the original at risk, so the colour may not fall. The line
+carries its own `date` stamp like `COMPLETE` (it does NOT exit, so `QUARTER`
+lines follow it and an mtime stamp would decay to "—" within the hour), and it
+labels quality `CRF` or `VT CQ` — a bare `Q10` beside a `Q70` for the same
+situation is unreadable on two mirrored scales. Its wording is "no rung left
+for a too-X projection from CRF n": of the eight cases that reach it four are a
+genuine terminal rung and four are the oscillation guard, and calling a
+too-small projection at CRF 16 "the last rung of the small arm" names a rung
+that is not on that arm. The driver's `none*` branch stays as a LEGACY path: a
 watcher launched before this deploy still writes `next: Q none-*`, and it
 already killed its encode.
 `tests/test_error_state.py::LastRungFinishes` pins it.

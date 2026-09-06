@@ -35,9 +35,18 @@
 # runs to completion at the terminal rung and this script emits FINAL| instead
 # of KILLED|, then stops band-checking. Killing there produced no output at all
 # and burned the whole encode; an out-of-band file is something a human can
-# judge. Nothing about DELETION changes -- verdict.py never sees the ladder, so
-# a terminal-rung output that is still out of band is a non-good verdict, the
-# ERROR state, and the library original stays exactly where it is.
+# judge. THE VERDICT, NOT THE LADDER, DECIDES WHAT HAPPENS TO THE ORIGINAL --
+# and the two arms end differently, so do not read this as "nothing is
+# deleted":
+#   too BIG  -> the finished file is >80% of source -> `no-saving` -> the
+#              driver marks the ERROR state and the library original survives.
+#   too SMALL-> anything from 15% to 30% of source is a `good` verdict (the
+#              band is a TARGET, not a defect threshold -- Kubo 23.7% and
+#              Minions 17.2% are both good), so it SYNCS and the ~90 GB
+#              library original IS DELETED unattended. Under the old
+#              kill-at-the-end behaviour that encode never existed to be
+#              judged. Below 15% the absolute floor still catches it
+#              (`suspect`, no deletion).
 #
 # AND IT IS ENCODER-AWARE (2026-08-25). Those numbers are x265 CRF, where LOWER
 # means a bigger file. VideoToolbox quality is CQ on Apple's reversed scale,
@@ -86,6 +95,15 @@ next_rung() { # $1=encoder $2=quality $3=big|small
       *)             case "$2" in 14) echo 12 ;; 12) echo 10 ;; *) echo none-too-small ;; esac ;;
     esac
   fi
+}
+
+# The scale a quality number is on. CRF (x265, LOWER = bigger file) and CQ
+# (VideoToolbox, Apple's reversed scale, HIGHER = bigger file) are NOT
+# comparable, so a bare "Q10" beside a "Q70" describing the same situation is
+# unreadable. Every number this script puts in front of a human carries its
+# scale -- the same rule qLabel() enforces on the dashboard.
+q_label() { # $1=encoder
+  case "$1" in vt*) echo "VT CQ" ;; *) echo CRF ;; esac
 }
 
 # Sourced-for-test escape hatch: tests read next_rung() without touching the
@@ -167,14 +185,28 @@ while true; do
           # an oscillation, not a better rung). Killing here deleted hours of
           # work and left the title in the ERROR state with NO output at all;
           # an out-of-band file a human can look at beats no file.
-          # This does NOT authorise a deletion: verdict.py is untouched, so a
-          # terminal-rung output that is still out of band gets a non-good
-          # verdict, the driver marks the title's ERROR state, and the library
-          # original survives. The ladder stops deciding; the verdict still does.
+          # The ladder stops deciding here; the VERDICT still does, and on the
+          # too-small arm that verdict can be `good` (15-30% of source is
+          # below the band but above the floor), which syncs and deletes the
+          # library original. See the header -- the two arms do not end the
+          # same way, and this branch must not be read as "nothing is
+          # deleted".
           # Reported ONCE and the band check is off for the rest of the run --
           # every later tick would report the same violation with the same
           # answer, and the file only grows.
-          echo "FINAL|${FOLDER}|projected ${RATIO}% of original at ${PCT}% (${ENC} Q${Q})|band 30-80|last rung on the ${DIR} arm - finishing at Q${Q}, not killed"
+          # Self-stamped like COMPLETE, NOT left to the file's mtime: this
+          # branch does not exit, so the loop writes QUARTER lines after it
+          # and FINAL stops being the log's last line within the hour. An
+          # mtime-derived stamp would silently become "—" on the one row that
+          # is the only record of the ladder ending.
+          # "no rung left in this direction" is the honest wording for all
+          # eight cases that reach here: four are a genuine terminal rung
+          # (CRF 22/10, CQ 50/70) and four are the oscillation guard -- a rung
+          # violated in the direction its own arm cannot step. Calling a
+          # too-small projection at CRF 16 "the last rung of the small arm"
+          # names a rung that is not on that arm at all.
+          QL=$(q_label "$ENC")
+          echo "FINAL|${FOLDER}|$(date '+%Y-%m-%d %H:%M:%S')|projected ${RATIO}% of original at ${PCT}% (${ENC} ${QL} ${Q})|outside the 30-80% target band|no rung left for a too-${DIR} projection from ${QL} ${Q} - finishing there, not killed"
           LASTRUNG=1
           STRIKES=0; STRIKEDIR=""
           ;;
