@@ -94,9 +94,15 @@ WHATS = {
     "deleted": ("🗑️", "Original deleted"),
     "burst": ("…", "More events"),
     "test": ("🧪", "Test message"),
+    # From dashboard/heartbeat.py, not from the log parser: the hourly check
+    # that nothing is encoding. It is not an EVENT -- no line in .autopilot.log
+    # corresponds to it -- which is exactly why it exists, because the outages
+    # worth catching are the ones the driver never wrote a line about.
+    "idle": ("❗", "NOTHING IS ENCODING"),
 }
 # Which survive a burst cap, most important first.
 PRIORITY = (
+    "idle",
     "deleted",
     "sync-failed",
     "error",

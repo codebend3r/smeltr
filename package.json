@@ -18,6 +18,8 @@
     "format:js:check": "oxfmt --check",
     "format:py": "uvx ruff@0.16.5 format .",
     "format:py:check": "uvx ruff@0.16.5 format --check .",
+    "heartbeat": "./smeltr heartbeat",
+    "heartbeat:check": "./smeltr heartbeat --dry-run --confirm-seconds 0",
     "lint": "bun run --sequential lint:js lint:js:syntax lint:ts lint:py lint:py:syntax lint:sh lint:sh:staging lint:ci format:js:check lint:page",
     "lint:ci": "actionlint",
     "lint:js": "oxlint --deny-warnings",

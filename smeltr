@@ -120,5 +120,10 @@ case "${1:-report}" in
   # configures, so a webhook or app password is proven before the first real
   # event. Exit 1 with no config, or when any channel refuses.
   notify-test) shift; exec "$PY" "$DIR/dashboard/notify.py" --test "$@" ;;
-  *)      echo "usage: smeltr {start|stop|restart|status|url|open|report [...]|record <folder> [...]|crf <title>|encoder <folder>|notify-test}" >&2; exit 2 ;;
+  # The hourly outside observer: exit 0 while HandBrake is running, exit 1
+  # and flag every notify.json channel when it is not. An OPERATOR command,
+  # so it is a bun script too -- but unlike the others it is also what the
+  # com.smeltr.heartbeat LaunchAgent runs on the hour.
+  heartbeat) shift; exec "$PY" "$DIR/dashboard/heartbeat.py" "$@" ;;
+  *)      echo "usage: smeltr {start|stop|restart|status|url|open|report [...]|record <folder> [...]|crf <title>|encoder <folder>|notify-test|heartbeat [--dry-run]}" >&2; exit 2 ;;
 esac

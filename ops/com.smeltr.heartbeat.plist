@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.smeltr.heartbeat</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/snowball/Developer/git/smeltr/smeltr</string>
+    <string>heartbeat</string>
+  </array>
+  <!-- ON THE HOUR, not "every 3600 seconds". StartInterval counts from load,
+       so a reload at 14:37 would pin every future check to :37 past — and the
+       operator asked for the hour. StartCalendarInterval with only Minute set
+       fires at :00 of every hour and survives reloads and reboots. -->
+  <key>StartCalendarInterval</key>
+  <dict><key>Minute</key><integer>0</integer></dict>
+  <!-- Fire once at load too, so installing it proves it works rather than
+       leaving up to 59 minutes of silence that could mean either. -->
+  <key>RunAtLoad</key><true/>
+  <!-- The check sleeps 60 s to confirm an idle reading before flagging (see
+       dashboard/heartbeat.py). Well inside an hour, but give launchd an
+       explicit ceiling so a wedged run can never overlap the next one. -->
+  <key>ExitTimeOut</key><integer>300</integer>
+  <!-- NOT on the staging drive: launchd cannot create a log on a volume that
+       may be unmounted, and fails the job with EX_CONFIG (78) before it runs.
+       Same lesson as com.smeltr.watchdog.plist. -->
+  <key>StandardOutPath</key><string>/Users/snowball/Library/Logs/smeltr/heartbeat.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/snowball/Library/Logs/smeltr/heartbeat.err.log</string>
+</dict>
+</plist>

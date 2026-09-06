@@ -32,7 +32,9 @@ DASHBOARD_DIR = "dashboard"
 # spawns and kills encodes; sysmon.py starts a 1 Hz daemon thread and mmaps a
 # ring buffer; notify.py posts to Slack and Gmail over the network -- none of
 # them belongs in a process that decides on a deletion.
-DASHBOARD_ONLY = frozenset({"server", "sysmon", "report", "events", "notify"})
+DASHBOARD_ONLY = frozenset(
+    {"server", "sysmon", "report", "events", "notify", "heartbeat"}
+)
 
 
 def _modules_in(pkg: str) -> frozenset:
