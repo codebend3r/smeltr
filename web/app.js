@@ -2765,6 +2765,79 @@
     ch._geom = { x0: x0, x1: x1, t0: t0, t1: t1 };
   }
 
+  /* The folded head's CPU sparkline: one series, no gutter, axis, grid or
+   wash -- a glance, not a reading. It draws the SAME window the slider
+   holds, through the same monBuckets()/monSmooth() the full chart uses,
+   so folding the card never changes what "the last hour" means and the
+   line here is the CPU line there with the chrome removed. A gap still
+   breaks the path. clientWidth is 0 while the card is expanded
+   (display:none), so the early return makes it free until the fold. */
+  var monMiniCv = /** @type {HTMLCanvasElement} */ (document.getElementById("monMiniCv")),
+    monMiniVal = document.getElementById("monMiniVal"),
+    monMiniBk = { key: "", b: null };
+  function drawMonMini(t0, t1, css) {
+    var cv = monMiniCv,
+      dpr = window.devicePixelRatio || 1;
+    var w = cv.clientWidth,
+      h = cv.clientHeight;
+    if (!w || !h) return;
+    var pw = Math.round(w * dpr),
+      ph = Math.round(h * dpr);
+    if (cv.width !== pw || cv.height !== ph) {
+      cv.width = pw;
+      cv.height = ph;
+    }
+    var ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    var cols = Math.max(1, Math.min(Math.round(w), t1 - t0)),
+      cw = w / cols;
+    var bkey = t0 + "|" + t1 + "|" + cols + "|" + monDataV;
+    if (monMiniBk.key !== bkey) {
+      var nb = monBuckets(monTs, monV[0], t0, t1, cols);
+      if ((t1 - t0) / cols >= 4) nb.sm = monSmooth(nb.avg, cols);
+      monMiniBk.key = bkey;
+      monMiniBk.b = nb;
+    }
+    var line = monMiniBk.b.sm || monMiniBk.b.avg,
+      y0 = 1,
+      y1 = h - 1,
+      colr = monCss("--ch-1");
+    function Y(v) {
+      return y1 - (Math.min(v, 100) / 100) * (y1 - y0);
+    }
+    ctx.strokeStyle = css.grid;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, y1 + 0.5);
+    ctx.lineTo(w, y1 + 0.5);
+    ctx.stroke();
+    /* Fill under each contiguous run, then stroke it: a run ends at the
+     first empty bucket so a sampler gap reads as a break, never a slope. */
+    var c = 0;
+    while (c < cols) {
+      if (line[c] !== line[c]) {
+        c++;
+        continue;
+      }
+      var s = c;
+      while (c < cols && line[c] === line[c]) c++;
+      ctx.beginPath();
+      for (var k = s; k < c; k++) ctx.lineTo((k + 0.5) * cw, Y(line[k]));
+      ctx.strokeStyle = colr;
+      ctx.lineWidth = 1.5;
+      ctx.lineJoin = "round";
+      ctx.stroke();
+      ctx.lineTo((c - 0.5) * cw, y1);
+      ctx.lineTo((s + 0.5) * cw, y1);
+      ctx.closePath();
+      ctx.globalAlpha = 0.16;
+      ctx.fillStyle = colr;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+
   /* All redraw triggers funnel through one rAF gate: N pointermove events in
    a frame cost one draw, and a draw never runs on a hidden tab. */
   function monDrawSoon() {
@@ -2799,9 +2872,11 @@
     MON_CHARTS.forEach(function (ch) {
       drawMon(ch, t0, t1, css);
     });
+    drawMonMini(t0, t1, css);
     /* The legend is the LATEST sample, and says so; a sampler that has gone
      quiet must show an em dash, not its last reading forever. */
     var stale = !monLast || now - monLast.t > 5;
+    monMiniVal.textContent = monFmtPct(stale ? null : monLast.v[0]);
     /* A window we have not fetched yet must NOT report itself as a machine
      with no history: "history since" is a claim about the sampler, and
      while a wider fetch is in flight the only true statement is that we
