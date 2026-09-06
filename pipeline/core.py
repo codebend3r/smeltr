@@ -50,6 +50,21 @@ LIBRARY_ROOTS = [
 ]
 INDEX_NAME = ".bitrates-4k-combined.json"
 
+# The container extensions a SOURCE may arrive in. `.scan-bitrates.sh` has
+# always indexed BOTH .mkv and .mp4, and `.sync-to-library.sh` has always
+# resolved a library original as .mkv/.mp4/.m2ts -- but every consumer that
+# looked for a source on the staging drive spelled the test `endswith(".mkv")`.
+# So a .mp4 remux was ranked in the queue, pulled onto the X9 by
+# .replenish-queue.sh, and then invisible to the encoder forever. Skyscraper
+# (2018) sat staged and unencodable for three days that way, holding 64 GiB:
+# pick_next() classed it "arriving", which is a WAIT, so nothing went red and
+# nothing halted -- it just silently fell through to the next title.
+#
+# The OUTPUT is still always .mkv (HandBrake runs -f av_mkv). This tuple is
+# about what goes IN. `.autopilot.sh` (start_encode + library_path_of) carries
+# the same list and must move with it.
+SOURCE_EXTS = (".mkv", ".mp4", ".m2ts")
+
 # Titles the user has permanently excluded. Substring match, lowercased, on the
 # full path. Kept here so the app and the terminal report can never disagree.
 SKIP = ("lord of the rings",)
@@ -958,7 +973,7 @@ def staged_detail() -> list[dict]:
         srcs = [
             f
             for f in files
-            if f.endswith(".mkv") and f not in outs and not f.endswith(".partial")
+            if f.endswith(SOURCE_EXTS) and f not in outs and not f.endswith(".partial")
         ]
         src = os.path.join(d, srcs[0]) if srcs else None
         rows.append(

@@ -104,7 +104,9 @@ def main() -> int:
     srcs = [
         f
         for f in files
-        if f.endswith(".mkv") and f not in outs and not f.endswith(".partial")
+        if f.endswith(core.SOURCE_EXTS)
+        and f not in outs
+        and not f.endswith(".partial")
     ]
     if len(outs) != 1 or len(srcs) != 1:
         sys.exit(

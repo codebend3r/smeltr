@@ -208,6 +208,16 @@ library_roots_online() {
   return 0
 }
 
+# The container extensions a SOURCE may arrive in. `.scan-bitrates.sh` indexes
+# .mkv AND .mp4, and .sync-to-library.sh has always resolved a library
+# original as .mkv/.mp4/.m2ts -- but both finds below looked for '*.mkv'
+# alone. A .mp4 remux was therefore ranked, staged, and then unencodable
+# forever: Skyscraper (2018) held 64 GiB on the X9 for three days while
+# next_title.py read it as "still arriving" and quietly picked something else.
+# Mirrors core.SOURCE_EXTS; the two must move together. The OUTPUT stays .mkv
+# (-f av_mkv below).
+SRC_FIND=( \( -name '*.mkv' -o -name '*.mp4' -o -name '*.m2ts' \) )
+
 # Resolve the library folder the same way .sync-to-library.sh does: exactly
 # one <root>/<bucket>/<title> match across all roots. Never guess the bucket
 # from the first letter -- "A Bug's Life (1998)" files under B and "1917
@@ -220,14 +230,14 @@ library_path_of() {
                  -mindepth 2 -maxdepth 2 -type d -name "$title" 2>/dev/null)
   n=$(printf '%s\n' "$matches" | grep -c . || true)
   [ "$n" -eq 1 ] || return 0
-  find "$(printf '%s\n' "$matches" | head -1)" -maxdepth 1 -name '*.mkv' \
+  find "$(printf '%s\n' "$matches" | head -1)" -maxdepth 1 "${SRC_FIND[@]}" \
        ! -name '._*' ! -name '*2160p HEVC*' | head -1
 }
 
 start_encode() {
   local title="$1" q="${2:-}" slug src out enc defq
   slug=$(slug_of "$title")
-  src=$(find "$X9/$title" -maxdepth 1 -name '*.mkv' ! -name '._*' ! -name '*2160p HEVC*' | head -1)
+  src=$(find "$X9/$title" -maxdepth 1 "${SRC_FIND[@]}" ! -name '._*' ! -name '*2160p HEVC*' | head -1)
   [ -z "$src" ] && { error_out "$title" "no source file"; return 1; }
   # Named after the FOLDER, not the source file. An earlier version derived it
   # from the source basename with a sed strip and was overwritten on the very
