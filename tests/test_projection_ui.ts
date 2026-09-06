@@ -39,6 +39,11 @@ function fn(name) {
   if (at < 0) throw new Error("not found in web/app.js: " + name);
   return block(at);
 }
+function line(name) {
+  const m = new RegExp("^\\s*var " + name + "\\s*=.*$", "m").exec(src);
+  if (!m) throw new Error("not found in web/app.js: " + name);
+  return m[0];
+}
 function tbl(name) {
   const m = new RegExp("var " + name + "\\s*=\\s*\\{").exec(src);
   if (!m) throw new Error("not found in web/app.js: " + name);
@@ -46,9 +51,12 @@ function tbl(name) {
 }
 
 const document = {
-  createElement: () => {
+  createElement: (tag) => {
     const set = new Set();
     return {
+      tag,
+      id: "",
+      type: "",
       className: "",
       textContent: "",
       hidden: false,
@@ -62,7 +70,10 @@ const document = {
       setAttribute(k, v) {
         this.attrs[k] = v;
       },
-      addEventListener() {},
+      handlers: {},
+      addEventListener(type, fn) {
+        (this.handlers[type] = this.handlers[type] || []).push(fn);
+      },
       /* classList is tracked apart from className, as in a real DOM:
          updateProj assigns className and then projApply toggles "closed". */
       classList: {
@@ -80,14 +91,31 @@ const GIB = 2 ** 30,
   TIB = 2 ** 40;
 const code = [
   "var projClosed=false;",
+  "var projTouched=false;",
+  "var projLoudSeen=false;",
   "var localStorage={getItem:function(){return null},setItem:function(){}};",
   "function _setClosed(v){projClosed=v;}",
+  "function _reset(){projClosed=false;projTouched=false;projLoudSeen=false;}",
+  "function _fire(n,t){(n.handlers[t]||[]).forEach(function(f){f();});}",
+  line("NOTE_HEAD"),
+  "var tipSeq=0;",
   tbl("PROJ_CLASS"),
   tbl("PROJ_LEAD"),
   tbl("PROJ_LOUD"),
 ]
   .concat(
-    ["gib", "pct", "el", "bandText", "gibApprox", "projApply", "projBlock", "updateProj"].map(fn),
+    [
+      "gib",
+      "pct",
+      "el",
+      "bandText",
+      "gibApprox",
+      "projApply",
+      "projBlock",
+      "updateProj",
+      "splitNote",
+      "writeVerdict",
+    ].map(fn),
   )
   .join("\n");
 const M = new Function(
@@ -96,7 +124,7 @@ const M = new Function(
   "TIB",
   code +
     "\nreturn {gib,pct,el,bandText,gibApprox,projBlock,updateProj,PROJ_CLASS,PROJ_LEAD," +
-    "PROJ_LOUD,_setClosed};",
+    "PROJ_LOUD,_setClosed,_reset,_fire,splitNote,writeVerdict};",
 )(document, GIB, TIB);
 
 let pass = 0,
@@ -359,6 +387,115 @@ Object.keys(M.PROJ_LOUD).forEach((v) =>
     false,
   ),
 );
+
+// --- the chevron must actually fold a LOUD strip --------------------------
+// The loud override existed to stop a fold RESTORED FROM LOCALSTORAGE hiding
+// a warning. It was applied on every frame instead, so on exactly the
+// verdicts a person most wants to fold away after reading -- suspect,
+// downscale, blowup, no-saving -- `open` was forced true, the click changed
+// nothing on screen, and the chevron read as broken. Reported live on a
+// `suspect` strip, 2026-09-06.
+const SUSPECT = {
+  pct: 44,
+  verdict: "suspect",
+  ratio_pct: 44.8,
+  projected_bytes: 23.63 * GIB,
+  source_bytes: 52.79 * GIB,
+  crop_factor: 1.0,
+  shrink_pct: 55.2,
+};
+M._reset();
+let strip = M.projBlock();
+let head = strip.node.kids[0];
+M.updateProj(strip.refs, SUSPECT);
+ck("a loud verdict opens the strip", strip.refs.root.classList.contains("closed"), false);
+M._fire(head, "click");
+ck("the chevron folds a loud strip BY HAND", strip.refs.root.classList.contains("closed"), true);
+ck("and the chevron flips to match", strip.refs.disc.textContent, "▸");
+M.updateProj(strip.refs, SUSPECT);
+ck("and the fold survives the next SSE frame", strip.refs.root.classList.contains("closed"), true);
+M._fire(head, "click");
+ck("clicking again reopens it", strip.refs.root.classList.contains("closed"), false);
+
+// A fold restored from storage is still overridden -- that half is the point.
+M._reset();
+M._setClosed(true);
+strip = M.projBlock();
+M.updateProj(strip.refs, SUSPECT);
+ck("a STORED fold never hides a loud verdict", strip.refs.root.classList.contains("closed"), false);
+
+// A calm strip still honours a stored fold.
+M._reset();
+M._setClosed(true);
+strip = M.projBlock();
+M.updateProj(strip.refs, { ...SUSPECT, verdict: "good", ratio_pct: 44.8 });
+ck("a calm strip honours a stored fold", strip.refs.root.classList.contains("closed"), true);
+
+// A verdict that TURNS loud is news: it reopens a hand-folded strip.
+M._reset();
+strip = M.projBlock();
+head = strip.node.kids[0];
+M.updateProj(strip.refs, { ...SUSPECT, verdict: "good" });
+M._fire(head, "click");
+ck("hand-folded while calm", strip.refs.root.classList.contains("closed"), true);
+M.updateProj(strip.refs, SUSPECT);
+ck("a verdict turning loud reopens it", strip.refs.root.classList.contains("closed"), false);
+
+// --- the verdict note: headline on the card, explanation behind the icon --
+// This channel also carries "Do not delete the original", and the iPad cannot
+// hover, so the headline may never disappear into a bare glyph.
+ck(
+  "an uppercase lead is the headline",
+  M.splitNote("NO vt_h265_10bit BASELINE YET: this is one of the first encodes.").head,
+  "NO vt_h265_10bit BASELINE YET",
+);
+ckHas(
+  "and the rest is the body",
+  M.splitNote("NO vt_h265_10bit BASELINE YET: this is one of the first encodes.").body,
+  "one of the first encodes",
+);
+ck(
+  "downscale splits too",
+  M.splitNote("RESOLUTION LOST: the output frame is narrower than the source.").head,
+  "RESOLUTION LOST",
+);
+ck(
+  "a short note is all headline",
+  M.splitNote("Solid reduction - let it run.").head,
+  "Solid reduction - let it run.",
+);
+ck("a short note has no body", M.splitNote("Solid reduction - let it run.").body, "");
+ck(
+  "a long clause is never mistaken for a headline",
+  M.splitNote("this encode keeps 9.4% of source bytes and the median is 31.6%: which is unusual.")
+    .body,
+  "",
+);
+
+const vrefs = { verdict: M.el("div", "verdict", "") };
+M.writeVerdict(vrefs, "Solid reduction - let it run.", false);
+ck("a calm short note is plain text", vrefs.verdict.textContent, "Solid reduction - let it run.");
+ck("and gets no caution button", vrefs.verdict.kids.length, 0);
+
+M.writeVerdict(vrefs, "RESOLUTION LOST: the output frame is narrower than the source.", true);
+ck("a long note builds three nodes", vrefs.verdict.kids.length, 3);
+ck("the first is the caution button", vrefs.verdict.kids[0].className, "cautionbtn");
+ck("which is a real <button>", vrefs.verdict.kids[0].tag, "button");
+ck("the headline stays on the card", vrefs.verdict.kids[1].textContent, "RESOLUTION LOST");
+ckHas("the body is the tooltip", vrefs.verdict.kids[2].textContent, "narrower than the source");
+ck("the tooltip is announced as one", vrefs.verdict.kids[2].attrs.role, "tooltip");
+ck(
+  "and the button points at it",
+  vrefs.verdict.kids[0].attrs["aria-describedby"],
+  vrefs.verdict.kids[2].id,
+);
+ck("loud styling survives the rebuild", vrefs.verdict.className, "verdict loud");
+
+// The in-place rule: an unchanged note must NOT rebuild, or a tooltip somebody
+// is reading would be torn down and slammed shut twice a second.
+const before = vrefs.verdict.kids[0];
+M.writeVerdict(vrefs, "RESOLUTION LOST: the output frame is narrower than the source.", true);
+ck("an unchanged note rebuilds nothing", vrefs.verdict.kids[0], before);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

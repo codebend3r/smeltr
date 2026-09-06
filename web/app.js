@@ -504,6 +504,12 @@
   try {
     projClosed = localStorage.getItem("smeltr.proj.closed") === "1";
   } catch (e) {}
+  /* Whether the fold was chosen BY HAND this session, and whether the verdict
+   was already loud last frame. Both exist to keep the loud override from
+   eating the click: overriding a STORED fold is the point, overriding the
+   chevron the person is pressing right now just renders as a dead button. */
+  var projTouched = false;
+  var projLoudSeen = false;
   /* The ONE list of warning verdicts. Both consumers -- the collapse override
    here and the verdict line's loud styling in renderLive -- read it: an
    inline copy of this set once omitted "downscale" and the only true warning
@@ -511,7 +517,17 @@
   var PROJ_LOUD = { suspect: 1, blowup: 1, "no-saving": 1, downscale: 1 };
 
   function projApply(p) {
-    var open = !projClosed || !!PROJ_LOUD[p.lastV];
+    var loud = !!PROJ_LOUD[p.lastV];
+    /* The override applies to a fold restored from localStorage, NOT to one
+     made this session with eyes open -- the same rule makeCollapsible()
+     already follows ("the chevron stays so it can still be folded BY HAND").
+     Without this the strip was permanently stuck open on exactly the
+     verdicts a person most wants to fold away after reading them, and the
+     chevron looked broken. A verdict that has just TURNED loud still forces
+     it open and clears the hand-fold: that transition is news. */
+    if (loud && !projLoudSeen) projTouched = false;
+    projLoudSeen = loud;
+    var open = projTouched ? !projClosed : !projClosed || loud;
     p.root.classList.toggle("closed", !open);
     p.disc.textContent = open ? "▾" : "▸";
     p.disc.setAttribute("aria-expanded", String(open));
@@ -544,6 +560,7 @@
      chevron button dispatches a click that bubbles here. */
     head.addEventListener("click", function () {
       projClosed = !projClosed;
+      projTouched = true;
       try {
         localStorage.setItem("smeltr.proj.closed", projClosed ? "1" : "0");
       } catch (e) {}
@@ -970,9 +987,72 @@
         var b = refs.kv[p[0]];
         if (b) b.textContent = p[1];
       });
-      refs.verdict.textContent = e.verdict_note;
-      refs.verdict.className = PROJ_LOUD[e.verdict] ? "verdict loud" : "verdict";
+      writeVerdict(refs, e.verdict_note, !!PROJ_LOUD[e.verdict]);
     });
+  }
+
+  /* The verdict note behind a caution icon.
+   ------------------------------------------------------------------
+   The note is ONE string from `core._verdict()`, and the three long ones all
+   lead with a capitalised clause and a colon ("RESOLUTION LOST: ...",
+   "NO vt_h265_10bit BASELINE YET: ...", "UNUSUAL: ..."). That lead is the
+   headline; the rest is the explanation. The split is done HERE and not in
+   core.py on purpose: core is the decision path, editing it needs the pause
+   procedure, and this is a presentation question that changes no verdict.
+
+   The headline STAYS ON THE CARD. Only the explanation goes behind the icon.
+   This channel also carries "Do not delete the original", and the iPad is
+   where this job is actually watched -- a warning that renders as a bare
+   glyph on the one device that cannot hover is not a warning. Short notes
+   ("Solid reduction - let it run.") have no body and get no icon at all. */
+  var NOTE_HEAD = /^([^:]{1,60}):\s+/;
+  var tipSeq = 0;
+
+  function splitNote(note) {
+    note = (note || "").trim();
+    var m = NOTE_HEAD.exec(note);
+    return m ? { head: m[1], body: note.slice(m[0].length) } : { head: note, body: "" };
+  }
+
+  /* Written in place like every other live-card field, and ONLY when the text
+   or the severity actually moves. Rebuilding it each SSE frame would slam a
+   tooltip shut twice a second while somebody was reading it -- the same
+   in-place rule the bar's width transition needs. */
+  function writeVerdict(refs, note, loud) {
+    var cls = "verdict" + (loud ? " loud" : "");
+    if (refs.noteText === note && refs.noteCls === cls) return;
+    refs.noteText = note;
+    refs.noteCls = cls;
+    var box = refs.verdict;
+    box.className = cls;
+    box.textContent = "";
+    var parts = splitNote(note);
+    if (!parts.body) {
+      box.textContent = parts.head;
+      return;
+    }
+    var id = "vtip" + ++tipSeq;
+    /* A real <button>, for the reason the pause switch is one: iOS Safari
+     only synthesises a click from a tap on natively interactive elements,
+     so a listener on a span is a coin toss on the device this is read on. */
+    var btn = el("button", "cautionbtn", "\u26a0");
+    btn.type = "button";
+    btn.setAttribute("aria-expanded", "false");
+    btn.setAttribute("aria-describedby", id);
+    btn.setAttribute("aria-label", "why this matters");
+    var tip = el("div", "tip", parts.body);
+    tip.id = id;
+    tip.setAttribute("role", "tooltip");
+    /* Hover and focus are CSS. The click is what makes it work on a finger,
+     and it LATCHES -- a tap that opened a tip the finger is still covering
+     would be useless if it closed again on the next frame. */
+    btn.addEventListener("click", function () {
+      var open = box.classList.toggle("tipopen");
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+    box.appendChild(btn);
+    box.appendChild(el("span", "vhead", parts.head));
+    box.appendChild(tip);
   }
 
   function table(cols, rows, build) {

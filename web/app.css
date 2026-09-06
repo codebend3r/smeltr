@@ -1000,6 +1000,81 @@ body:not(.booted) #liveWrap .card {
   color: var(--warn);
   font-weight: 560;
 }
+
+/* The caution icon and its tooltip.
+   The long verdict notes collapse to headline + icon; the explanation opens
+   on hover, on keyboard focus, and on a TAP. All three, because this text is
+   read before a ~90 GB original is deleted and the iPad has no hover -- a
+   hover-only disclosure would be invisible on the device this is watched on.
+   Colours are existing tokens only, so both themes already carry them. */
+.verdict:has(.cautionbtn) {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.cautionbtn {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--warn);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.cautionbtn:focus-visible {
+  outline: 2px solid var(--warn);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+.vhead {
+  min-width: 0;
+}
+/* The tip itself. `visibility` rather than `display` so it is laid out and
+   measurable before it is shown, and so the fade has something to run on. */
+.verdict .tip {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 8px);
+  left: 0;
+  max-width: 46ch;
+  padding: 10px 12px;
+  border: 1px solid var(--warn-bd);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--ink-2);
+  font-weight: 400;
+  line-height: 1.5;
+  box-shadow: 0 6px 20px var(--bar-inset);
+  visibility: hidden;
+  opacity: 0;
+  transition:
+    opacity 0.12s ease,
+    visibility 0.12s;
+}
+.verdict:hover .tip,
+.verdict:focus-within .tip,
+.verdict.tipopen .tip {
+  visibility: visible;
+  opacity: 1;
+}
+/* A finger needs a real target, and on a phone the card is narrow enough
+   that the tip should simply take the width it has. */
+@media (pointer: coarse) {
+  .cautionbtn {
+    min-width: 44px;
+    min-height: 44px;
+    margin: -12px 0;
+  }
+  .verdict .tip {
+    max-width: none;
+    right: 0;
+  }
+}
 .note {
   padding: 10px 14px;
   font-size: 11.5px;
