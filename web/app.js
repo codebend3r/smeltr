@@ -1870,12 +1870,17 @@
   }
   /* Severity only — an unlisted kind renders as a plain pill, never an error.
    "exhausted" and "failed" are deliberately distinct labels from "killed":
-   a routine ladder retry heals itself; those two need a human. */
+   a routine ladder retry heals itself; those two need a human.
+   "lastrung" is the end of the ladder (2026-09-06): the encode was NOT
+   killed, it is still running at the terminal rung and heading out of band,
+   so it is a warning — a human will want to look at the finished file, but
+   nothing has been lost and nothing needs doing yet. */
   var EV_CLS = {
     halted: "bad",
     killed: "bad",
     failed: "bad",
     exhausted: "bad",
+    lastrung: "warn",
     stale: "warn",
     defer: "warn",
     cycle: "good",

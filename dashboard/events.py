@@ -123,7 +123,7 @@ def _watch_events():
         for i, line in enumerate(lines):
             parts = line.split("|")
             word = parts[0]
-            if word in ("KILLED", "FAILED"):
+            if word in ("KILLED", "FAILED", "FINAL"):
                 # The watcher writes its last line and exits, so for the
                 # FINAL line the file's mtime is the write time — surfaced
                 # as APPROXIMATE (the page draws "~", minutes precision).
@@ -131,13 +131,28 @@ def _watch_events():
                 # FAILED is a HandBrake that DIED (reboot/kill) — the single
                 # most likely reason someone opens this tab.
                 final = i == len(lines) - 1
-                # The watcher writes `next: CRF ${NEXTCRF}` and NEXTCRF is
-                # the WORD none-too-small/none-too-big at an end rung, so
-                # the line reads "next: CRF none-too-small". Matching
-                # "next: none-" drew every exhaustion as a routine retry.
-                if word == "KILLED" and "next: CRF none-" in line:
-                    # Ladder exhausted: .autopilot.sh writes .error-<title>
-                    # and moves on — a human owes this row a decision, so it
+                # FINAL is the END OF THE LADDER as of 2026-09-06: no rung
+                # left, so the watcher left the encode RUNNING at the terminal
+                # rung instead of killing it. Nothing is on fire — the file is
+                # still being written — but it is heading out of band, so it
+                # reads as a warning, never as a routine retry and never as a
+                # dead encode.
+                #
+                # The watcher writes `next: Q ${NEXTQ}` (a pre-2026-08-25
+                # watcher says `next: CRF ${NEXTCRF}`) and that value is the
+                # WORD none-too-small/none-too-big at an end rung, so the line
+                # reads "next: Q none-too-small". Matching "next: none-" drew
+                # every exhaustion as a routine retry, and matching only the
+                # CRF wording stopped drawing them at all once the encoder-
+                # aware watcher deployed. Both wordings, one test.
+                if word == "FINAL":
+                    kind = "lastrung"
+                elif word == "KILLED" and (
+                    "next: CRF none-" in line or "next: Q none-" in line
+                ):
+                    # Ladder exhausted under a PRE-2026-09-06 watcher: the
+                    # encode was killed and .autopilot.sh writes .error-<title>
+                    # and moves on — a human owes that row a decision, so it
                     # must not scan identically to a routine retry.
                     kind = "exhausted"
                 else:

@@ -210,5 +210,78 @@ class DriverContract(unittest.TestCase):
         self.assertIn('Q="${6:-%d}"' % core.CRF_DEFAULT, src)
 
 
+class LastRungFinishes(unittest.TestCase):
+    """Past the last rung the encode RUNS ON (operator's rule, 2026-09-06).
+
+    The ladder used to kill an out-of-band encode it had no rung left to
+    retry at, which threw away hours of work and left the title in the
+    ERROR state with no output at all. Now the terminal rung -- x265 CRF 22
+    when too big and CRF 10 when too small, VideoToolbox CQ 50 and CQ 70 on
+    the mirrored arms -- is allowed to finish, and the finished file is
+    judged like any other. Deletion safety is NOT part of this: verdict.py
+    never reads the ladder, so an out-of-band file still gets a non-good
+    verdict and the library original still survives.
+    """
+
+    def _kill_block(self):
+        """The `case "$NEXTQ" in ... esac` the strike counter fires."""
+        src = _read_repo_file("staging", "watch-encode.sh")
+        body = src.split('NEXTQ=$(next_rung', 1)[1]
+        return body.split("      esac", 1)[0]
+
+    def _arm(self, name):
+        """One arm of that case, `none-*)` or the `*)` fallback."""
+        block = self._kill_block()
+        arms = block.split("        none-*)", 1)[1]
+        end, _, rest = arms.partition("        *)")
+        return end if name == "none" else rest
+
+    def test_the_terminal_rung_is_not_killed(self):
+        end = self._arm("none")
+        self.assertNotIn("kill ", end)
+        self.assertNotIn('rm -f "$OUT"', end)
+        self.assertIn("FINAL|", end)
+        # ...and it must NOT break out of the loop: the watcher still has to
+        # report COMPLETE (or FAILED) for the run it just let through.
+        self.assertNotIn("break", end)
+
+    def test_a_rung_that_exists_is_still_killed(self):
+        rest = self._arm("rest")
+        self.assertIn('kill "$HBPID"', rest)
+        self.assertIn('rm -f "$OUT"', rest)
+        self.assertIn("KILLED|", rest)
+        self.assertIn("break", rest)
+
+    def test_the_band_check_stops_once_the_ladder_is_done(self):
+        """Every later tick would report the same violation and the same
+        answer, and the file only grows -- one FINAL line, then silence."""
+        src = _read_repo_file("staging", "watch-encode.sh")
+        self.assertIn("LASTRUNG=0", src)
+        self.assertIn("LASTRUNG=1", src)
+        self.assertIn('[ "$LASTRUNG" = 0 ]', src)
+
+    def test_the_driver_never_sees_a_ladder_it_can_error_on(self):
+        """A current watcher writes no `next: none-*`, so the driver's
+        exhausted branch cannot fire -- but it stays, because a watcher
+        launched before this deploy is still running and already killed its
+        encode."""
+        we = _read_repo_file("staging", "watch-encode.sh")
+        self.assertNotIn("next: Q ${NEXTQ}", self._arm("none"))
+        self.assertIn("next: Q ${NEXTQ}", we)
+        self.assertIn("none*)", _read_repo_file("staging", "autopilot.sh"))
+
+    def test_the_finish_is_reported_where_a_human_reads(self):
+        """No driver line follows a FINAL, so the tab and the notifier are
+        the only places it can surface."""
+        ev = _read_repo_file("dashboard", "events.py")
+        self.assertIn('"FINAL"', ev)
+        self.assertIn('kind = "lastrung"', ev)
+        # Both watcher wordings of an OLD exhaustion still classify.
+        self.assertIn('"next: CRF none-" in line', ev)
+        self.assertIn('"next: Q none-" in line', ev)
+        self.assertIn("lastrung:", _read_repo_file("web", "app.js"))
+        self.assertIn('"last-rung"', _read_repo_file("dashboard", "notify.py"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -87,6 +87,7 @@ WHATS = {
     "failed": ("💥", "Failed"),
     "ladder-up": ("🔺", "Ladder UP"),
     "ladder-down": ("🔻", "Ladder DOWN"),
+    "last-rung": ("🏁", "Last rung — finishing anyway"),
     "error": ("🚨", "Error state"),
     "sync-failed": ("⛔", "Sync failed"),
     "stopped": ("🛑", "Driver stopped"),
@@ -101,6 +102,7 @@ PRIORITY = (
     "error",
     "stopped",
     "failed",
+    "last-rung",
     "ladder-up",
     "ladder-down",
     "finished",
@@ -148,7 +150,9 @@ def classify(e: dict, err=_err):
 
     Deliberately silent: the watcher's KILLED line (see the module docstring
     — the driver's LADDER line is the anchor) and its `exhausted` line (the
-    driver's ERROR line follows and names the direction)."""
+    driver's ERROR line follows and names the direction). Its FINAL line is
+    NOT silent: no driver line follows it, because past the last rung the
+    watcher lets the encode run and the driver is never told."""
     kind, text = e.get("kind"), e.get("text") or ""
     base = {"ts": e.get("ts"), "approx": bool(e.get("approx")), "detail": None}
     if kind == "complete":
@@ -159,6 +163,20 @@ def classify(e: dict, err=_err):
     if kind == "failed":
         title, rest = _split_watcher(text)
         return dict(base, what="failed", title=title, text=rest)
+    if kind == "lastrung":
+        # END OF THE LADDER (2026-09-06). Unlike a kill, this one has NO
+        # driver line behind it — the watcher leaves the encode running and
+        # .autopilot.sh never learns the ladder ran out — so if this is not
+        # sent here it is not sent at all.
+        title, rest = _split_watcher(text)
+        return dict(
+            base,
+            what="last-rung",
+            title=title,
+            text=f"{rest} · the encode is still running and will finish · "
+            f"the verdict decides whether it syncs, nothing is deleted on "
+            f"this",
+        )
     if kind == "ladder":
         m = _LADDER.match(text)
         if not m:

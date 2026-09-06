@@ -27,8 +27,17 @@
 #     so a single noisy sample (studio logos, black frames) cannot kill on its own.
 #
 # THE LADDER RUNS BOTH WAYS (operator's rule, 2026-08-31):
-#   projection > 80%  (too big)  -> next CRF UP:   14-16-18-20-22, then none-too-big
-#   projection < 30%  (too small)-> next CRF DOWN: 14-12-10, then none-too-small
+#   projection > 80%  (too big)  -> next CRF UP:   14-16-18-20-22, then FINISH at 22
+#   projection < 30%  (too small)-> next CRF DOWN: 14-12-10, then FINISH at 10
+#
+# PAST THE LAST RUNG THE ENCODE IS NOT KILLED (operator's rule, 2026-09-06).
+# There is no better rung to retry at, so the run in flight IS the answer: it
+# runs to completion at the terminal rung and this script emits FINAL| instead
+# of KILLED|, then stops band-checking. Killing there produced no output at all
+# and burned the whole encode; an out-of-band file is something a human can
+# judge. Nothing about DELETION changes -- verdict.py never sees the ladder, so
+# a terminal-rung output that is still out of band is a non-good verdict, the
+# ERROR state, and the library original stays exactly where it is.
 #
 # AND IT IS ENCODER-AWARE (2026-08-25). Those numbers are x265 CRF, where LOWER
 # means a bigger file. VideoToolbox quality is CQ on Apple's reversed scale,
@@ -47,8 +56,9 @@
 # A violation in the OPPOSITE direction of a rung already laddered to (too small at
 # 16/18/20/22, too big at 12/10) is "none-*" immediately: a source whose projection
 # flips sides between adjacent rungs would otherwise oscillate forever. "none-*"
-# tells .autopilot.sh to mark the title's ERROR state and move on — never delete,
-# never skip, never halt.
+# no longer kills anything — it means "finish this encode where it is". The
+# ERROR state still exists and is still reached, but by the VERDICT on the
+# finished file, never by the ladder throwing the encode away.
 #
 # Set SMELTR_NO_AUTOKILL=1 to return to report-only behaviour.
 # (SMELTER_NO_AUTOKILL is still honoured -- the app was renamed 2026-08-21 and a
@@ -93,6 +103,9 @@ BASE="/Volumes/Crucial X9/4K Movies/${FOLDER}"
 SRC="${BASE}/${SRCNAME}"; OUT="${BASE}/${OUTNAME}"
 NEXT=25
 STRIKES=0; STRIKEDIR=""
+# Set once the ladder has no rung left in the violated direction: the encode is
+# allowed to finish and this script stops judging it.
+LASTRUNG=0
 SRCSZ=$(stat -f%z "$SRC")
 
 while true; do
@@ -129,7 +142,8 @@ while true; do
   fi
 
   # The band check, every tick. Two consecutive agreeing violations kill.
-  if [ -n "$RATIO" ] && [ "${SMELTR_NO_AUTOKILL:-${SMELTER_NO_AUTOKILL:-0}}" != "1" ]; then
+  if [ -n "$RATIO" ] && [ "$LASTRUNG" = 0 ] \
+     && [ "${SMELTR_NO_AUTOKILL:-${SMELTER_NO_AUTOKILL:-0}}" != "1" ]; then
     DIR=""
     awk -v r="$RATIO" 'BEGIN{exit !(r>80)}' && DIR=big
     awk -v r="$RATIO" 'BEGIN{exit !(r<30)}' && DIR=small
@@ -142,14 +156,39 @@ while true; do
 
     if [ -n "$DIR" ] && [ "$STRIKES" -ge 2 ]; then
       NEXTQ=$(next_rung "$ENC" "$Q" "$DIR")
-      kill "$HBPID" 2>/dev/null
-      for _ in $(seq 1 60); do kill -0 "$HBPID" 2>/dev/null || break; sleep 0.5; done
-      kill -0 "$HBPID" 2>/dev/null && kill -9 "$HBPID" 2>/dev/null
-      # The partial is worthless and would otherwise be mistaken for a finished
-      # encode by the sync and record steps, both of which key off "2160p HEVC".
-      rm -f "$OUT"
-      echo "KILLED|${FOLDER}|projected ${RATIO}% of original at ${PCT}% (${ENC} Q${Q})|band 30-80|partial deleted|next: Q ${NEXTQ}"
-      break
+      case "$NEXTQ" in
+        none-*)
+          # END OF THE LADDER -> FINISH THE ENCODE (operator's rule, 2026-09-06).
+          # There is no rung left to try in this direction, so the run this
+          # script is watching is the best this ladder can produce: x265 CRF 22
+          # (too big) / CRF 10 (too small), VideoToolbox CQ 50 (too big) /
+          # CQ 70 (too small) -- and the same applies to a one-directional rung
+          # violated in the direction it cannot step (the alternative there is
+          # an oscillation, not a better rung). Killing here deleted hours of
+          # work and left the title in the ERROR state with NO output at all;
+          # an out-of-band file a human can look at beats no file.
+          # This does NOT authorise a deletion: verdict.py is untouched, so a
+          # terminal-rung output that is still out of band gets a non-good
+          # verdict, the driver marks the title's ERROR state, and the library
+          # original survives. The ladder stops deciding; the verdict still does.
+          # Reported ONCE and the band check is off for the rest of the run --
+          # every later tick would report the same violation with the same
+          # answer, and the file only grows.
+          echo "FINAL|${FOLDER}|projected ${RATIO}% of original at ${PCT}% (${ENC} Q${Q})|band 30-80|last rung on the ${DIR} arm - finishing at Q${Q}, not killed"
+          LASTRUNG=1
+          STRIKES=0; STRIKEDIR=""
+          ;;
+        *)
+          kill "$HBPID" 2>/dev/null
+          for _ in $(seq 1 60); do kill -0 "$HBPID" 2>/dev/null || break; sleep 0.5; done
+          kill -0 "$HBPID" 2>/dev/null && kill -9 "$HBPID" 2>/dev/null
+          # The partial is worthless and would otherwise be mistaken for a finished
+          # encode by the sync and record steps, both of which key off "2160p HEVC".
+          rm -f "$OUT"
+          echo "KILLED|${FOLDER}|projected ${RATIO}% of original at ${PCT}% (${ENC} Q${Q})|band 30-80|partial deleted|next: Q ${NEXTQ}"
+          break
+          ;;
+      esac
     fi
   fi
 
