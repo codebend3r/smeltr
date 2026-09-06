@@ -35,6 +35,7 @@ on a `good` verdict. It calls this repo on every cycle.
 | `pipeline/next_title.py` | **YES** — picks what encodes next | no |
 | `pipeline/crf.py` | **YES** — picks the CRF the next encode starts at | no |
 | `pipeline/record.py` | **YES** — writes the ledger | no |
+| `pipeline/encoder_of.py` | **YES** — `smeltr encoder`, the per-title encoder | no |
 | `dashboard/server.py` | no — never imported by the decision path (but see below: it now spawns/kills encodes) | mostly |
 | `dashboard/sysmon.py` | no — imported only by `server.py` | mostly |
 | `dashboard/events.py` · `dashboard/notify.py` | no — imported only by `server.py` | **yes** |
@@ -83,10 +84,11 @@ ledger.jsonl        the irreplaceable record, beside the launcher
    sync, or delete anything in the library. Start refuses while
    `autopilot.sh` is alive (pgrep, not the lock file) or any encode runs;
    abort's skip-write is what stops a running driver relaunching the same
-   title 30 s later. A dashboard start at CRF 24 sits outside the ladder
-   maps (see *The band ladder* below): an out-of-band kill at 24 goes
-   straight to `none-*`. Slow halves (parity gate, kill grace) run on
+   title 30 s later. Slow halves (parity gate, kill grace) run on
    daemon threads and report through `encode_note` in the state payload.
+   (2026-08-25: the picker now offers both encoders from
+   `core.ENCODER_CHOICES` — see *The hybrid encoder* below; the CRF
+   ladder is its x265 half.)
 3. Stage-on-demand (2026-08-22): `POST /api/stage/start` SPAWNS an
    `.ssh-xfer.sh pull` of one library title onto the staging drive (the
    hover "stage" button on library-only rows). It mirrors the per-title pull
@@ -305,6 +307,88 @@ ledger.jsonl        the irreplaceable record, beside the launcher
    and replaces a ~90 GB original with a worse picture — the same class of
    consequence as un-skipping, not the same class as pausing.
    `tests/test_planned_crf.py` and `tests/test_crf_picker.js` pin it.
+
+### The hybrid encoder (2026-08-25) — BUILT, NOT YET DEPLOYED
+
+The M1 Max media engine (`vt_h265_10bit`) encodes 4K 10-bit HEVC at ~20 fps
+under load vs ~2.7 fps for x265 medium — but with materially worse
+quality-per-bit. The 2026-08-25 A/B on this library's own sources measured a
+**VMAF ceiling of ~84 on grain-heavy film at ANY size** (Timecop CQ 65 spent
+100.1% of the source bitrate for VMAF 84.0; archival wants ≥95), so
+VideoToolbox is a **per-title choice for clean digital/animated sources,
+never a blanket switch**. x265 at `core.CRF_DEFAULT` stays the default in
+every direction.
+
+How it works:
+
+- `encoder_overrides.json` beside the ledger maps exact folder names to
+  `{"encoder", "quality"}`. Written ONLY by `core.save_encoder_overrides()`
+  (atomic + fsync, same discipline as `queue_overrides.json`); the
+  dashboard's `POST /api/queue/encoder` is the only caller. Every failure —
+  missing file, corrupt file, unknown encoder, off-menu quality — answers
+  the x265 default: `core.encoder_for()` can only return a menu entry.
+  A corrupt file raises `encoder_overrides_corrupt` in `summary()` and a
+  banner, like the queue overrides.
+- The menus live in ONE place, `core.ENCODER_CHOICES`. Its x265 half IS
+  `core.CRF_CHOICES` — the same tuple object, not a copy — because the menu
+  the page offers must be rungs `.watch-encode.sh` can ladder to, and a
+  duplicated tuple drifts the moment the pivot moves (16 → 14 already
+  happened). VT is CQ 50/55/60/65/70 — **CQ is Apple's reversed scale,
+  higher = better, and is NOT comparable to CRF**. Server menus and
+  validation both read it; the driver reads it through
+  `smeltr encoder <folder>` (`pipeline/encoder_of.py`: one line,
+  `<encoder> <quality>`, crash-safe default).
+- `start_encode()` in `.autopilot.sh` resolves the encoder per title; a
+  ladder retry overrides only the QUALITY (the encoder always comes from
+  the override file). VT gets no `--encoder-preset` — its presets are
+  quality-based, and passing "medium" would change the quality, not the pace.
+- The band ladder in `.watch-encode.sh` is encoder-aware via `next_rung()`,
+  and it inverts wholesale for VT. x265 quality is CRF, where LOWER means a
+  bigger file: too big steps UP 14→16→18→20→22, too small steps DOWN
+  14→12→10. VT quality is CQ, where HIGHER means a bigger file, so both
+  arms flip: too big steps DOWN 60→55→50, too small steps UP 60→65→70. A
+  rung mapped with the wrong scale re-runs the blowup LARGER. Each ladder
+  still pivots on its encoder's own default and exhausts to
+  `none-too-big`/`none-too-small` — the ERROR state, unchanged. The KILLED
+  line now says `next: Q <n>` and names the encoder that produced the rung;
+  the driver parses both wordings (a watcher launched pre-deploy still says
+  `next: CRF <n>`). `tests/test_watch_ladder.sh` pins every rung and both
+  directions.
+- The ledger records `encoder` per row (old rows: None, all x265) so
+  verdict baselines can tell hardware rows apart later. The dashboard's
+  quality cells and live chip label VT values "VT CQ", never bare numbers —
+  `qLabel()` in `web/app.js` is the one place that decides.
+- **The quality column is ONE control covering both encoders.** The CRF
+  picker that landed 2026-09-01 now lists every rung of every encoder,
+  each option naming its own scale; there is still no second control in
+  the hover actions, for the reason that rule was written. Because two
+  files describe one decision, **each endpoint clears the other**:
+  `/api/queue/crf` drops the title's encoder override and
+  `/api/queue/encoder` drops its CRF rung, so one round trip settles the
+  row and `smeltr encoder` and `smeltr crf` can never disagree.
+  `start_encode()` consults `smeltr crf` ONLY when the resolved encoder is
+  x265: a CRF rung means nothing on the CQ scale.
+- `staging/watch-encode.sh` is now tracked, and `test_staging_in_sync.sh`
+  diffs BOTH scripts against the X9.
+
+**Deploy checklist (requires the pause procedure below), IN THIS ORDER:**
+`ops/deploy-staging.sh --dry-run`, then without it — its glob deploys
+`staging/autopilot.sh` FIRST and `staging/watch-encode.sh` SECOND, which is
+the order this change needs. The order is load-bearing: the OLD driver's ladder parse is
+`sed 's/.*next: CRF //'`, which is a no-op on the new `next: Q 55` wording
+— the whole KILLED line would be passed to `-q`, and HandBrake reads a
+non-number as quality 0.0, x265 LOSSLESS, writing until the drive fills.
+(The new driver refuses a non-numeric rung with a halt; the old one
+cannot.) The autopilot copy also carries the still-undeployed reason-file
+change from PR #3 — deploy both together. Then `./smeltr restart`, then
+driver + watchdog. Until then the drift test fails on both files BY
+DESIGN: red drift = deployment debt. The VT CQ menu is provisional pending
+the clean-digital half of the A/B (Warfare) and the x265 ground-truth
+VMAF. Verdicts are per-encoder: `history_ratios(encoder=...)` compares a
+row only against same-encoder rows (None = x265), and a VT encode with
+fewer than `MIN_HISTORY` VT rows in the ledger is `suspect` by
+construction — the first hardware encodes halt for a human, never
+auto-delete on a baseline borrowed from x265's curve.
 
 ### The driver is CONCURRENT as of 2026-08-22
 

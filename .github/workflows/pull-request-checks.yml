@@ -283,6 +283,9 @@ jobs:
       - name: 🔎 test:sh:launcher — launcher server discovery
         run: bun run test:sh:launcher
 
+      - name: 🪜 test:sh:watch-ladder — encoder-aware band ladder rungs
+        run: bun run test:sh:watch-ladder
+
       - name: 🐕 test:sh:watchdog — watchdog corpse/finished boundary
         run: bun run test:sh:watchdog
 

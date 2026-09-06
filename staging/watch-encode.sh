@@ -1,5 +1,5 @@
 #!/bin/bash
-# watch-encode.sh <slug> <folder> <source-filename> <output-filename> <handbrake-pid> [crf]
+# watch-encode.sh <slug> <folder> <source-filename> <output-filename> <handbrake-pid> [quality] [encoder]
 #
 # Emits QUARTER events at 25/50/75% with a band verdict, then COMPLETE or FAILED.
 # Lives on the Crucial X9, NOT in /tmp — the scratchpad gets wiped on reboot and by
@@ -29,6 +29,16 @@
 # THE LADDER RUNS BOTH WAYS (operator's rule, 2026-08-31):
 #   projection > 80%  (too big)  -> next CRF UP:   14-16-18-20-22, then none-too-big
 #   projection < 30%  (too small)-> next CRF DOWN: 14-12-10, then none-too-small
+#
+# AND IT IS ENCODER-AWARE (2026-08-25). Those numbers are x265 CRF, where LOWER
+# means a bigger file. VideoToolbox quality is CQ on Apple's reversed scale,
+# where HIGHER means a bigger file, so both arms invert: too big steps CQ DOWN
+# 60-55-50, too small steps CQ UP 60-65-70. Mapping a rung with the wrong scale
+# would re-run the blowup LARGER, so the mapping lives in one function keyed on
+# the encoder, and the KILLED line reports only the next NUMBER ("next: Q 55")
+# -- the driver passes it back as a quality override without knowing either
+# scale. It also names the encoder that produced the rung, so a driver holding
+# a rung from a DIFFERENT encoder can drop it rather than read 18 as a CQ.
 # The ladder PIVOTS on the default start rung, which moved 16 -> 14 on 2026-09-03.
 # Both arms have to move with it: leaving the pivot at 16 makes 14 a down-only rung,
 # so every default encode that came in too big would exhaust to none-too-big on its
@@ -43,7 +53,38 @@
 # Set SMELTR_NO_AUTOKILL=1 to return to report-only behaviour.
 # (SMELTER_NO_AUTOKILL is still honoured -- the app was renamed 2026-08-21 and a
 #  watcher launched before the rename is still running against the old name.)
-SLUG="$1"; FOLDER="$2"; SRCNAME="$3"; OUTNAME="$4"; HBPID="$5"; CRF="${6:-14}"
+SLUG="$1"; FOLDER="$2"; SRCNAME="$3"; OUTNAME="$4"; HBPID="$5"; Q="${6:-14}"; ENC="${7:-x265_10bit}"
+
+# Next rung of the ladder for this encoder and this direction, or "none-too-*"
+# past the last one. Every rung except the pivot is one-directional: a
+# violation OPPOSITE to the direction a rung was laddered to exhausts
+# immediately, because a projection that flips sides between adjacent rungs
+# would oscillate forever. An unknown encoder takes the x265 mapping -- the
+# proven direction.
+next_rung() { # $1=encoder $2=quality $3=big|small
+  if [ "$3" = big ]; then
+    case "$1" in
+      vt_h265_10bit) case "$2" in 60) echo 55 ;; 55) echo 50 ;; *) echo none-too-big ;; esac ;;
+      *)             case "$2" in
+                       14) echo 16 ;; 16) echo 18 ;; 18) echo 20 ;; 20) echo 22 ;;
+                       *)  echo none-too-big ;;
+                     esac ;;
+    esac
+  else
+    case "$1" in
+      vt_h265_10bit) case "$2" in 60) echo 65 ;; 65) echo 70 ;; *) echo none-too-small ;; esac ;;
+      *)             case "$2" in 14) echo 12 ;; 12) echo 10 ;; *) echo none-too-small ;; esac ;;
+    esac
+  fi
+}
+
+# Sourced-for-test escape hatch: tests read next_rung() without touching the
+# filesystem or running the loop. Must sit before the stat below. `return`
+# outside a function does NOT stop an EXECUTED script under bash 3.2, so the
+# exit fallback keeps a stray WE_TEST=1 in the environment from falling
+# through into the live loop.
+if [ "${WE_TEST:-0}" = "1" ]; then return 0 2>/dev/null || exit 0; fi
+
 LOG="/tmp/handbrake-${SLUG}.log"
 # X9 log override: HandBrake logs now live on the X9 too, so /tmp cleanup can't
 # strand the watcher against a vanished log. Prefer it when present.
@@ -100,24 +141,14 @@ while true; do
     [ -z "$DIR" ] && { STRIKES=0; STRIKEDIR=""; }
 
     if [ -n "$DIR" ] && [ "$STRIKES" -ge 2 ]; then
-      if [ "$DIR" = "big" ]; then
-        case "$CRF" in
-          14) NEXTCRF=16 ;; 16) NEXTCRF=18 ;; 18) NEXTCRF=20 ;; 20) NEXTCRF=22 ;;
-          *)  NEXTCRF=none-too-big ;;
-        esac
-      else
-        case "$CRF" in
-          14) NEXTCRF=12 ;; 12) NEXTCRF=10 ;;
-          *)  NEXTCRF=none-too-small ;;
-        esac
-      fi
+      NEXTQ=$(next_rung "$ENC" "$Q" "$DIR")
       kill "$HBPID" 2>/dev/null
       for _ in $(seq 1 60); do kill -0 "$HBPID" 2>/dev/null || break; sleep 0.5; done
       kill -0 "$HBPID" 2>/dev/null && kill -9 "$HBPID" 2>/dev/null
       # The partial is worthless and would otherwise be mistaken for a finished
       # encode by the sync and record steps, both of which key off "2160p HEVC".
       rm -f "$OUT"
-      echo "KILLED|${FOLDER}|projected ${RATIO}% of original at ${PCT}% (CRF ${CRF})|band 30-80|partial deleted|next: CRF ${NEXTCRF}"
+      echo "KILLED|${FOLDER}|projected ${RATIO}% of original at ${PCT}% (${ENC} Q${Q})|band 30-80|partial deleted|next: Q ${NEXTQ}"
       break
     fi
   fi

@@ -8,6 +8,9 @@
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 X9="/Volumes/Crucial X9/4K Movies"
+# One mount probe, BEFORE the loop: a per-file `exit 0` skip would let a
+# missing second file mask a real drift already found on the first. Once the
+# drive is proven mounted, a missing live script is a FAIL, not a skip.
 [ -d "$X9" ] || { echo "SKIP: staging drive not mounted"; exit 0; }
 rc=0
 for name in autopilot.sh watch-encode.sh; do

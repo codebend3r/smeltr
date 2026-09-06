@@ -592,6 +592,17 @@ def build_state() -> dict:
             # queued row would read as five separate problems.
             if n == 1 and waiting:
                 r["stage_wait"] = waiting
+        # Per-title encoder overrides, keyed back onto the rows they name so
+        # the queue can say which titles will take the hardware path -- and so
+        # the planned-quality cell never claims "16" for a title that will
+        # actually start at CQ 60.
+        enc_ov = {t.lower(): v
+                  for t, v in core.load_encoder_overrides()["map"].items()}
+        for r in q:
+            v = enc_ov.get(r["title"].lower())
+            if v is not None:
+                r["enc"] = v["encoder"]
+                r["enc_q"] = v["quality"]
         # Snapshot the note under the lock: a torn read could pair a failure
         # message with the previous note's "ok" kind.
         with _state_lock:
@@ -612,6 +623,10 @@ def build_state() -> dict:
             # default renames the option instead of quietly meaning something
             # else on rows nobody has touched.
             "crf_default": core.CRF_DEFAULT,
+            # The full per-encoder menu (x265 CRF + VideoToolbox CQ). The
+            # legacy crf_choices key above stays the x265 half, so a page
+            # cached from before the hybrid encoder still renders.
+            "encoder_choices": {k: list(v) for k, v in core.ENCODER_CHOICES.items()},
             "stage_queue": pending,
             "stage_active": staging_now,
             "can_start": not live and not driver,
@@ -645,6 +660,9 @@ def build_state() -> dict:
 # The menu is core's, not ours: the DRIVER now honours a hand-picked CRF (see
 # core.planned_crf / `smeltr crf`), so a value offered here that core rejects
 # would be accepted by the page and silently dropped on the way to HandBrake.
+# This is the x265 half, kept under its historical name for the page's
+# crf_choices payload key; the full per-encoder menu (x265 CRF + VideoToolbox
+# CQ) is core.ENCODER_CHOICES and reaches the page as encoder_choices.
 CRF_CHOICES = core.CRF_CHOICES
 _encode_lock = threading.Lock()
 # Surfaced in the state payload and rendered as a banner. The parity gate and
@@ -755,7 +773,14 @@ def _track_counts(path: str):
 
 
 def _parity_gate(
-    proc, src: str, out: str, log: str, title: str, slug: str, crf: int
+    proc,
+    src: str,
+    out: str,
+    log: str,
+    title: str,
+    slug: str,
+    crf: int,
+    encoder: str = "x265_10bit",
 ) -> None:
     """Verify HandBrake is writing every track, then hand off to the watcher.
 
@@ -816,6 +841,7 @@ def _parity_gate(
                     os.path.basename(out),
                     str(proc.pid),
                     str(crf),
+                    encoder,
                 ],
                 stdout=wf,
                 stderr=subprocess.STDOUT,
@@ -824,13 +850,13 @@ def _parity_gate(
     except OSError as e:
         _set_note(
             "%s is encoding (%da/%ds verified) but the progress watcher "
-            "failed to start (%s) — no CRF ladder or auto-kill on this "
+            "failed to start (%s) — no quality ladder or auto-kill on this "
             "run." % (title, sa, ss, e)
         )
         return
     _set_note(
-        "%s encoding at CRF %d — %d audio, %d subtitle tracks verified."
-        % (title, crf, sa, ss),
+        "%s encoding with %s at %s %d — %d audio, %d subtitle tracks verified."
+        % (title, encoder, "CQ" if encoder.startswith("vt") else "CRF", crf, sa, ss),
         kind="ok",
     )
 
@@ -1621,6 +1647,8 @@ class Handler(BaseHTTPRequestHandler):
                 err = self._apply_order(body)
             elif parsed.path == "/api/queue/crf":
                 err = self._apply_crf(body)
+            elif parsed.path == "/api/queue/encoder":
+                err = self._apply_encoder(body)
             elif parsed.path == "/api/encode/start":
                 err = self._apply_encode_start(body)
             elif parsed.path == "/api/encode/abort":
@@ -1650,16 +1678,38 @@ class Handler(BaseHTTPRequestHandler):
 
     def _apply_encode_start(self, body: dict):
         title, crf = body.get("title"), body.get("crf")
+        encoder = body.get("encoder")
         if not isinstance(title, str):
-            return "expected {title: str, crf: int}"
+            return "expected {title: str, crf: int, encoder?: str}"
+        if encoder is None:
+            encoder = core.DEFAULT_ENCODER
+        if encoder not in core.ENCODER_CHOICES:
+            return "encoder must be one of %s" % ", ".join(core.ENCODER_CHOICES)
         if crf is None:
-            # No CRF in the body means "whatever this row is planned at" --
-            # the same value the queue cell shows and the driver would use.
-            # Defaulting to a bare 16 here would have the start button
+            # No quality in the body means "whatever this row is planned at"
+            # -- the same value the queue cell shows and the driver would use.
+            # Defaulting to a bare number here would have the start button
             # quietly disagree with the number under the operator's cursor.
-            crf = core.planned_crf(title)
-        if crf not in CRF_CHOICES:
-            return "CRF must be one of %s" % ", ".join(str(c) for c in CRF_CHOICES)
+            # Only x265 has a per-title CRF picker; another encoder's scale is
+            # its own, so it takes that encoder's own default -- NEVER a menu
+            # index, which is the best CRF and the worst CQ.
+            crf = (
+                core.planned_crf(title)
+                if encoder == core.DEFAULT_ENCODER
+                else core.DEFAULT_QUALITIES[encoder]
+            )
+        # ints only: 16.0 == 16 would pass a bare membership test and reach
+        # HandBrake as a float on a scale where the neighbouring rung means
+        # something else.
+        if (
+            not isinstance(crf, int)
+            or isinstance(crf, bool)
+            or crf not in core.ENCODER_CHOICES[encoder]
+        ):
+            return "quality for %s must be one of %s" % (
+                encoder,
+                ", ".join(str(c) for c in core.ENCODER_CHOICES[encoder]),
+            )
         if not os.path.isdir(core.X9):
             return "the staging drive is not mounted"
         with _encode_lock:
@@ -1703,6 +1753,12 @@ class Handler(BaseHTTPRequestHandler):
             slug = _slug_of(row["title"])
             log = os.path.join(core.X9, ".hb-%s.log" % slug)
             dest = os.path.join(folder, "%s 2160p HEVC.mkv" % row["title"])
+            # Mirrors .autopilot.sh start_encode(): x265 carries its speed
+            # preset, VideoToolbox must NOT (its presets are quality-based,
+            # so "medium" there would change the quality, not the pace).
+            encflags = ["-e", encoder, "-q", str(crf)]
+            if encoder == "x265_10bit":
+                encflags += ["--encoder-preset", "medium"]
             try:
                 fh = open(log, "wb")
                 proc = subprocess.Popen(
@@ -1714,12 +1770,7 @@ class Handler(BaseHTTPRequestHandler):
                         dest,
                         "-f",
                         "av_mkv",
-                        "-e",
-                        "x265_10bit",
-                        "-q",
-                        str(crf),
-                        "--encoder-preset",
-                        "medium",
+                        *encflags,
                         "--all-audio",
                         "--aencoder",
                         "copy",
@@ -1734,13 +1785,19 @@ class Handler(BaseHTTPRequestHandler):
             except OSError as e:
                 return "could not start HandBrakeCLI: %s" % e
             _set_note(
-                "Starting %s at CRF %d — verifying track parity before "
-                "letting it run." % (row["title"], crf),
+                "Starting %s with %s at %s %d — verifying track parity before "
+                "letting it run."
+                % (
+                    row["title"],
+                    encoder,
+                    "CQ" if encoder.startswith("vt") else "CRF",
+                    crf,
+                ),
                 kind="ok",
             )
             threading.Thread(
                 target=_parity_gate,
-                args=(proc, src, dest, log, row["title"], slug, crf),
+                args=(proc, src, dest, log, row["title"], slug, crf, encoder),
                 daemon=True,
             ).start()
         return None
@@ -1987,6 +2044,13 @@ class Handler(BaseHTTPRequestHandler):
         core.save_overrides(skip, pri)
         return None
 
+    @staticmethod
+    def _clear_encoder_override(title: str) -> None:
+        ov = core.load_encoder_overrides()["map"]
+        keep = {t: v for t, v in ov.items() if t.lower() != title.lower()}
+        if keep != ov:
+            core.save_encoder_overrides(keep)
+
     def _apply_crf(self, body: dict):
         """Set (or clear) the CRF a queued title will START its encode at.
 
@@ -2028,6 +2092,54 @@ class Handler(BaseHTTPRequestHandler):
         if crf is not None:
             crfs[row["title"]] = crf
         core.save_overrides(ov["skip"], ov["priority"], crfs)
+        # Two files describe one thing -- which encoder, at what quality --
+        # and the page offers ONE control over both. Picking a CRF rung is
+        # picking x265, so the encoder override goes with it. Leaving it
+        # behind would show a CRF in the column while `smeltr encoder` still
+        # answered vt, and the driver reads the encoder file first.
+        self._clear_encoder_override(row["title"])
+
+    def _apply_encoder(self, body: dict):
+        """Set or clear a title's encoder override (encoder_overrides.json).
+
+        {title, encoder: null} clears. Same matching rules as skip: exact
+        folder name the queue itself reported, refusing a duplicate basename.
+        Setting an override while the title encodes is allowed -- it only
+        steers the NEXT start -- but the quality must sit on the chosen
+        encoder's own menu, because 16 means near-lossless on the CRF scale
+        and garbage on Apple's reversed CQ scale.
+        """
+        title, enc, q = body.get("title"), body.get("encoder"), body.get("quality")
+        if not isinstance(title, str):
+            return "expected {title: str, encoder: str|null, quality: int}"
+        matches = [r for r in self._queue_rows()
+                   if r["title"].lower() == title.lower()]
+        if not matches:
+            return "title is not in the queue"
+        if len(matches) > 1:
+            return "two queue rows share this folder name; refusing to act on both"
+        row = matches[0]
+        ov = core.load_encoder_overrides()["map"]
+        ov = {t: v for t, v in ov.items()
+              if t.lower() != row["title"].lower()}
+        if enc is not None:
+            if enc not in core.ENCODER_CHOICES:
+                return "encoder must be one of %s" % ", ".join(core.ENCODER_CHOICES)
+            if not isinstance(q, int) or isinstance(q, bool) \
+                    or q not in core.ENCODER_CHOICES[enc]:
+                return "quality for %s must be one of %s" % (
+                    enc, ", ".join(str(c) for c in core.ENCODER_CHOICES[enc]))
+            ov[row["title"]] = {"encoder": enc, "quality": q}
+        core.save_encoder_overrides(ov)
+        # Same rule in the other direction: a hand-set encoder carries its own
+        # quality, so a stale CRF rung in queue_overrides.json would be a
+        # number the driver ignores for x265 and cannot use at all for VT.
+        cur = core.load_overrides()
+        crfs = {
+            t: v for t, v in cur["crf"].items() if t.lower() != row["title"].lower()
+        }
+        if crfs != cur["crf"]:
+            core.save_overrides(cur["skip"], cur["priority"], crfs)
         return None
 
     def _apply_order(self, body: dict):

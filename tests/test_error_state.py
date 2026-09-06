@@ -13,6 +13,7 @@ halts the pick of OTHER titles nor claims the stop condition.
 """
 
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -105,6 +106,24 @@ def _read_repo_file(*parts):
         return fh.read()
 
 
+def _next_rung(encoder, quality, direction):
+    """next_rung() out of the real staging/watch-encode.sh.
+
+    WE_TEST=1 makes the script define the function and return before the
+    watch loop, so this touches no filesystem and starts nothing.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    we = os.path.join(root, "staging", "watch-encode.sh")
+    out = subprocess.run(
+        ["bash", "-c",
+         'WE_TEST=1 . "$1" 1 f s o 99999 %d x265_10bit; next_rung "$2" "$3" "$4"'
+         % core.CRF_DEFAULT,
+         "_", we, encoder, str(quality), direction],
+        capture_output=True, text=True,
+    )
+    return out.stdout.strip()
+
+
 class DriverContract(unittest.TestCase):
     """next_title.py must translate the reason, and the driver's ladder
     branch must write the marker the pick reads -- one spelling."""
@@ -173,18 +192,22 @@ class DriverContract(unittest.TestCase):
         down = ladder[: pivot + 1][::-1]  # too small -> finer, starting at the pivot
         self.assertGreater(len(up), 1, "the pivot has nowhere to go when too big")
         self.assertGreater(len(down), 1, "the pivot has nowhere to go when too small")
-        for a, b in zip(up, up[1:]):
-            self.assertIn("%d) NEXTCRF=%d" % (a, b), src)
-        for a, b in zip(down, down[1:]):
-            self.assertIn("%d) NEXTCRF=%d" % (a, b), src)
-        # The far ends exhaust rather than wrapping, and the watcher's own
-        # default argument is the pivot too (a caller that omits [crf] must
-        # not land on a rung the ladder cannot leave).
-        self.assertIn("none-too-big", src)
-        self.assertIn("none-too-small", src)
-        self.assertNotIn("%d) NEXTCRF=" % up[-1], src)
-        self.assertNotIn("%d) NEXTCRF=" % down[-1], src)
-        self.assertIn('CRF="${6:-%d}"' % core.CRF_DEFAULT, src)
+        # Ask the real function rather than matching its source: the mapping is
+        # keyed on the encoder now, so a string match would pass on a table
+        # that answers correctly for VideoToolbox and wrongly for x265.
+        for arm, direction in ((up, "big"), (down, "small")):
+            for a, b in zip(arm, arm[1:]):
+                self.assertEqual(_next_rung("x265_10bit", a, direction), str(b))
+            # The far end exhausts rather than wrapping.
+            self.assertEqual(
+                _next_rung("x265_10bit", arm[-1], direction), "none-too-" + direction
+            )
+        # A violation opposite to a rung's own direction exhausts immediately.
+        self.assertEqual(_next_rung("x265_10bit", up[-1], "small"), "none-too-small")
+        self.assertEqual(_next_rung("x265_10bit", down[-1], "big"), "none-too-big")
+        # The watcher's own default argument is the pivot too: a caller that
+        # omits [quality] must not land on a rung the ladder cannot leave.
+        self.assertIn('Q="${6:-%d}"' % core.CRF_DEFAULT, src)
 
 
 if __name__ == "__main__":

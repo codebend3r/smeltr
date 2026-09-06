@@ -212,7 +212,10 @@ def section_live(live) -> str:
         pct = e["pct"] or 0
         bits = []
         if e["crf"] is not None:
-            bits.append(f"CRF {e['crf']:g}")
+            # CQ, never a bare "CRF n", for a VideoToolbox encode: the two
+            # quality scales are not comparable and 60 means opposite things.
+            vt = (e.get("encoder") or "").startswith("vt")
+            bits.append(f"{'CQ' if vt else 'CRF'} {e['crf']:g}")
         # Source AND output geometry. "3840x1600" on its own cannot be told
         # apart from an unwanted downscale, and that check gates a deletion.
         if e.get("source_geometry") and e["geometry"]:
@@ -378,7 +381,13 @@ def section_ledger(hist, limit) -> str:
                 "—" if not r.get("output_bytes") else approx + gib(r["output_bytes"]),
                 "—" if not r.get("saved_bytes") else approx + gib(r["saved_bytes"]),
                 "—" if r.get("saved_pct") is None else f"{r['saved_pct']:.1f}%",
-                "—" if r.get("crf") is None else f"{r['crf']:g}",
+                # A recorded VT row prints "CQ 60": this column sits beside the
+                # size of an original that was DELETED on the strength of it,
+                # and 60 read as a CRF says the opposite of what it means.
+                "—"
+                if r.get("crf") is None
+                else ("CQ " if (r.get("encoder") or "").startswith("vt") else "")
+                + f"{r['crf']:g}",
                 "—" if r.get("audio") is None else f"{r['audio']}a/{r['subs']}s",
                 # Matches the dashboard's two-pill rendering: volume · bucket,
                 # one field, not a path claiming to be complete.
@@ -399,7 +408,7 @@ def section_ledger(hist, limit) -> str:
         "OUTPUT",
         "SAVED",
         "SHRINK",
-        "CRF",
+        "QUALITY",
         "TRACKS",
         "MOVED TO",
         "SOURCE OF RECORD",

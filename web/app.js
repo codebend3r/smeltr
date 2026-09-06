@@ -18,6 +18,14 @@
   function pct(v) {
     return v == null ? "—" : v.toFixed(1) + "%";
   }
+  /* What the quality number MEANS, which depends on who made it. x265 quality
+   is CRF (lower = better); VideoToolbox is CQ on Apple's reversed 0-100 scale.
+   The two are not comparable, so a bare number on screen is ambiguous the
+   moment a second encoder exists. A missing encoder is x265: every row before
+   2026-08-25 was. */
+  function qLabel(enc) {
+    return enc && enc.indexOf("vt") === 0 ? "VT CQ" : "CRF";
+  }
   /* Live encode progress at HandBrake's own precision -- two decimals. The log
    never carries a third digit, so printing one was always a trailing zero. */
   function pctLive(v) {
@@ -226,6 +234,20 @@
       makeCollapsible(oc, "alert-ov", true);
       host.appendChild(oc);
     }
+    if (s.encoder_overrides_corrupt) {
+      var ec = el("div", "card alert");
+      ec.appendChild(el("div", "live-title", "encoder_overrides.json is unreadable"));
+      ec.appendChild(
+        el(
+          "div",
+          "verdict",
+          "Per-title encoder choices are NOT being applied — every encode will " +
+            "start on the x265 default. Fix or delete the file; changing any " +
+            "title's encoder here rewrites it cleanly.",
+        ),
+      );
+      host.appendChild(ec);
+    }
     if (s.library_complete !== false) return;
     var c = el("div", "card alert");
     c.appendChild(
@@ -347,7 +369,7 @@
     var t = el("div", "live-title", name);
     if (name !== e.title) t.title = e.title;
     top.appendChild(t);
-    if (e.crf != null) top.appendChild(el("span", "chip", "CRF " + e.crf));
+    if (e.crf != null) top.appendChild(el("span", "chip", qLabel(e.encoder) + " " + e.crf));
     if (e.geometry)
       top.appendChild(
         el(
@@ -1005,9 +1027,19 @@
     }, 6000);
   }
 
-  /* The CRF picker. It writes an override the DRIVER reads (core.planned_crf,
-   via `smeltr crf`), so this control decides -q for a title the driver may
-   not reach for hours -- not just for a hand-started encode.
+  /* The quality picker. It writes an override the DRIVER reads (`smeltr crf`
+   for an x265 rung, `smeltr encoder` for a hardware one), so this control
+   decides -e and -q for a title the driver may not reach for hours -- not
+   just for a hand-started encode.
+
+   ONE control, not two. x265 quality is CRF and VideoToolbox quality is CQ on
+   Apple's reversed scale, so the number alone is ambiguous and every option
+   names its scale. A second dropdown for the encoder beside a number that
+   meant something else is the shape this column already rejected once.
+
+   The two override files stay consistent because the SERVER clears the other
+   one on every write -- one round trip, one committed state, no window where
+   a row has a CRF from one file and an encoder from the other.
 
    "auto" is a real option, not decoration: it CLEARS the override so the row
    goes back to tracking the pipeline default. Without it there is no way out
@@ -1021,25 +1053,37 @@
   function crfPicker(r, s) {
     var choices = (s && s.crf_choices) || [10, 12, 14, 16, 18, 20, 22];
     var def = (s && s.crf_default) || 14;
-    var sel = el("select", "crfsel crfcell" + (r.crf_set ? " set" : ""));
-    sel.setAttribute("aria-label", "Start CRF for " + r.title);
-    sel.title = r.crf_set
-      ? "Chosen by hand — this title's encode starts at CRF " +
-        r.crf +
+    var menus = (s && s.encoder_choices) || { x265_10bit: choices };
+    var set = !!(r.crf_set || r.enc);
+    var sel = el("select", "crfsel crfcell" + (set ? " set" : ""));
+    sel.setAttribute("aria-label", "Start encoder and quality for " + r.title);
+    sel.title = r.enc
+      ? "Chosen by hand — this title's encode starts on " +
+        r.enc +
+        " at " +
+        qLabel(r.enc) +
+        " " +
+        r.enc_q +
         ". The auto-kill ladder may still step it from there."
-      : "Following the pipeline default (CRF " +
-        def +
-        "). Pick a value to fix " +
-        "this title's starting CRF; the ladder may still step it from there.";
+      : r.crf_set
+        ? "Chosen by hand — this title's encode starts at CRF " +
+          r.crf +
+          ". The auto-kill ladder may still step it from there."
+        : "Following the pipeline default (CRF " +
+          def +
+          "). Pick a value to fix " +
+          "this title's start; the ladder may still step it from there.";
     var auto = el("option", null, def + " (auto)");
     auto.value = "";
     sel.appendChild(auto);
-    choices.forEach(function (c) {
-      var o = el("option", null, String(c));
-      o.value = String(c);
-      sel.appendChild(o);
+    Object.keys(menus).forEach(function (enc) {
+      (menus[enc] || []).forEach(function (c) {
+        var o = el("option", null, qLabel(enc) + " " + c);
+        o.value = enc + ":" + c;
+        sel.appendChild(o);
+      });
     });
-    sel.value = r.crf_set ? String(r.crf) : "";
+    sel.value = r.enc ? r.enc + ":" + r.enc_q : r.crf_set ? "x265_10bit:" + r.crf : "";
     /* Interacting with the picker must not start a drag on the row, and must
      not arm/disarm anything in the title cell beside it. */
     sel.addEventListener("mousedown", function (e) {
@@ -1061,13 +1105,27 @@
       }
     });
     sel.addEventListener("change", function () {
-      var v = sel.value === "" ? null : parseInt(sel.value, 10);
+      var parts = sel.value === "" ? null : sel.value.split(":");
       /* Released on blur, not here: the response repaints the table and the
        fresh <select> reads the committed value, so leaving it set would
        wedge the deferral against a node that no longer exists. */
       crfOpen = null;
       sel.disabled = true;
-      api("/api/queue/crf", { title: r.title, crf: v }).finally(function () {
+      /* An x265 rung is the CRF override the driver already reads; anything
+       else is an encoder override. Either endpoint clears the other file, so
+       one request settles the whole row. */
+      var call =
+        parts && parts[0] !== "x265_10bit"
+          ? api("/api/queue/encoder", {
+              title: r.title,
+              encoder: parts[0],
+              quality: parseInt(parts[1], 10),
+            })
+          : api("/api/queue/crf", {
+              title: r.title,
+              crf: parts ? parseInt(parts[1], 10) : null,
+            });
+      call.finally(function () {
         sel.disabled = false;
       });
     });
@@ -1101,10 +1159,18 @@
       var go = el("button", "act go", "start encode");
       go.type = "button";
       go.dataset.title = r.title;
-      go.title = "Start encoding this title now at CRF " + r.crf;
+      /* The row's own planned start, encoder included -- the same pair the
+       column picker shows and the driver would use. */
+      var startQ = r.enc ? r.enc_q : r.crf;
+      var startLbl = qLabel(r.enc) + " " + startQ;
+      go.title = "Start encoding this title now at " + startLbl;
       go.addEventListener("click", function () {
-        arm(go, acts, "start at CRF " + r.crf + "?", function () {
-          api("/api/encode/start", { title: r.title, crf: r.crf });
+        arm(go, acts, "start at " + startLbl + "?", function () {
+          api("/api/encode/start", {
+            title: r.title,
+            crf: startQ,
+            encoder: r.enc || null,
+          });
         });
       });
       acts.appendChild(go);
@@ -1303,6 +1369,8 @@
       !!r.arriving_stalled,
       r.stage_queued == null ? null : r.stage_queued,
       r.stage_wait || null,
+      r.enc || null,
+      r.enc_q == null ? null : r.enc_q,
     ];
   }
   function xShape(t) {
@@ -1313,7 +1381,10 @@
     progRefs = {};
     var liveCrf = {};
     (live || []).forEach(function (e) {
-      if (e.crf != null) liveCrf[(e.folder || e.title).toLowerCase()] = e.crf;
+      /* {q, enc}, not a bare number: the encoding row has to print the scale
+       the running encoder actually uses, and only the encoder can say which. */
+      if (e.crf != null)
+        liveCrf[(e.folder || e.title).toLowerCase()] = { q: e.crf, enc: e.encoder };
     });
     var pane = document.getElementById("pane");
     pane.replaceChildren();
@@ -1366,7 +1437,7 @@
           { label: "Rank", n: true },
           { label: "SRC Mb/s", n: true, cls: "unit" },
           { label: "Src size", n: true },
-          { label: "CRF", n: true },
+          { label: "Quality", n: true },
           { label: "Title", cls: "title-cell" },
           { label: "NAS" },
           { label: "Src folder" },
@@ -1410,8 +1481,12 @@
           if (r.skipped) {
             crfTd = el("td", "n q-crf", "—");
           } else if (r.encoding) {
-            crfTd = el("td", "n q-crf", String(lc != null ? lc : r.crf));
-            crfTd.title = "The CRF this encode is actually running at";
+            /* The scale comes from the encoder that is ACTUALLY running, not
+             from the row's plan: a CQ printed as a bare number reads as a
+             near-lossless CRF, one column from a size that says otherwise. */
+            var le = lc ? lc.enc : r.enc;
+            crfTd = el("td", "n q-crf", qLabel(le) + " " + (lc ? lc.q : r.crf));
+            crfTd.title = "The " + qLabel(le) + " this encode is actually running at";
           } else {
             crfTd = el("td", "n q-crf");
             crfTd.appendChild(crfPicker(r, s));
@@ -1625,7 +1700,7 @@
           { label: "Output", n: true },
           { label: "Saved", n: true },
           { label: "Shrink", n: true },
-          { label: "CRF", n: true },
+          { label: "Quality", n: true },
           { label: "Tracks" },
           { label: "NAS" },
           { label: "Moved to" },
@@ -1641,9 +1716,21 @@
           tr.appendChild(el("td", "n", r.output_bytes ? ap + gib(r.output_bytes) : "—"));
           tr.appendChild(el("td", "n", r.saved_bytes ? ap + gib(r.saved_bytes) : "—"));
           tr.appendChild(el("td", "n", pct(r.saved_pct)));
-          tr.appendChild(
-            el("td", "n" + (r.crf == null ? " muted" : ""), r.crf == null ? "—" : String(r.crf)),
+          /* A recorded VT row prints "CQ 60", never a bare 60: this column sits
+         beside the size of an original that was DELETED on the strength of
+         it, and 60 read as a CRF says the opposite of what it means. */
+          var qtd = el(
+            "td",
+            "n" + (r.crf == null ? " muted" : ""),
+            r.crf == null ? "—" : qLabel(r.encoder) + " " + r.crf,
           );
+          if (r.crf != null)
+            qtd.title =
+              r.encoder && r.encoder.indexOf("vt") === 0
+                ? "VideoToolbox CQ this encode was recorded at " +
+                  "(Apple's reversed scale; not a CRF)"
+                : "CRF this encode was recorded at";
+          tr.appendChild(qtd);
           tr.appendChild(
             el("td", "muted", r.audio == null ? "—" : r.audio + "a / " + r.subs + "s"),
           );
@@ -1906,7 +1993,7 @@
           ? [
               s.queue.map(qShape),
               s.live.map(function (e) {
-                return [e.folder, e.crf];
+                return [e.folder, e.crf, e.encoder];
               }),
               s.summary.library_complete,
               s.summary.roots_offline,
@@ -1932,6 +2019,7 @@
               Object.assign({}, s.summary, {
                 can_start: s.can_start,
                 crf_choices: s.crf_choices,
+                encoder_choices: s.encoder_choices,
                 crf_default: s.crf_default,
                 /* A busy wire changes the button's PROMISE from "pull now" to
                 "wait in line"; saying "stage" while five titles queue ahead
