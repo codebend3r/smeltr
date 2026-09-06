@@ -56,6 +56,7 @@
     "test:sh:autopilot": "bash tests/test_autopilot_helpers.sh",
     "test:sh:drift": "bash tests/test_staging_in_sync.sh",
     "test:sh:launcher": "bash tests/test_launcher_pids.sh",
+    "test:sh:watch-finish": "bash tests/test_watch_finish.sh",
     "test:sh:watch-ladder": "bash tests/test_watch_ladder.sh",
     "test:sh:watchdog": "bash tests/test_watchdog_triage.sh",
     "url": "./smeltr url",

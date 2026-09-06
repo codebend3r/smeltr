@@ -229,15 +229,25 @@ class LastRungFinishes(unittest.TestCase):
         body = src.split('NEXTQ=$(next_rung', 1)[1]
         return body.split("      esac", 1)[0]
 
-    def _arm(self, name):
-        """One arm of that case, `none-*)` or the `*)` fallback."""
+    def _arm(self, name, code_only=False):
+        """One arm of that case, `none-*)` or the `*)` fallback.
+
+        `code_only` drops comment lines: the assertions about what an arm
+        DOES must not be satisfied or broken by prose that happens to
+        contain the word.
+        """
         block = self._kill_block()
         arms = block.split("        none-*)", 1)[1]
         end, _, rest = arms.partition("        *)")
-        return end if name == "none" else rest
+        out = end if name == "none" else rest
+        if code_only:
+            out = "\n".join(
+                ln for ln in out.splitlines() if not ln.lstrip().startswith("#")
+            )
+        return out
 
     def test_the_terminal_rung_is_not_killed(self):
-        end = self._arm("none")
+        end = self._arm("none", code_only=True)
         self.assertNotIn("kill ", end)
         self.assertNotIn('rm -f "$OUT"', end)
         self.assertIn("FINAL|", end)
@@ -246,19 +256,25 @@ class LastRungFinishes(unittest.TestCase):
         self.assertNotIn("break", end)
 
     def test_a_rung_that_exists_is_still_killed(self):
-        rest = self._arm("rest")
+        rest = self._arm("rest", code_only=True)
         self.assertIn('kill "$HBPID"', rest)
         self.assertIn('rm -f "$OUT"', rest)
         self.assertIn("KILLED|", rest)
         self.assertIn("break", rest)
 
-    def test_the_band_check_stops_once_the_ladder_is_done(self):
-        """Every later tick would report the same violation and the same
-        answer, and the file only grows -- one FINAL line, then silence."""
+    def test_the_finality_gate_is_per_direction(self):
+        """One arm running out must NOT switch off the other arm's kill.
+
+        A single flag did exactly that: a noisy low sample at 6% progress on
+        a rung reached by laddering UP reported FINAL and disarmed the band
+        check entirely, so the blowup that put the encode on that rung ran
+        unopposed to 1000% of source. The other direction keeps full
+        strike-and-kill authority; `tests/test_watch_finish.sh` drives it.
+        """
         src = _read_repo_file("staging", "watch-encode.sh")
-        self.assertIn("LASTRUNG=0", src)
-        self.assertIn("LASTRUNG=1", src)
-        self.assertIn('[ "$LASTRUNG" = 0 ]', src)
+        self.assertIn('FINAL_DIRS="$FINAL_DIRS $DIR"', src)
+        self.assertIn('case " $FINAL_DIRS " in', src)
+        self.assertNotIn("LASTRUNG", src)
 
     def test_the_driver_never_sees_a_ladder_it_can_error_on(self):
         """A current watcher writes no `next: none-*`, so the driver's
@@ -266,7 +282,7 @@ class LastRungFinishes(unittest.TestCase):
         launched before this deploy is still running and already killed its
         encode."""
         we = _read_repo_file("staging", "watch-encode.sh")
-        self.assertNotIn("next: Q ${NEXTQ}", self._arm("none"))
+        self.assertNotIn("next: Q ${NEXTQ}", self._arm("none", code_only=True))
         self.assertIn("next: Q ${NEXTQ}", we)
         self.assertIn("none*)", _read_repo_file("staging", "autopilot.sh"))
 
@@ -278,24 +294,28 @@ class LastRungFinishes(unittest.TestCase):
         hour it stops being the last line and an mtime stamp decays to "—"
         on the one row that records the ladder ending.
         """
-        end = self._arm("none")
+        end = self._arm("none", code_only=True)
         self.assertIn("date '+%Y-%m-%d %H:%M:%S'", end)
         ev = _read_repo_file("dashboard", "events.py")
         self.assertIn('"ts": parts[2]', ev.split('word == "FINAL"', 1)[1])
+        # ...and parts[2] is only trusted when it looks like a timestamp: an
+        # earlier wording put the projection there, which became both the
+        # Time cell and the sort key and pinned the row to the top forever.
+        self.assertIn("_STAMP.match(parts[2])", ev)
 
     def test_the_quality_carries_its_scale(self):
         """CRF and CQ are mirrored scales; a bare Q10 beside a Q70 for the
         same situation cannot be read."""
         src = _read_repo_file("staging", "watch-encode.sh")
         self.assertIn("q_label()", src)
-        self.assertIn("${QL}", self._arm("none"))
+        self.assertIn("${QL}", self._arm("none", code_only=True))
 
     def test_the_wording_does_not_claim_a_rung_it_is_not_on(self):
         """Four of the eight cases that reach FINAL are the oscillation
         guard -- a rung violated in the direction its own arm cannot step.
         Calling a too-small projection at CRF 16 "the last rung of the small
         arm" names a rung that is not on that arm at all."""
-        end = self._arm("none")
+        end = self._arm("none", code_only=True)
         self.assertIn("no rung left", end)
         self.assertNotIn("last rung on the", end)
 
@@ -310,7 +330,9 @@ class LastRungFinishes(unittest.TestCase):
         """
         src = _read_repo_file("dashboard", "notify.py")
         block = src.split('if kind == "lastrung":', 1)[1].split("if kind ==", 1)[0]
-        self.assertIn('"too-small" in rest', block)
+        # Fails toward the arm that deletes: only a positive "too-big"
+        # earns the reassuring wording.
+        self.assertIn('"too-big" not in rest', block)
         self.assertIn("SYNCS and deletes", block)
         self.assertIn("no-saving", block)
         self.assertNotIn("nothing is deleted on this", src)

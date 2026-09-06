@@ -34,6 +34,11 @@ DEFAULT_LIMIT = 250
 DETAIL_CAP = 600
 
 _TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})  (\s*)(.*)$")
+# A watcher field is only a timestamp if it looks like one. An earlier build
+# of the FINAL line put the projection in this position; unchecked it became
+# both the Time cell ("ct-ed-oj" after the page slices it) and the sort key,
+# which pinned that row to the top of the timeline permanently.
+_STAMP = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
 
 # First word of a stamped line -> kind. Kind drives only the chip colour and
 # label on the page; an unlisted word is "info", never an error.
@@ -161,7 +166,7 @@ def _watch_events():
                         "_ord": stamp,
                     }
                 )
-            elif word == "FINAL" and len(parts) >= 4:
+            elif word == "FINAL" and len(parts) >= 4 and _STAMP.match(parts[2]):
                 # END OF THE LADDER (2026-09-06): no rung left, so the watcher
                 # left the encode RUNNING instead of killing it. It carries
                 # its OWN stamp (parts[2]) because it does not exit — QUARTER

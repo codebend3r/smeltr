@@ -488,6 +488,26 @@ Verified against the live 33-row baseline: 14.9% → `suspect`, 15.1% → `good`
 which arm it is on and what that arm's verdict does — a message that averaged
 the two into one reassurance is the one a tired person goes back to sleep on.
 
+**The finality is PER DIRECTION, and that is the whole safety of it.** A
+single "the ladder is done" flag switched the band check off in both
+directions, so one noisy low sample at 6% progress on a rung reached by
+laddering UP disarmed the too-big guard for the rest of a multi-hour run — a
+1000%-of-source blowup then ran unopposed with the watcher silent (reproduced
+in a sandbox, 2026-09-06). `FINAL_DIRS` records the directions that have run
+out; the OTHER direction keeps full strike-and-kill authority, so a
+mid-ladder rung that reported `FINAL` downwards still ladders UP normally.
+`tests/test_watch_finish.sh` drives the real loop against a temp sandbox
+(fake HandBrake, `/dev/zero` "video", nothing touches the X9) and asserts
+both halves — the string-matching tests could not see this one.
+
+At a GENUINE terminal rung (CRF 22 / CRF 10, CQ 50 / CQ 70) both directions
+are exhausted, so nothing kills that encode whatever it does. That is the
+rule as asked for — "finish regardless of size" — and it means **there is no
+size ceiling left on a terminal-rung run**: an encode that blows past 100% of
+source will write until it finishes or the drive fills. Nothing else guards
+it (`.autopilot.sh` has no `df` check, and `verdict.py` only sees the
+finished file).
+
 Because the driver is never told (there is no KILLED line), the `FINAL` line is
 the ONLY record — it reaches the Events tab as kind `lastrung` and the notifier
 as `last-rung`, and both had to be taught it. It is a **`bad` chip, not

@@ -121,9 +121,14 @@ BASE="/Volumes/Crucial X9/4K Movies/${FOLDER}"
 SRC="${BASE}/${SRCNAME}"; OUT="${BASE}/${OUTNAME}"
 NEXT=25
 STRIKES=0; STRIKEDIR=""
-# Set once the ladder has no rung left in the violated direction: the encode is
-# allowed to finish and this script stops judging it.
-LASTRUNG=0
+# The directions the ladder has already run out of, space-separated ("big",
+# "small"). PER DIRECTION, never a single flag: a low reading at CRF 22 (a rung
+# reached because the encode was too BIG) has no rung left downwards and is
+# reported once -- but CRF 22 still has to be watched for the blowup that put
+# it there, and a mid-ladder rung like CRF 16 still has a real up-rung to
+# ladder to. A single flag switched the whole band check off, so one noisy
+# 6%-progress sample removed the only ceiling on the rest of a multi-hour run.
+FINAL_DIRS=""
 SRCSZ=$(stat -f%z "$SRC")
 
 while true; do
@@ -160,8 +165,7 @@ while true; do
   fi
 
   # The band check, every tick. Two consecutive agreeing violations kill.
-  if [ -n "$RATIO" ] && [ "$LASTRUNG" = 0 ] \
-     && [ "${SMELTR_NO_AUTOKILL:-${SMELTER_NO_AUTOKILL:-0}}" != "1" ]; then
+  if [ -n "$RATIO" ] && [ "${SMELTR_NO_AUTOKILL:-${SMELTER_NO_AUTOKILL:-0}}" != "1" ]; then
     DIR=""
     awk -v r="$RATIO" 'BEGIN{exit !(r>80)}' && DIR=big
     awk -v r="$RATIO" 'BEGIN{exit !(r<30)}' && DIR=small
@@ -171,6 +175,13 @@ while true; do
       STRIKES=1; STRIKEDIR="$DIR"
     fi
     [ -z "$DIR" ] && { STRIKES=0; STRIKEDIR=""; }
+
+    # A direction already reported as out of rungs is not re-reported: every
+    # later tick would say the same thing with the same answer. The OTHER
+    # direction keeps its full strike-and-kill authority.
+    case " $FINAL_DIRS " in
+      *" $DIR "*) STRIKES=0; STRIKEDIR="" ;;
+    esac
 
     if [ -n "$DIR" ] && [ "$STRIKES" -ge 2 ]; then
       NEXTQ=$(next_rung "$ENC" "$Q" "$DIR")
@@ -191,9 +202,11 @@ while true; do
           # library original. See the header -- the two arms do not end the
           # same way, and this branch must not be read as "nothing is
           # deleted".
-          # Reported ONCE and the band check is off for the rest of the run --
-          # every later tick would report the same violation with the same
-          # answer, and the file only grows.
+          # Reported ONCE for THIS direction -- every later tick would say the
+          # same thing with the same answer. The opposite direction keeps its
+          # kill authority: a rung reached by laddering up is still watched for
+          # the blowup that sent it there, and a mid-ladder rung still has a
+          # real rung to step to on its own arm.
           # Self-stamped like COMPLETE, NOT left to the file's mtime: this
           # branch does not exit, so the loop writes QUARTER lines after it
           # and FINAL stops being the log's last line within the hour. An
@@ -207,7 +220,7 @@ while true; do
           # names a rung that is not on that arm at all.
           QL=$(q_label "$ENC")
           echo "FINAL|${FOLDER}|$(date '+%Y-%m-%d %H:%M:%S')|projected ${RATIO}% of original at ${PCT}% (${ENC} ${QL} ${Q})|outside the 30-80% target band|no rung left for a too-${DIR} projection from ${QL} ${Q} - finishing there, not killed"
-          LASTRUNG=1
+          FINAL_DIRS="$FINAL_DIRS $DIR"
           STRIKES=0; STRIKEDIR=""
           ;;
         *)

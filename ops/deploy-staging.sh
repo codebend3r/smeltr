@@ -22,10 +22,29 @@ set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 X9="${SMELTR_X9:-/Volumes/Crucial X9/4K Movies}"
 DRY=false
-[ "${1:-}" = "--dry-run" ] && DRY=true
+YES=false
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY=true ;;
+    --yes|-y)  YES=true ;;
+    *) echo "usage: $0 [--dry-run] [--yes]" >&2; exit 2 ;;
+  esac
+done
 
 [ -d "$X9" ] || { echo "staging drive not mounted: $X9" >&2; exit 1; }
 [ -w "$X9" ] || { echo "staging drive is not writable: $X9" >&2; exit 1; }
+
+# A REAL deploy while the driver is alive needs an explicit --yes. Swapping by
+# `mv` is safe for the running bash (it keeps its old inode), but the pause
+# procedure exists for the rest of it: a driver mid-cycle picks the new script
+# up on its next launch, which is not always the moment you meant. This is a
+# guard against a mistyped script name, not against the operator -- --yes is
+# one word.
+if ! $DRY && ! $YES && pgrep -f autopilot.sh >/dev/null 2>&1; then
+  echo "REFUSING: the driver is running (pid $(pgrep -f autopilot.sh | tr '\n' ' '))." >&2
+  echo "Pause it first (see CLAUDE.md), or pass --yes to deploy anyway." >&2
+  exit 1
+fi
 
 rc=0
 # ORDER IS LOAD-BEARING and the glob supplies it: autopilot.sh sorts before

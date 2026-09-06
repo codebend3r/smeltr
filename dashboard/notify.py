@@ -186,7 +186,13 @@ def classify(e: dict, err=_err):
         # precisely where a too-small terminal rung lands. Saying "nothing is
         # deleted" here would be false in the one direction where it matters.
         title, rest = _split_watcher(text)
-        small = "too-small" in rest
+        # Fails toward the DANGEROUS arm: anything that does not positively
+        # say "too-big" is treated as the arm that can delete an original.
+        # A watcher deployed from an earlier build words this line
+        # differently, and `"too-small" in rest` took the reassuring branch
+        # on it -- the false sentence, on the arm that deletes, in the one
+        # message this path ever produces.
+        small = "too-big" not in rest
         tail = (
             "a below-band result is still a `good` verdict once it clears the "
             f"{core.OUTLIER_FLOOR_NORM:.0f}% floor, which SYNCS and deletes "
