@@ -1,0 +1,46 @@
+# The sanity check for `main`, and the whole of it is one `uses:`.
+#
+# Why it exists. Nothing ran on `main` at all: the suite is triggered by
+# `pull_request` alone, and two routes reach main with no pull request to
+# trigger it -- `bun run release`, which commits the version bump and pushes
+# the tag straight to origin, and a plain `git push` of a fast-forwarded
+# branch. Both were checked by pre-push locally and by nothing afterwards. A
+# green run against the merged commit is the record that the tree on main is
+# the tree CI actually passed, which is the thing a squashed or rebased merge
+# cannot inherit from the PR run.
+#
+# Why it is a CALLER and not a workflow. Every step in the suite would have to
+# be repeated here, and pull-request-checks.yml's own design note is about
+# exactly that failure: two renditions of one gate drift the moment one is
+# edited alone. `test_repo_invariants.py::CiRunsThroughBun` reads only
+# pull-request-checks.yml, so a new `test:*` script would be pinned as a step
+# THERE and be silently missing HERE, and main would quietly stop running a
+# suite everyone believes it runs.
+# `test_repo_invariants.py::MainSanityCheckReusesTheOneGate` pins the shape:
+# no `run:` of its own, and the one `uses:` points at the local suite.
+#
+# What it does NOT do. It notifies nobody -- a red run on main is a record to
+# be found, not an alert. Branch protection is untouched: the required `✅ ci`
+# check still comes from the pull_request run, which is the only one that can
+# block a merge.
+
+name: 🩺 Main sanity check
+
+on:
+  push:
+    branches: [main]
+
+# Read-only, and stated here as well as in the called workflow: a reusable
+# workflow can never receive more than its caller holds, so this line is the
+# ceiling on everything the suite can do.
+permissions:
+  contents: read
+
+jobs:
+  # No `with:` and no `secrets:`. The suite takes no inputs and reads no
+  # secret -- no runner here ever sees the NAS, the staging drive, or a token.
+  suite:
+    name: 🧪 the pull request suite, run against main
+    uses: ./.github/workflows/pull-request-checks.yml
+    permissions:
+      contents: read

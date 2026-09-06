@@ -1014,5 +1014,52 @@ class LedgerFixture(unittest.TestCase):
         self.assertFalse(ignored("tests/fixtures/ledger-calibration.jsonl"))
 
 
+class MainSanityCheckReusesTheOneGate(unittest.TestCase):
+    """The `main` sanity check CALLS pull-request-checks.yml; it never copies it.
+
+    Nothing runs on `main` since 685cf9b -- `bun run release` and a plain
+    `git push` both land there with no PR, so a direct-to-main commit was
+    checked nowhere. The fix is a push-triggered workflow, and the trap it
+    walks into is the one CiRunsThroughBun already names: a second file
+    listing the same steps is a SECOND rendition of the gate, and the
+    invariant suite reads only pull-request-checks.yml, so a new `test:*`
+    script would be a step there and silently absent here. A caller has
+    nothing to drift.
+    """
+
+    CALLER = ".github/workflows/main-sanity-check.yml"
+    CALLED = "pull-request-checks.yml"
+
+    def test_the_pr_checks_workflow_is_callable(self):
+        on = read(".github/workflows/" + self.CALLED).split("\non:", 1)[1]
+        on = on.split("\npermissions:", 1)[0]
+        self.assertIn("workflow_call:", on)
+        self.assertIn("pull_request:", on, "PRs must still trigger it directly")
+
+    def test_it_runs_on_a_push_to_main(self):
+        on = read(self.CALLER).split("\non:", 1)[1].split("\npermissions:", 1)[0]
+        self.assertIn("push:", on)
+        self.assertIn("branches: [main]", on)
+        self.assertNotIn("pull_request", on, "PR runs belong to the other file")
+
+    def yaml_lines(self):
+        """The caller's actual YAML. Comments are prose and name `run:` freely."""
+        return [l for l in read(self.CALLER).splitlines() if not l.lstrip().startswith("#")]
+
+    def test_it_is_a_caller_and_nothing_else(self):
+        """No `run:` of its own -- the moment one appears, the copy has begun."""
+        body = "\n".join(self.yaml_lines())
+        self.assertNotIn("run:", body)
+        uses = re.findall(r"^\s+uses:\s*(\S+)\s*$", body, re.M)
+        self.assertEqual(uses, ["./.github/workflows/" + self.CALLED])
+
+    def test_it_widens_no_permission(self):
+        for line in self.yaml_lines():
+            m = re.match(r"^\s+(contents|actions|packages|id-token):\s*(\S+)", line)
+            if m:
+                self.assertEqual(m.group(2), "read", line.strip())
+
+
+
 if __name__ == "__main__":
     unittest.main()
