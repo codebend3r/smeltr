@@ -19,6 +19,21 @@ there is no `package-lock.json` and no `.npmrc`). No `node`, no `npm`,
 anywhere — `test_repo_invariants.py::BunIsTheOnlyRunner` pins it.
 Run `./smeltr report` or open <http://127.0.0.1:8787/>.
 
+**Every operator command is also a bun script**, so one runner drives the whole
+repo: `bun run restart` · `start` · `stop` · `status` · `url` · `open` ·
+`report` · `notify:test` (thin wrappers over the `./smeltr` launcher, which
+stays the interface `.autopilot.sh` calls), plus `bun run deploy:dry-run` /
+`deploy:staging` (`ops/deploy-staging.sh`, under the pause procedure) and
+`bun run watchdog` (`ops/watchdog.sh --supervise`, in the FOREGROUND — the
+documented detached form is still the `nohup` line below). Extra arguments
+pass through: `bun run report --json`.
+
+**The decision-path subcommands are deliberately NOT scripts**: `smeltr next`,
+`verdict`, `record`, `crf` and `encoder` are the driver's interface, not a
+human's. `core.record()` appends to `ledger.jsonl` with no duplicate guard, so
+a stray `bun run record` would write a second row for a finished encode and
+double-count its reclaim against the irreplaceable file.
+
 ## THIS IS LIVE INFRASTRUCTURE — read before editing
 
 A detached `autopilot.sh` on the staging drive is running unattended right now.
@@ -348,8 +363,10 @@ How it works:
   14→12→10. VT quality is CQ, where HIGHER means a bigger file, so both
   arms flip: too big steps DOWN 60→55→50, too small steps UP 60→65→70. A
   rung mapped with the wrong scale re-runs the blowup LARGER. Each ladder
-  still pivots on its encoder's own default and exhausts to
-  `none-too-big`/`none-too-small` — the ERROR state, unchanged. The KILLED
+  still pivots on its encoder's own default; past its last rung
+  (`none-too-big`/`none-too-small`) the encode FINISHES there rather than
+  being killed (2026-09-06) — CQ 50 and CQ 70 are VT's terminal rungs, the
+  mirror of CRF 22 and CRF 10. The KILLED
   line now says `next: Q <n>` and names the encoder that produced the rung;
   the driver parses both wordings (a watcher launched pre-deploy still says
   `next: CRF <n>`). `tests/test_watch_ladder.sh` pins every rung and both
@@ -441,6 +458,73 @@ violation OPPOSITE to the rung's own direction (too small at 16/18/20/22, too
 big at 12/10) exhausts immediately — a projection that flips sides
 between adjacent rungs would oscillate forever.
 
+**Past the LAST rung the encode is no longer killed — it finishes
+(2026-09-06, operator's rule).** There is no better rung to retry at, so the
+run in flight IS the answer: the watcher logs `FINAL|` instead of `KILLED|`,
+stops band-checking for the rest of the run, and the encode completes at its
+terminal rung — **x265 CRF 22 (too big) / CRF 10 (too small), VideoToolbox
+CQ 50 (too big) / CQ 70 (too small)**, the same rule on the mirrored scale.
+The one-directional rungs go the same way: a violation a rung cannot step
+towards finishes there too, because the alternative was never a better rung,
+only an oscillation. Killing at the end produced no output at all and burned
+hours; an out-of-band file is something a human can look at.
+
+**The two arms do NOT end the same way, and "nothing is deleted" is false on
+one of them.** The ladder stops deciding; the verdict still does — and the
+verdict reads 30–80% as a TARGET, not a defect threshold:
+
+- **too big** → the finished file is >80% of source → `no-saving` → ERROR
+  state, and the library original survives.
+- **too small** → anything from the 15.0 floor to the 30% band edge is a
+  **`good` verdict**, which syncs and **deletes the ~90 GB library original
+  unattended**. That is exactly where a too-small terminal rung lands — Kubo
+  23.7% and Minions 17.2% are the documented examples. Under the old
+  kill-at-the-end behaviour that encode never existed to be judged, so this
+  change moves those titles from "red row, original kept" to "synced, original
+  deleted". Below 15.0 the absolute floor still catches it (`suspect`).
+
+Verified against the live 33-row baseline: 14.9% → `suspect`, 15.1% → `good`,
+29.9% → `good`, 80.5% → `no-saving`. Every surface reporting a `FINAL` names
+which arm it is on and what that arm's verdict does — a message that averaged
+the two into one reassurance is the one a tired person goes back to sleep on.
+
+**The finality is PER DIRECTION, and that is the whole safety of it.** A
+single "the ladder is done" flag switched the band check off in both
+directions, so one noisy low sample at 6% progress on a rung reached by
+laddering UP disarmed the too-big guard for the rest of a multi-hour run — a
+1000%-of-source blowup then ran unopposed with the watcher silent (reproduced
+in a sandbox, 2026-09-06). `FINAL_DIRS` records the directions that have run
+out; the OTHER direction keeps full strike-and-kill authority, so a
+mid-ladder rung that reported `FINAL` downwards still ladders UP normally.
+`tests/test_watch_finish.sh` drives the real loop against a temp sandbox
+(fake HandBrake, `/dev/zero` "video", nothing touches the X9) and asserts
+both halves — the string-matching tests could not see this one.
+
+At a GENUINE terminal rung (CRF 22 / CRF 10, CQ 50 / CQ 70) both directions
+are exhausted, so nothing kills that encode whatever it does. That is the
+rule as asked for — "finish regardless of size" — and it means **there is no
+size ceiling left on a terminal-rung run**: an encode that blows past 100% of
+source will write until it finishes or the drive fills. Nothing else guards
+it (`.autopilot.sh` has no `df` check, and `verdict.py` only sees the
+finished file).
+
+Because the driver is never told (there is no KILLED line), the `FINAL` line is
+the ONLY record — it reaches the Events tab as kind `lastrung` and the notifier
+as `last-rung`, and both had to be taught it. It is a **`bad` chip, not
+`warn`**: its predecessor `exhausted` was red and ended with the original safe,
+this ends with the original at risk, so the colour may not fall. The line
+carries its own `date` stamp like `COMPLETE` (it does NOT exit, so `QUARTER`
+lines follow it and an mtime stamp would decay to "—" within the hour), and it
+labels quality `CRF` or `VT CQ` — a bare `Q10` beside a `Q70` for the same
+situation is unreadable on two mirrored scales. Its wording is "no rung left
+for a too-X projection from CRF n": of the eight cases that reach it four are a
+genuine terminal rung and four are the oscillation guard, and calling a
+too-small projection at CRF 16 "the last rung of the small arm" names a rung
+that is not on that arm. The driver's `none*` branch stays as a LEGACY path: a
+watcher launched before this deploy still writes `next: Q none-*`, and it
+already killed its encode.
+`tests/test_error_state.py::LastRungFinishes` pins it.
+
 **The ladder pivots on `core.CRF_DEFAULT` and the two must move together**
 (the pivot went 16 → 14 on 2026-09-03). The pivot is the one rung both arms
 leave from; every other rung is one-directional. Moving the constant alone
@@ -450,15 +534,18 @@ and a lower CRF makes a BIGGER file, so too-big is exactly the direction
 the move to 14 makes more likely. Moving the pivot also means a hand-picked
 16 that comes in too small now exhausts rather than stepping to 14, which is
 the same "picking a rung narrows the ladder" rule applied one rung up. Exhaustion (`none-too-big` /
-`none-too-small`) is the **ERROR state**: `.autopilot.sh` writes
+`none-too-small`) reaching the DRIVER — only possible from a pre-2026-09-06
+watcher now — is the **ERROR state**: `.autopilot.sh` writes
 `$X9/.error-<title>` and MOVES ON — never a halt, never a skip, never a
 deletion. `core.error_marker()` puts `error`/`error_note` on the queue row;
 `pick_next` passes it over (wait reason `errored`); the queue tab renders
 the title red with a ❗ (hover for the note). The state ends when a human
 deletes the marker file. Known consequence the operator accepted: clean
 digital/animated sources that legitimately land under 30% (Kubo 23.7%,
-Minions 17.2%) will now ladder DOWN and may end red at CRF 10 —
-`tests/test_error_state.py` pins the mechanics.
+Minions 17.2%) will now ladder DOWN and **finish** at CRF 10 — since
+2026-09-06 they are no longer killed there. The verdict still judges that
+file, so an implausibly small one can still end red; it just ends red WITH an
+encode beside it. `tests/test_error_state.py` pins the mechanics.
 
 ### No gap between encodes — the operator's standing requirement (2026-08-31)
 
@@ -1272,7 +1359,9 @@ second request.
   target rung alone (one rung per retry; every rung above `CRF_DEFAULT` is
   an up-rung); the kill's projection is added only when the watcher line
   is still there. Watcher `killed`/`exhausted` are therefore silent on
-  their own; the kill's projection is REMEMBERED from the earlier tick
+  their own — but `lastrung` is NOT, because no driver line follows it at
+  all: past the last rung the watcher lets the encode run and never tells the
+  driver, so this notification is the only record; the kill's projection is REMEMBERED from the earlier tick
   that saw it and added to the ladder message when known. The deletion
   message is built from the LEDGER row (`record` writes it before the
   sync; subject carries the original's GiB), never from the folded shell
@@ -1556,8 +1645,13 @@ animations are gated on `body:not(.booted)` so SSE rebuilds don't replay them.
    Google Fonts.
 2. **Never `innerHTML` with server data.** Everything goes through `textContent`
    via the `el()` helper. Movie titles are filesystem strings.
-3. **`./smeltr restart`** after editing, then hard-reload. The server process
-   holds `core` in memory — a `pipeline/core.py` edit is invisible until restart.
+3. **`./smeltr restart`** (or `bun run restart`) after editing, then
+   hard-reload. `web/*` is inlined at import, so an edited page reaches nobody
+   until the process is replaced — a server left running across a UI change
+   serves the OLD page behind a working HTTP 200, which is how the VT CQ
+   options were absent from the picker on 2026-09-06 while being present in
+   `web/app.js`. The server also holds `core` in memory, so a
+   `pipeline/core.py` edit is invisible until restart.
 
 **Colours are tokens, never hex literals.** Both themes are token sets with the
 same names; a hex written anywhere below `:root` is a colour the light theme

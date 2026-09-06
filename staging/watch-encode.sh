@@ -27,8 +27,26 @@
 #     so a single noisy sample (studio logos, black frames) cannot kill on its own.
 #
 # THE LADDER RUNS BOTH WAYS (operator's rule, 2026-08-31):
-#   projection > 80%  (too big)  -> next CRF UP:   14-16-18-20-22, then none-too-big
-#   projection < 30%  (too small)-> next CRF DOWN: 14-12-10, then none-too-small
+#   projection > 80%  (too big)  -> next CRF UP:   14-16-18-20-22, then FINISH at 22
+#   projection < 30%  (too small)-> next CRF DOWN: 14-12-10, then FINISH at 10
+#
+# PAST THE LAST RUNG THE ENCODE IS NOT KILLED (operator's rule, 2026-09-06).
+# There is no better rung to retry at, so the run in flight IS the answer: it
+# runs to completion at the terminal rung and this script emits FINAL| instead
+# of KILLED|, then stops band-checking. Killing there produced no output at all
+# and burned the whole encode; an out-of-band file is something a human can
+# judge. THE VERDICT, NOT THE LADDER, DECIDES WHAT HAPPENS TO THE ORIGINAL --
+# and the two arms end differently, so do not read this as "nothing is
+# deleted":
+#   too BIG  -> the finished file is >80% of source -> `no-saving` -> the
+#              driver marks the ERROR state and the library original survives.
+#   too SMALL-> anything from 15% to 30% of source is a `good` verdict (the
+#              band is a TARGET, not a defect threshold -- Kubo 23.7% and
+#              Minions 17.2% are both good), so it SYNCS and the ~90 GB
+#              library original IS DELETED unattended. Under the old
+#              kill-at-the-end behaviour that encode never existed to be
+#              judged. Below 15% the absolute floor still catches it
+#              (`suspect`, no deletion).
 #
 # AND IT IS ENCODER-AWARE (2026-08-25). Those numbers are x265 CRF, where LOWER
 # means a bigger file. VideoToolbox quality is CQ on Apple's reversed scale,
@@ -47,8 +65,9 @@
 # A violation in the OPPOSITE direction of a rung already laddered to (too small at
 # 16/18/20/22, too big at 12/10) is "none-*" immediately: a source whose projection
 # flips sides between adjacent rungs would otherwise oscillate forever. "none-*"
-# tells .autopilot.sh to mark the title's ERROR state and move on — never delete,
-# never skip, never halt.
+# no longer kills anything — it means "finish this encode where it is". The
+# ERROR state still exists and is still reached, but by the VERDICT on the
+# finished file, never by the ladder throwing the encode away.
 #
 # Set SMELTR_NO_AUTOKILL=1 to return to report-only behaviour.
 # (SMELTER_NO_AUTOKILL is still honoured -- the app was renamed 2026-08-21 and a
@@ -78,6 +97,15 @@ next_rung() { # $1=encoder $2=quality $3=big|small
   fi
 }
 
+# The scale a quality number is on. CRF (x265, LOWER = bigger file) and CQ
+# (VideoToolbox, Apple's reversed scale, HIGHER = bigger file) are NOT
+# comparable, so a bare "Q10" beside a "Q70" describing the same situation is
+# unreadable. Every number this script puts in front of a human carries its
+# scale -- the same rule qLabel() enforces on the dashboard.
+q_label() { # $1=encoder
+  case "$1" in vt*) echo "VT CQ" ;; *) echo CRF ;; esac
+}
+
 # Sourced-for-test escape hatch: tests read next_rung() without touching the
 # filesystem or running the loop. Must sit before the stat below. `return`
 # outside a function does NOT stop an EXECUTED script under bash 3.2, so the
@@ -93,6 +121,14 @@ BASE="/Volumes/Crucial X9/4K Movies/${FOLDER}"
 SRC="${BASE}/${SRCNAME}"; OUT="${BASE}/${OUTNAME}"
 NEXT=25
 STRIKES=0; STRIKEDIR=""
+# The directions the ladder has already run out of, space-separated ("big",
+# "small"). PER DIRECTION, never a single flag: a low reading at CRF 22 (a rung
+# reached because the encode was too BIG) has no rung left downwards and is
+# reported once -- but CRF 22 still has to be watched for the blowup that put
+# it there, and a mid-ladder rung like CRF 16 still has a real up-rung to
+# ladder to. A single flag switched the whole band check off, so one noisy
+# 6%-progress sample removed the only ceiling on the rest of a multi-hour run.
+FINAL_DIRS=""
 SRCSZ=$(stat -f%z "$SRC")
 
 while true; do
@@ -140,16 +176,64 @@ while true; do
     fi
     [ -z "$DIR" ] && { STRIKES=0; STRIKEDIR=""; }
 
+    # A direction already reported as out of rungs is not re-reported: every
+    # later tick would say the same thing with the same answer. The OTHER
+    # direction keeps its full strike-and-kill authority.
+    case " $FINAL_DIRS " in
+      *" $DIR "*) STRIKES=0; STRIKEDIR="" ;;
+    esac
+
     if [ -n "$DIR" ] && [ "$STRIKES" -ge 2 ]; then
       NEXTQ=$(next_rung "$ENC" "$Q" "$DIR")
-      kill "$HBPID" 2>/dev/null
-      for _ in $(seq 1 60); do kill -0 "$HBPID" 2>/dev/null || break; sleep 0.5; done
-      kill -0 "$HBPID" 2>/dev/null && kill -9 "$HBPID" 2>/dev/null
-      # The partial is worthless and would otherwise be mistaken for a finished
-      # encode by the sync and record steps, both of which key off "2160p HEVC".
-      rm -f "$OUT"
-      echo "KILLED|${FOLDER}|projected ${RATIO}% of original at ${PCT}% (${ENC} Q${Q})|band 30-80|partial deleted|next: Q ${NEXTQ}"
-      break
+      case "$NEXTQ" in
+        none-*)
+          # END OF THE LADDER -> FINISH THE ENCODE (operator's rule, 2026-09-06).
+          # There is no rung left to try in this direction, so the run this
+          # script is watching is the best this ladder can produce: x265 CRF 22
+          # (too big) / CRF 10 (too small), VideoToolbox CQ 50 (too big) /
+          # CQ 70 (too small) -- and the same applies to a one-directional rung
+          # violated in the direction it cannot step (the alternative there is
+          # an oscillation, not a better rung). Killing here deleted hours of
+          # work and left the title in the ERROR state with NO output at all;
+          # an out-of-band file a human can look at beats no file.
+          # The ladder stops deciding here; the VERDICT still does, and on the
+          # too-small arm that verdict can be `good` (15-30% of source is
+          # below the band but above the floor), which syncs and deletes the
+          # library original. See the header -- the two arms do not end the
+          # same way, and this branch must not be read as "nothing is
+          # deleted".
+          # Reported ONCE for THIS direction -- every later tick would say the
+          # same thing with the same answer. The opposite direction keeps its
+          # kill authority: a rung reached by laddering up is still watched for
+          # the blowup that sent it there, and a mid-ladder rung still has a
+          # real rung to step to on its own arm.
+          # Self-stamped like COMPLETE, NOT left to the file's mtime: this
+          # branch does not exit, so the loop writes QUARTER lines after it
+          # and FINAL stops being the log's last line within the hour. An
+          # mtime-derived stamp would silently become "—" on the one row that
+          # is the only record of the ladder ending.
+          # "no rung left in this direction" is the honest wording for all
+          # eight cases that reach here: four are a genuine terminal rung
+          # (CRF 22/10, CQ 50/70) and four are the oscillation guard -- a rung
+          # violated in the direction its own arm cannot step. Calling a
+          # too-small projection at CRF 16 "the last rung of the small arm"
+          # names a rung that is not on that arm at all.
+          QL=$(q_label "$ENC")
+          echo "FINAL|${FOLDER}|$(date '+%Y-%m-%d %H:%M:%S')|projected ${RATIO}% of original at ${PCT}% (${ENC} ${QL} ${Q})|outside the 30-80% target band|no rung left for a too-${DIR} projection from ${QL} ${Q} - finishing there, not killed"
+          FINAL_DIRS="$FINAL_DIRS $DIR"
+          STRIKES=0; STRIKEDIR=""
+          ;;
+        *)
+          kill "$HBPID" 2>/dev/null
+          for _ in $(seq 1 60); do kill -0 "$HBPID" 2>/dev/null || break; sleep 0.5; done
+          kill -0 "$HBPID" 2>/dev/null && kill -9 "$HBPID" 2>/dev/null
+          # The partial is worthless and would otherwise be mistaken for a finished
+          # encode by the sync and record steps, both of which key off "2160p HEVC".
+          rm -f "$OUT"
+          echo "KILLED|${FOLDER}|projected ${RATIO}% of original at ${PCT}% (${ENC} Q${Q})|band 30-80|partial deleted|next: Q ${NEXTQ}"
+          break
+          ;;
+      esac
     fi
   fi
 

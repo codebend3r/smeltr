@@ -286,6 +286,9 @@ jobs:
       - name: 🪜 test:sh:watch-ladder — encoder-aware band ladder rungs
         run: bun run test:sh:watch-ladder
 
+      - name: 🏁 test:sh:watch-finish — end of the ladder finishes, other arm still kills
+        run: bun run test:sh:watch-finish
+
       - name: 🐕 test:sh:watchdog — watchdog corpse/finished boundary
         run: bun run test:sh:watchdog
 

@@ -410,8 +410,12 @@ while true; do
     # never fire, and the title simply restarted at the quality that had just
     # blown up. The watcher owns the ENCODER-AWARE rung mapping (x265 steps
     # CRF UP 14-16-18-20-22 when too big and DOWN 14-12-10 when too small;
-    # VideoToolbox steps CQ the opposite way on both arms) and reports only
-    # the next NUMBER here -- this script never needs to know either scale.
+    # VideoToolbox steps CQ the opposite way on both arms, 60-55-50 and
+    # 60-65-70) and reports only the next NUMBER here -- this script never
+    # needs to know either scale. Past the LAST rung there is no KILLED line
+    # at all (2026-09-06): the watcher lets the encode finish at the terminal
+    # rung, so this block does not fire and the finished folder reaches the
+    # judge like any other.
     # An empty q means "no ladder state": start_encode falls back to the
     # title's override, or the default. Both wordings are parsed, because a
     # watcher launched before this deploy still says "next: CRF 18".
@@ -430,12 +434,19 @@ while true; do
       esac
       case "$q" in
         none*)
-          # Ladder exhausted. NOT a halt and NOT a skip (operator's rule,
-          # 2026-08-31): the title goes to an ERROR state -- marker on the
-          # X9, red row in the queue -- and the loop moves on to the next
-          # title. next_title.py passes over marked titles. The source and
-          # the library original are untouched; the watcher already deleted
-          # the partial. A human clears the state by deleting the marker.
+          # LEGACY PATH as of 2026-09-06: a current .watch-encode.sh never
+          # writes "next: none-*" any more -- past the last rung it leaves the
+          # encode RUNNING and logs FINAL| instead, so the title finishes at
+          # CRF 22 / CRF 10 (CQ 50 / CQ 70 on VideoToolbox) and is judged on
+          # the file it actually produced. Only a watcher launched BEFORE that
+          # deploy can still reach this branch, and it has to keep working for
+          # as long as one is alive: that watcher already killed the encode and
+          # deleted the partial, so there is nothing left to finish.
+          # NOT a halt and NOT a skip (operator's rule, 2026-08-31): the title
+          # goes to an ERROR state -- marker on the X9, red row in the queue --
+          # and the loop moves on to the next title. next_title.py passes over
+          # marked titles. The source and the library original are untouched.
+          # A human clears the state by deleting the marker.
           # Truncate FIRST: a stale "next: none" re-read on the next pass
           # would re-mark a title a human had just cleared.
           : > "$kl"

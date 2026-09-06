@@ -210,5 +210,153 @@ class DriverContract(unittest.TestCase):
         self.assertIn('Q="${6:-%d}"' % core.CRF_DEFAULT, src)
 
 
+class LastRungFinishes(unittest.TestCase):
+    """Past the last rung the encode RUNS ON (operator's rule, 2026-09-06).
+
+    The ladder used to kill an out-of-band encode it had no rung left to
+    retry at, which threw away hours of work and left the title in the
+    ERROR state with no output at all. Now the terminal rung -- x265 CRF 22
+    when too big and CRF 10 when too small, VideoToolbox CQ 50 and CQ 70 on
+    the mirrored arms -- is allowed to finish, and the finished file is
+    judged like any other. Deletion safety is NOT part of this: verdict.py
+    never reads the ladder, so an out-of-band file still gets a non-good
+    verdict and the library original still survives.
+    """
+
+    def _kill_block(self):
+        """The `case "$NEXTQ" in ... esac` the strike counter fires."""
+        src = _read_repo_file("staging", "watch-encode.sh")
+        body = src.split('NEXTQ=$(next_rung', 1)[1]
+        return body.split("      esac", 1)[0]
+
+    def _arm(self, name, code_only=False):
+        """One arm of that case, `none-*)` or the `*)` fallback.
+
+        `code_only` drops comment lines: the assertions about what an arm
+        DOES must not be satisfied or broken by prose that happens to
+        contain the word.
+        """
+        block = self._kill_block()
+        arms = block.split("        none-*)", 1)[1]
+        end, _, rest = arms.partition("        *)")
+        out = end if name == "none" else rest
+        if code_only:
+            out = "\n".join(
+                ln for ln in out.splitlines() if not ln.lstrip().startswith("#")
+            )
+        return out
+
+    def test_the_terminal_rung_is_not_killed(self):
+        end = self._arm("none", code_only=True)
+        self.assertNotIn("kill ", end)
+        self.assertNotIn('rm -f "$OUT"', end)
+        self.assertIn("FINAL|", end)
+        # ...and it must NOT break out of the loop: the watcher still has to
+        # report COMPLETE (or FAILED) for the run it just let through.
+        self.assertNotIn("break", end)
+
+    def test_a_rung_that_exists_is_still_killed(self):
+        rest = self._arm("rest", code_only=True)
+        self.assertIn('kill "$HBPID"', rest)
+        self.assertIn('rm -f "$OUT"', rest)
+        self.assertIn("KILLED|", rest)
+        self.assertIn("break", rest)
+
+    def test_the_finality_gate_is_per_direction(self):
+        """One arm running out must NOT switch off the other arm's kill.
+
+        A single flag did exactly that: a noisy low sample at 6% progress on
+        a rung reached by laddering UP reported FINAL and disarmed the band
+        check entirely, so the blowup that put the encode on that rung ran
+        unopposed to 1000% of source. The other direction keeps full
+        strike-and-kill authority; `tests/test_watch_finish.sh` drives it.
+        """
+        src = _read_repo_file("staging", "watch-encode.sh")
+        self.assertIn('FINAL_DIRS="$FINAL_DIRS $DIR"', src)
+        self.assertIn('case " $FINAL_DIRS " in', src)
+        self.assertNotIn("LASTRUNG", src)
+
+    def test_the_driver_never_sees_a_ladder_it_can_error_on(self):
+        """A current watcher writes no `next: none-*`, so the driver's
+        exhausted branch cannot fire -- but it stays, because a watcher
+        launched before this deploy is still running and already killed its
+        encode."""
+        we = _read_repo_file("staging", "watch-encode.sh")
+        self.assertNotIn("next: Q ${NEXTQ}", self._arm("none", code_only=True))
+        self.assertIn("next: Q ${NEXTQ}", we)
+        self.assertIn("none*)", _read_repo_file("staging", "autopilot.sh"))
+
+    def test_the_final_line_carries_its_own_clock(self):
+        """It does NOT exit, so QUARTER lines follow it.
+
+        KILLED and FAILED are stamped from the log's mtime because the
+        watcher writes them and leaves. FINAL keeps running, so within the
+        hour it stops being the last line and an mtime stamp decays to "—"
+        on the one row that records the ladder ending.
+        """
+        end = self._arm("none", code_only=True)
+        self.assertIn("date '+%Y-%m-%d %H:%M:%S'", end)
+        ev = _read_repo_file("dashboard", "events.py")
+        self.assertIn('"ts": parts[2]', ev.split('word == "FINAL"', 1)[1])
+        # ...and parts[2] is only trusted when it looks like a timestamp: an
+        # earlier wording put the projection there, which became both the
+        # Time cell and the sort key and pinned the row to the top forever.
+        self.assertIn("_STAMP.match(parts[2])", ev)
+
+    def test_the_quality_carries_its_scale(self):
+        """CRF and CQ are mirrored scales; a bare Q10 beside a Q70 for the
+        same situation cannot be read."""
+        src = _read_repo_file("staging", "watch-encode.sh")
+        self.assertIn("q_label()", src)
+        self.assertIn("${QL}", self._arm("none", code_only=True))
+
+    def test_the_wording_does_not_claim_a_rung_it_is_not_on(self):
+        """Four of the eight cases that reach FINAL are the oscillation
+        guard -- a rung violated in the direction its own arm cannot step.
+        Calling a too-small projection at CRF 16 "the last rung of the small
+        arm" names a rung that is not on that arm at all."""
+        end = self._arm("none", code_only=True)
+        self.assertIn("no rung left", end)
+        self.assertNotIn("last rung on the", end)
+
+    def test_neither_arm_is_told_nothing_is_deleted(self):
+        """The too-SMALL arm lands where the verdict says `good`.
+
+        15.0-30.0% of source is below the band but above the floor, which
+        syncs and deletes the ~90 GB library original unattended -- the old
+        behaviour killed that encode so it never existed to be judged. A
+        message averaging the two arms into one reassurance is the one a
+        tired person goes back to sleep on.
+        """
+        src = _read_repo_file("dashboard", "notify.py")
+        block = src.split('if kind == "lastrung":', 1)[1].split("if kind ==", 1)[0]
+        # Fails toward the arm that deletes: only a positive "too-big"
+        # earns the reassuring wording.
+        self.assertIn('"too-big" not in rest', block)
+        self.assertIn("SYNCS and deletes", block)
+        self.assertIn("no-saving", block)
+        self.assertNotIn("nothing is deleted on this", src)
+        # ...and the verdict really does say that, on the live baseline.
+        hist = core.history_ratios()
+        if len(hist) >= core.MIN_HISTORY:
+            self.assertEqual(core._verdict(15.1, hist, 15.1)[0], "good")
+            self.assertEqual(core._verdict(29.9, hist, 29.9)[0], "good")
+            self.assertEqual(core._verdict(86.4, hist, 86.4)[0], "no-saving")
+
+    def test_the_finish_is_reported_where_a_human_reads(self):
+        """No driver line follows a FINAL, so the tab and the notifier are
+        the only places it can surface."""
+        ev = _read_repo_file("dashboard", "events.py")
+        self.assertIn('"FINAL"', ev)
+        self.assertIn('"kind": "lastrung"', ev)
+        # Both watcher wordings of an OLD exhaustion still classify.
+        self.assertIn('"next: CRF none-" in line', ev)
+        self.assertIn('"next: Q none-" in line', ev)
+        app = _read_repo_file("web", "app.js")
+        self.assertIn('lastrung: "bad"', app)
+        self.assertIn('lastrung: "last rung"', app)
+        self.assertIn('"last-rung"', _read_repo_file("dashboard", "notify.py"))
+
+
 if __name__ == "__main__":
     unittest.main()

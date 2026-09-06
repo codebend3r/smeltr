@@ -11,6 +11,13 @@
 #     too big   -> DOWN  60-55-50,       then none-too-big
 #     too small -> UP    60-65-70,       then none-too-small
 #
+# "none-too-*" is the END of the ladder, and since 2026-09-06 it no longer
+# kills anything: the watcher lets that encode finish at the rung it is on
+# (CRF 22 / CRF 10, CQ 50 / CQ 70) and logs FINAL| instead of KILLED|. This
+# suite still pins the MAPPING -- what "the last rung" is on each arm of each
+# scale is exactly what decides where an encode is allowed to end up. The
+# behaviour past it is pinned in tests/test_error_state.py::LastRungFinishes.
+#
 # A rung mapped with the wrong scale RE-RUNS THE VIOLATION HARDER, and a rung
 # stepped in the direction opposite to the one it was laddered to would
 # oscillate forever -- so both the direction of every rung and the immediate

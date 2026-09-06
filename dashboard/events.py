@@ -2,17 +2,19 @@
 
 Parses the driver's `.autopilot.log` (every line is stamped
 `YYYY-MM-DD HH:MM:SS`) plus the per-title `.watch-*.log` files (the band
-ladder's KILLED/COMPLETE lines) into one newest-first list a human can debug
+ladder's KILLED/FINAL/COMPLETE lines) into one newest-first list a human can debug
 from. Imported ONLY by `dashboard/server.py`; the decision path never loads
 this.
 
 Honesty rules, same as the rest of the page:
 
 - A missing timestamp renders as a missing timestamp, never a guess. The one
-  exception is the FINAL line of a watch log: the watcher writes it and
-  exits, so the file's mtime IS that line's write time. Earlier lines in the
-  same file carry no time (`ts: null`) and are ordered by the file's mtime —
-  an ordering hint is not a displayed claim.
+  exception is the LAST line of a watch log when it is a KILLED or FAILED:
+  the watcher writes it and exits, so the file's mtime IS that line's write
+  time. Earlier lines in the same file carry no time (`ts: null`) and are
+  ordered by the file's mtime — an ordering hint is not a displayed claim.
+  COMPLETE and FINAL are exempt because they stamp themselves; FINAL has to,
+  because it does NOT exit and stops being the last line within the hour.
 - Indented driver lines ("  HandBrake pid 1234") and unstamped shell output
   ("ssh push: …") are DETAIL of the event above them, not events of their
   own — the timeline stays one decision per row.
@@ -32,6 +34,11 @@ DEFAULT_LIMIT = 250
 DETAIL_CAP = 600
 
 _TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})  (\s*)(.*)$")
+# A watcher field is only a timestamp if it looks like one. An earlier build
+# of the FINAL line put the projection in this position; unchecked it became
+# both the Time cell ("ct-ed-oj" after the page slices it) and the sort key,
+# which pinned that row to the top of the timeline permanently.
+_STAMP = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
 
 # First word of a stamped line -> kind. Kind drives only the chip colour and
 # label on the page; an unlisted word is "info", never an error.
@@ -131,13 +138,19 @@ def _watch_events():
                 # FAILED is a HandBrake that DIED (reboot/kill) — the single
                 # most likely reason someone opens this tab.
                 final = i == len(lines) - 1
-                # The watcher writes `next: CRF ${NEXTCRF}` and NEXTCRF is
-                # the WORD none-too-small/none-too-big at an end rung, so
-                # the line reads "next: CRF none-too-small". Matching
-                # "next: none-" drew every exhaustion as a routine retry.
-                if word == "KILLED" and "next: CRF none-" in line:
-                    # Ladder exhausted: .autopilot.sh writes .error-<title>
-                    # and moves on — a human owes this row a decision, so it
+                # The watcher writes `next: Q ${NEXTQ}` (a pre-2026-08-25
+                # watcher says `next: CRF ${NEXTCRF}`) and that value is the
+                # WORD none-too-small/none-too-big at an end rung, so the line
+                # reads "next: Q none-too-small". Matching "next: none-" drew
+                # every exhaustion as a routine retry, and matching only the
+                # CRF wording stopped drawing them at all once the encoder-
+                # aware watcher deployed. Both wordings, one test.
+                if word == "KILLED" and (
+                    "next: CRF none-" in line or "next: Q none-" in line
+                ):
+                    # Ladder exhausted under a PRE-2026-09-06 watcher: the
+                    # encode was killed and .autopilot.sh writes .error-<title>
+                    # and moves on — a human owes that row a decision, so it
                     # must not scan identically to a routine retry.
                     kind = "exhausted"
                 else:
@@ -151,6 +164,25 @@ def _watch_events():
                         "src": "watcher",
                         "approx": final,
                         "_ord": stamp,
+                    }
+                )
+            elif word == "FINAL" and len(parts) >= 4 and _STAMP.match(parts[2]):
+                # END OF THE LADDER (2026-09-06): no rung left, so the watcher
+                # left the encode RUNNING instead of killing it. It carries
+                # its OWN stamp (parts[2]) because it does not exit — QUARTER
+                # lines follow it, so the file mtime is not its write time and
+                # an mtime stamp would decay to "—" within the hour on the one
+                # row that records the ladder ending.
+                out.append(
+                    {
+                        "ts": parts[2],
+                        "kind": "lastrung",
+                        "text": _regib("FINAL " + parts[1] + " — "
+                                       + " — ".join(parts[3:])),
+                        "detail": None,
+                        "src": "watcher",
+                        "approx": False,
+                        "_ord": parts[2],
                     }
                 )
             elif word == "COMPLETE" and len(parts) >= 3:

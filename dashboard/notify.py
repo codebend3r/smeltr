@@ -87,6 +87,7 @@ WHATS = {
     "failed": ("💥", "Failed"),
     "ladder-up": ("🔺", "Ladder UP"),
     "ladder-down": ("🔻", "Ladder DOWN"),
+    "last-rung": ("🏁", "Last rung — finishing anyway"),
     "error": ("🚨", "Error state"),
     "sync-failed": ("⛔", "Sync failed"),
     "stopped": ("🛑", "Driver stopped"),
@@ -101,13 +102,22 @@ PRIORITY = (
     "error",
     "stopped",
     "failed",
+    "last-rung",
     "ladder-up",
     "ladder-down",
     "finished",
 )
 
 _LADDER = re.compile(r"^LADDER (.+) -> CRF (\d+)$")
-_KILL = re.compile(r"projected ([\d.]+)% of original at ([\d.]+)% \(CRF (\d+)\)")
+# Both watcher wordings: "(CRF 14)" pre-2026-08-25, "(x265_10bit Q14)" since,
+# and "(x265_10bit CRF 14)" / "(vt_h265_10bit VT CQ 60)" on a FINAL line. The
+# CRF-only pattern had matched nothing since the encoder-aware watcher
+# deployed, so every Ladder UP/DOWN message silently shipped without the
+# projection it is documented to carry.
+_KILL = re.compile(
+    r"projected ([\d.]+)% of original at ([\d.]+)% "
+    r"\([\w ]*?(?:CRF|CQ|Q) ?(\d+)\)"
+)
 _SYNC_FAILED = re.compile(r"^SYNC FAILED for (.+?) - (.*)$")
 _SYNC_ABORTED = re.compile(r"^SYNC ABORTED: (.+?) for (.+?) - (.*)$")
 _SEP = " — "
@@ -148,7 +158,9 @@ def classify(e: dict, err=_err):
 
     Deliberately silent: the watcher's KILLED line (see the module docstring
     — the driver's LADDER line is the anchor) and its `exhausted` line (the
-    driver's ERROR line follows and names the direction)."""
+    driver's ERROR line follows and names the direction). Its FINAL line is
+    NOT silent: no driver line follows it, because past the last rung the
+    watcher lets the encode run and the driver is never told."""
     kind, text = e.get("kind"), e.get("text") or ""
     base = {"ts": e.get("ts"), "approx": bool(e.get("approx")), "detail": None}
     if kind == "complete":
@@ -159,6 +171,44 @@ def classify(e: dict, err=_err):
     if kind == "failed":
         title, rest = _split_watcher(text)
         return dict(base, what="failed", title=title, text=rest)
+    if kind == "lastrung":
+        # END OF THE LADDER (2026-09-06). Unlike a kill, this one has NO
+        # driver line behind it — the watcher leaves the encode running and
+        # .autopilot.sh never learns the ladder ran out — so if this is not
+        # sent here it is not sent at all.
+        #
+        # THE TWO ARMS DO NOT END THE SAME WAY, and the message must not
+        # average them into one reassurance. A too-BIG file is >80% of source,
+        # which is `no-saving` — the original is safe. A too-SMALL file
+        # anywhere from the 15.0 floor to the 30% band edge is a `good`
+        # verdict (the band is a target, not a defect threshold), which syncs
+        # and DELETES the ~90 GB library original unattended — and that is
+        # precisely where a too-small terminal rung lands. Saying "nothing is
+        # deleted" here would be false in the one direction where it matters.
+        title, rest = _split_watcher(text)
+        # Fails toward the DANGEROUS arm: anything that does not positively
+        # say "too-big" is treated as the arm that can delete an original.
+        # A watcher deployed from an earlier build words this line
+        # differently, and `"too-small" in rest` took the reassuring branch
+        # on it -- the false sentence, on the arm that deletes, in the one
+        # message this path ever produces.
+        small = "too-big" not in rest
+        tail = (
+            "a below-band result is still a `good` verdict once it clears the "
+            f"{core.OUTLIER_FLOOR_NORM:.0f}% floor, which SYNCS and deletes "
+            "the library original unattended — check it before then if you "
+            "want it kept"
+            if small
+            else "an above-band result is `no-saving`, so it will not sync "
+            "and the library original is safe"
+        )
+        return dict(
+            base,
+            what="last-rung",
+            title=title,
+            text=f"{rest} · the encode is still running and will finish · "
+            f"nothing is deleted yet, the verdict decides · {tail}",
+        )
     if kind == "ladder":
         m = _LADDER.match(text)
         if not m:
