@@ -45,11 +45,22 @@
 #     .github/workflows/pull-request-format-checker.yml. It only makes sense
 #     on a pull_request event and has nothing to do with whether the code is
 #     green.
+#   * `workflow_call:` is here so .github/workflows/main-sanity-check.yml can
+#     RUN this file on a push to `main` rather than list the same steps again.
+#     Nothing has run on main since the push trigger came off, and `bun run
+#     release` plus a plain `git push` both land there with no PR -- so a
+#     direct-to-main commit was checked nowhere. A copied workflow would fix
+#     that and reintroduce the drift this file's first design note is about:
+#     the invariant suite reads THIS path, so a new `test:*` script would be a
+#     step here and silently absent from the copy. The concurrency line below
+#     already reads correctly when called: `github.event_name` is the caller's
+#     event, so a push to main is never cancelled.
 
 name: 🧪 Pull request checks
 
 on:
   pull_request:
+  workflow_call:
 
 # Read-only. Nothing in this workflow writes to the repo, publishes, or deploys.
 permissions:
