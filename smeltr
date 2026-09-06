@@ -112,10 +112,13 @@ case "${1:-report}" in
   # and exits 0 -- .autopilot.sh substitutes it into -q, and there is no
   # failure here worth idling the CPU over.
   crf) shift; exec "$PY" "$DIR/pipeline/crf.py" "$@" ;;
+  # The encoder and quality a hand-picked queue row should start at. Prints
+  # two tokens and exits 0 -- same crash-safe contract as `crf`.
+  encoder) shift; exec "$PY" "$DIR/pipeline/encoder_of.py" "$@" ;;
   open)   running || start >/dev/null 2>&1; exec open "$(cat "$DIR/url")" ;;
   # Sends one "test" notification through every channel notify.json
   # configures, so a webhook or app password is proven before the first real
   # event. Exit 1 with no config, or when any channel refuses.
   notify-test) shift; exec "$PY" "$DIR/dashboard/notify.py" --test "$@" ;;
-  *)      echo "usage: smeltr {start|stop|restart|status|url|open|report [...]|record <folder> [...]|crf <title>|notify-test}" >&2; exit 2 ;;
+  *)      echo "usage: smeltr {start|stop|restart|status|url|open|report [...]|record <folder> [...]|crf <title>|encoder <folder>|notify-test}" >&2; exit 2 ;;
 esac

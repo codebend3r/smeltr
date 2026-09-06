@@ -97,11 +97,18 @@ def main() -> int:
     src_geom, out_geom = info.get("source_geometry"), info.get("geometry")
     ratio = ob / sb * 100.0
     norm = ratio * core.crop_factor(src_geom, out_geom)
+    # Judge against SAME-encoder history only. A row with no recorded encoder
+    # is x265 (every row before 2026-08-25 was); a hardware encode with no
+    # same-encoder baseline comes back `suspect`, never `good` -- the first
+    # vt_h265_10bit titles are reviewed by a human, not deleted on a size
+    # comparison borrowed from a different rate-quality curve.
+    enc = info.get("encoder") or core.DEFAULT_ENCODER
     code, note = core._verdict(
         ratio,
-        core.history_ratios(normalised=True),
+        core.history_ratios(normalised=True, encoder=enc),
         norm,
         core.is_downscale(src_geom, out_geom, info.get("autocrop")),
+        encoder=enc,
     )
 
     # A decoder-error count is not part of the size verdict but must never be
@@ -116,6 +123,7 @@ def main() -> int:
                 "folder": folder,
                 "verdict": code,
                 "note": note,
+                "encoder": enc,
                 "source_bytes": sb,
                 "output_bytes": ob,
                 "ratio_pct": round(ratio, 1),

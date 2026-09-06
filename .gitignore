@@ -10,6 +10,8 @@ __pycache__/
 sysmon.ring
 node_modules/
 queue_overrides.json
+encoder_overrides.json
+*.json.tmp
 pause
 # notify.json holds the Slack webhook and the Gmail app password; notify.cursor
 # is the notifier's seen-set and pending sends.

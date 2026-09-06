@@ -225,7 +225,7 @@ library_path_of() {
 }
 
 start_encode() {
-  local title="$1" crf="${2:-16}" slug src out
+  local title="$1" q="${2:-}" slug src out enc defq
   slug=$(slug_of "$title")
   src=$(find "$X9/$title" -maxdepth 1 -name '*.mkv' ! -name '._*' ! -name '*2160p HEVC*' | head -1)
   [ -z "$src" ] && { error_out "$title" "no source file"; return 1; }
@@ -233,11 +233,56 @@ start_encode() {
   # from the source basename with a sed strip and was overwritten on the very
   # next line -- a dead store that read like it was doing the naming.
   out="$X9/$title/${title} 2160p HEVC.mkv"
-  log "START $title at CRF $crf"
+
+  # Which encoder, at what quality. Read through the SAME core code the
+  # dashboard writes through (encoder_overrides.json beside the ledger); any
+  # failure -- helper missing, file corrupt, entry invalid -- answers the
+  # proven default, x265_10bit at CRF_DEFAULT. A ladder retry passes $2 to override the
+  # QUALITY only: the encoder choice always comes from the override file, so
+  # a vt title ladders down the CQ scale and an x265 title up the CRF scale.
+  read -r enc defq <<<"$("$SMELTR" encoder "$title" 2>/dev/null || echo "x265_10bit 14")"
+  [ -z "$enc" ] && enc=x265_10bit
+  # A ladder rung is only meaningful on the ENCODER whose violation produced
+  # it: CRF 18 handed to VideoToolbox is CQ 18, near the bottom of the
+  # reversed scale -- a valid file with full track parity that only the size
+  # verdict could catch, one step from an unattended deletion. If the override
+  # changed since the kill, drop the rung and start fresh on the new encoder's
+  # own default.
+  local rung_enc="${3:-}"
+  if [ -n "$q" ] && [ -n "$rung_enc" ] && [ "$rung_enc" != "$enc" ]; then
+    log "  ladder rung Q$q was produced by $rung_enc; $title is now $enc - starting fresh"
+    q=""
+  fi
+  if [ -z "$q" ]; then
+    q="${defq:-14}"
+    # The dashboard's per-title CRF picker (`smeltr crf`, queue_overrides.json)
+    # is an x265 RUNG and means nothing on VideoToolbox's reversed CQ scale, so
+    # it is consulted only for x265. Like `smeltr encoder` it always answers an
+    # integer -- a missing override, an unreadable file or a broken checkout all
+    # come back as the default rather than idling the CPU -- and the numeric
+    # guard is belt-and-braces, because an empty answer would reach HandBrake as
+    # -q and kill the encode at startup. The LADDER still outranks it: a retry
+    # arrives as $2 and never reaches this branch.
+    if [ "$enc" = x265_10bit ]; then
+      local planned; planned=$("$SMELTR" crf "$title" 2>/dev/null)
+      case "$planned" in
+        ''|*[!0-9]*) ;;
+        *) [ "$planned" = "$q" ] || log "PLANNED $title -> CRF $planned (chosen on the dashboard)"
+           q="$planned" ;;
+      esac
+    fi
+  fi
+  # Flags per encoder. x265's --encoder-preset is a speed knob (medium is the
+  # calibrated choice); VideoToolbox presets are quality-based and its default
+  # is correct -- passing "medium" there would CHANGE the quality, not the pace.
+  local encflags=(-e x265_10bit -q "$q" --encoder-preset medium)
+  [ "$enc" = "vt_h265_10bit" ] && encflags=(-e vt_h265_10bit -q "$q")
+
+  log "START $title with $enc at Q$q"
   $DRY && { log "(dry run) would encode: $src -> $out"; return 0; }
 
   nohup HandBrakeCLI -i "$src" -o "$out" \
-    -f av_mkv -e x265_10bit -q "$crf" --encoder-preset medium \
+    -f av_mkv "${encflags[@]}" \
     --all-audio --aencoder copy --audio-fallback ac3 --all-subtitles \
     > "$X9/.hb-${slug}.log" 2>&1 &
   local pid=$!
@@ -261,7 +306,7 @@ start_encode() {
   fi
   log "  tracks OK ${oa}a/${os}s"
 
-  nohup "$X9/.watch-encode.sh" "$slug" "$title" "$(basename "$src")" "$(basename "$out")" "$pid" "$crf" \
+  nohup "$X9/.watch-encode.sh" "$slug" "$title" "$(basename "$src")" "$(basename "$out")" "$pid" "$q" "$enc" \
     >> "$X9/.watch-${slug}.log" 2>&1 &
   log "  watcher pid $! (detached)"
 }
@@ -358,28 +403,32 @@ while true; do
       exit 0
     fi
 
-    # The CRF ladder. .watch-encode.sh deletes the partial when it auto-kills
-    # an out-of-band projection (30-80% of source, both directions since
-    # 2026-08-31), so there is no finished folder left to carry the retry --
-    # the old ladder branch hung off finished_folder() and could never fire,
-    # and the title simply restarted at the same CRF that had just blown up.
-    # The watcher picks the next rung: UP 16-18-20-22 when the projection is
-    # too big, DOWN 16-14-12-10 when it is too small. "none-*" means the
-    # ladder is exhausted (22 still over, 10 still under, or the projection
-    # flipped sides on an already-laddered rung).
-    # The START rung. 16 unless a human picked one on the dashboard for this
-    # title -- `smeltr crf` reads queue_overrides.json and always answers with
-    # an integer, so a missing override, an unreadable file or a broken
-    # checkout all come back as 16 rather than idling the CPU. The numeric
-    # guard is belt-and-braces: an empty or non-numeric answer would reach
-    # HandBrake as -q and kill the encode at startup.
-    crf=$("$SMELTR" crf "$title" 2>/dev/null)
-    case "$crf" in ''|*[!0-9]*) crf=16 ;; esac
-    [ "$crf" = 16 ] || log "PLANNED $title -> CRF $crf (chosen on the dashboard)"
+    # The quality ladder. .watch-encode.sh deletes the partial when it
+    # auto-kills an out-of-band projection (30-80% of source, both directions
+    # since 2026-08-31), so there is no finished folder left to carry the
+    # retry -- the old ladder branch hung off finished_folder() and could
+    # never fire, and the title simply restarted at the quality that had just
+    # blown up. The watcher owns the ENCODER-AWARE rung mapping (x265 steps
+    # CRF UP 14-16-18-20-22 when too big and DOWN 14-12-10 when too small;
+    # VideoToolbox steps CQ the opposite way on both arms) and reports only
+    # the next NUMBER here -- this script never needs to know either scale.
+    # An empty q means "no ladder state": start_encode falls back to the
+    # title's override, or the default. Both wordings are parsed, because a
+    # watcher launched before this deploy still says "next: CRF 18".
+    q=""; rung_enc=""
     kl="$X9/.watch-$(slug_of "$title").log"
     if grep -q '^KILLED|' "$kl" 2>/dev/null; then
-      crf=$(grep '^KILLED|' "$kl" | tail -1 | sed 's/.*next: CRF //')
-      case "$crf" in
+      kline=$(grep '^KILLED|' "$kl" | tail -1)
+      q=$(printf '%s' "$kline" | sed 's/.*next: //; s/^CRF //; s/^Q //')
+      # Which encoder the killed run used, from the KILLED line itself --
+      # "(vt_h265_10bit Q60)" new wording, "(CRF 16)" from a pre-deploy
+      # watcher. start_encode drops the rung if the override has moved to a
+      # different encoder since the kill.
+      case "$kline" in
+        *"(vt_h265_10bit Q"*) rung_enc=vt_h265_10bit ;;
+        *)                    rung_enc=x265_10bit ;;
+      esac
+      case "$q" in
         none*)
           # Ladder exhausted. NOT a halt and NOT a skip (operator's rule,
           # 2026-08-31): the title goes to an ERROR state -- marker on the
@@ -387,17 +436,24 @@ while true; do
           # title. next_title.py passes over marked titles. The source and
           # the library original are untouched; the watcher already deleted
           # the partial. A human clears the state by deleting the marker.
-          printf '%s: CRF ladder exhausted (%s) at %s\n' \
-            "$title" "$crf" "$(date '+%Y-%m-%d %H:%M:%S')" > "$X9/.error-$title"
-          log "ERROR $title: CRF ladder exhausted ($crf) - marked for review, moving on"
+          # Truncate FIRST: a stale "next: none" re-read on the next pass
+          # would re-mark a title a human had just cleared.
           : > "$kl"
+          error_out "$title" "quality ladder exhausted ($q)"
+          continue ;;
+        # A rung must be a bare number. An old driver fed a new-format KILLED
+        # line once passed the WHOLE line to -q, which HandBrake read as
+        # quality 0.0 -- x265 lossless, writing until the drive filled.
+        ''|*[!0-9]*)
+          : > "$kl"
+          error_out "$title" "unparseable ladder rung '$q'"
           continue ;;
       esac
-      log "LADDER $title -> CRF $crf"
+      log "LADDER $title -> Q$q"
       : > "$kl"
     fi
 
-    start_encode "$title" "$crf"
+    start_encode "$title" "$q" "$rung_enc"
   fi
 
   sleep 30

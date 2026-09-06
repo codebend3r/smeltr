@@ -168,6 +168,7 @@ def main() -> int:
         dest=args.dest,
         finished_at=__import__("time").strftime("%Y-%m-%d %H:%M:%S"),
         crf=info.get("crf"),
+        encoder=info.get("encoder"),
         encode_seconds=encode_seconds(args.folder, outs[0]),
         note=args.note,
         verified=args.verified,

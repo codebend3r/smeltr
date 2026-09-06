@@ -1,5 +1,5 @@
-/* The per-title CRF picker in the queue's CRF column, run against the real
- * crfPicker/rowActions out of web/app.js.
+/* The per-title quality picker in the queue's Quality column, run against the
+ * real crfPicker/rowActions out of web/app.js.
  *
  *   bun tests/test_crf_picker.js
  *
@@ -15,9 +15,15 @@
  *     default that later moves and nothing on screen says so.
  *  3. A running encode gets NO picker. -q is fixed for the next several
  *     hours; a control there is a promise nothing can keep.
- *  4. There is exactly ONE CRF control per row. The hover actions used to
+ *  4. There is exactly ONE quality control per row. The hover actions used to
  *     carry a second one that applied only to a hand-started encode, sitting
  *     one column away from a number that meant something else.
+ *  5. Every option NAMES its scale. x265 quality is CRF and VideoToolbox is
+ *     CQ on Apple's reversed scale, so a bare number in a menu carrying both
+ *     is ambiguous in the direction that costs a ~90 GB original.
+ *  6. An x265 rung goes to /api/queue/crf and a hardware one to
+ *     /api/queue/encoder -- one request either way, because each endpoint
+ *     clears the other file.
  */
 "use strict";
 const fs = require("fs");
@@ -98,6 +104,7 @@ const code = [
   "var armedTitle=null;",
   "var drag=null;",
   fn("arm").replace(/^function arm/, "function arm"),
+  fn("qLabel"),
   fn("crfPicker"),
   fn("rowActions"),
   "return {crfPicker,rowActions,open:function(){return crfOpen;}};",
@@ -125,7 +132,14 @@ function check(name, cond, detail?) {
 }
 
 const LADDER = [10, 12, 14, 16, 18, 20, 22];
-const S = { crf_choices: LADDER, crf_default: 14, can_start: true, stage_busy: false };
+const CQ = [50, 55, 60, 65, 70];
+const S = {
+  crf_choices: LADDER,
+  crf_default: 14,
+  encoder_choices: { x265_10bit: LADDER, vt_h265_10bit: CQ },
+  can_start: true,
+  stage_busy: false,
+};
 const row = (o?) =>
   Object.assign(
     {
@@ -151,12 +165,26 @@ sect("the menu is the ladder");
   const sel = ui.crfPicker(row(), S);
   const values = sel.children.map((o) => o.value);
   check("it is a <select>", sel.tagName === "select", "got " + sel.tagName);
+  const want = [""]
+    .concat(LADDER.map((c) => "x265_10bit:" + c))
+    .concat(CQ.map((c) => "vt_h265_10bit:" + c));
   check(
-    "one option per rung, plus auto",
-    JSON.stringify(values) === JSON.stringify(["", "10", "12", "14", "16", "18", "20", "22"]),
+    "one option per rung of every encoder, plus auto",
+    JSON.stringify(values) === JSON.stringify(want),
     JSON.stringify(values),
   );
-  check("no off-ladder rung is offered (24 was a dead end)", values.indexOf("24") < 0);
+  check("no off-ladder rung is offered (24 was a dead end)", values.indexOf("x265_10bit:24") < 0);
+  const labels = sel.children.slice(1).map((o) => o.textContent);
+  check(
+    "every option names its own scale — a bare number spans two of them",
+    labels.every((t) => /^(CRF|VT CQ) \d+$/.test(t)),
+    JSON.stringify(labels),
+  );
+  check(
+    "the CQ rungs are labelled CQ, never CRF",
+    CQ.every((c) => labels.indexOf("VT CQ " + c) >= 0),
+    JSON.stringify(labels),
+  );
   check(
     "the auto option names the default it follows",
     sel.children[0].textContent === "14 (auto)",
@@ -177,7 +205,7 @@ sect("the menu is the ladder");
 sect("a hand-picked value reads back");
 {
   const sel = ui.crfPicker(row({ crf: 12, crf_set: true }), S);
-  check("the chosen rung is selected", sel.value === "12", sel.value);
+  check("the chosen rung is selected", sel.value === "x265_10bit:12", sel.value);
   check("and the cell says a human chose it", / set$| set /.test(sel.className), sel.className);
   check("its tooltip says so too, in words", /Chosen by hand/.test(sel.title), sel.title);
 }
@@ -199,15 +227,39 @@ sect("what a change actually sends");
 {
   posted.length = 0;
   const sel = ui.crfPicker(row(), S);
-  sel.value = "12";
+  sel.value = "x265_10bit:12";
   sel.fire("change");
   check(
-    "picking a rung writes that rung",
+    "picking an x265 rung writes that rung",
     posted.length === 1 &&
       posted[0][0] === "/api/queue/crf" &&
       posted[0][1].crf === 12 &&
       posted[0][1].title === "Kubo (2016)",
     JSON.stringify(posted),
+  );
+}
+{
+  posted.length = 0;
+  const sel = ui.crfPicker(row(), S);
+  sel.value = "vt_h265_10bit:60";
+  sel.fire("change");
+  check(
+    "picking a hardware rung goes to the ENCODER endpoint, with its quality",
+    posted.length === 1 &&
+      posted[0][0] === "/api/queue/encoder" &&
+      posted[0][1].encoder === "vt_h265_10bit" &&
+      posted[0][1].quality === 60,
+    JSON.stringify(posted),
+  );
+}
+{
+  const sel = ui.crfPicker(row({ enc: "vt_h265_10bit", enc_q: 65 }), S);
+  check("a hand-set encoder reads back", sel.value === "vt_h265_10bit:65", sel.value);
+  check("and the cell says a human chose it", / set$| set /.test(sel.className), sel.className);
+  check(
+    "its tooltip names the encoder, not just a number",
+    /vt_h265_10bit/.test(sel.title),
+    sel.title,
   );
 }
 {
@@ -237,7 +289,7 @@ sect("an open picker defers the repaint, and releases it");
 {
   const sel = ui.crfPicker(row(), S);
   sel.fire("focus");
-  sel.value = "18";
+  sel.value = "x265_10bit:18";
   sel.fire("change");
   check(
     "a committed change releases it too — the response repaints, and the " +
@@ -247,7 +299,7 @@ sect("an open picker defers the repaint, and releases it");
   );
 }
 
-sect("one CRF control per row");
+sect("one quality control per row");
 {
   const acts = ui.rowActions(row({ ready: true }), S);
   const selects = acts.children.filter((c) => c.tagName === "select");
@@ -259,6 +311,19 @@ sect("one CRF control per row");
   const go = acts.children.filter((c) => /\bgo\b/.test(c.className))[0];
   check("start encode is still offered on the ready row", !!go);
   check("and it names the row's planned CRF", go && /CRF 14/.test(go.title), go && go.title);
+}
+{
+  posted.length = 0;
+  const acts = ui.rowActions(row({ ready: true, enc: "vt_h265_10bit", enc_q: 55 }), S);
+  const go = acts.children.filter((c) => /\bgo\b/.test(c.className))[0];
+  check("a hardware row's start button names CQ, not CRF", /VT CQ 55/.test(go.title), go.title);
+  go.fire("click");
+  go.fire("click");
+  check(
+    "and it starts on that encoder — a CQ handed over as a CRF is near-lossless",
+    posted.length === 1 && posted[0][1].encoder === "vt_h265_10bit" && posted[0][1].crf === 55,
+    JSON.stringify(posted),
+  );
 }
 {
   posted.length = 0;
@@ -282,8 +347,13 @@ sect("a running encode gets no picker");
   const cell = src.slice(src.indexOf("var crfTd;"), src.indexOf("tr.appendChild(crfTd);"));
   check(
     "the encoding branch renders TEXT, never crfPicker",
-    /r\.encoding\)\s*\{[\s\S]*?crfTd\s*=\s*el\("td",\s*"n q-crf",\s*String\(/.test(cell) &&
+    /r\.encoding\)\s*\{[\s\S]*?crfTd\s*=\s*el\("td",\s*"n q-crf",\s*qLabel\(/.test(cell) &&
       cell.indexOf("crfPicker") > cell.search(/else\s*\{/),
+    cell,
+  );
+  check(
+    "and it labels the scale of the encoder ACTUALLY running, not the plan",
+    /var le = lc \? lc\.enc : r\.enc;/.test(cell),
     cell,
   );
   check(

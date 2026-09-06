@@ -101,6 +101,39 @@ CRF_DEFAULT = 14
 # while paused (pausing frees the CPU, not the disk).
 PAUSE_FLAG = os.path.join(SMELTR_DIR, "pause")
 
+# Per-title encoder overrides from the dashboard: which encoder (and quality)
+# a title encodes with. One JSON file beside the ledger, written ONLY through
+# save_encoder_overrides() (atomic replace, same discipline as OVERRIDES).
+# The default -- and the fallback on ANY failure to read or validate -- is the
+# proven software path, x265_10bit at CRF_DEFAULT. The hardware path exists because
+# the M1 Max media engine encodes 4K 10-bit HEVC at ~20x the speed of x265,
+# but with materially worse quality-per-bit: the 2026-08-25 A/B measured a
+# VMAF ceiling of ~84 on grain-heavy film at ANY size, so vt_h265_10bit is a
+# per-title choice for clean digital/animated sources, never a blanket switch.
+ENCODER_OVERRIDES = os.path.join(SMELTR_DIR, "encoder_overrides.json")
+
+# The full menu of encoders the pipeline may run, each with its selectable
+# quality values. x265 quality is CRF (lower = better); VideoToolbox quality
+# is CQ on Apple's reversed 0-100 scale (higher = better). The two scales are
+# NOT comparable -- never map one onto the other. VT values are provisional
+# pending the clean-digital half of the A/B (grain-heavy is already measured:
+# CQ 65 spends the full source bitrate for VMAF 84).
+# NOTE the x265 menu IS CRF_CHOICES, not a second copy of it. The rungs the
+# page offers must be rungs .watch-encode.sh can ladder to, and a duplicated
+# tuple drifts the moment the pivot moves again (16 -> 14 already happened).
+ENCODER_CHOICES: dict = {
+    "x265_10bit": CRF_CHOICES,
+    "vt_h265_10bit": (50, 55, 60, 65, 70),
+}
+DEFAULT_ENCODER = "x265_10bit"
+DEFAULT_QUALITY = CRF_DEFAULT
+# Per-encoder default quality for a start that names an encoder but no
+# quality. NEVER derived from menu position: index [0] is the BEST x265
+# CRF and the WORST VideoToolbox CQ -- the same expression means opposite
+# things on the two scales. x265 tracks CRF_DEFAULT so the pivot cannot
+# move under the ladder; VT's 60 is the pivot .watch-encode.sh leaves from.
+DEFAULT_QUALITIES: dict = {"x265_10bit": CRF_DEFAULT, "vt_h265_10bit": 60}
+
 
 def paused() -> bool:
     # Fail CLOSED: waiting is always the safe direction. os.path.exists
@@ -231,6 +264,65 @@ def save_overrides(
     os.replace(tmp, OVERRIDES)
 
 
+def load_encoder_overrides() -> dict:
+    """{"map": {title: {"encoder": str, "quality": num}}, "corrupt": bool}.
+
+    Tolerant like load_overrides(): the driver reads this through
+    encoder_for() on every start and must never crash on a UI-written file.
+    Entries that name an unknown encoder or an off-menu quality are DROPPED
+    here (falling back to the x265 default for that title), because the only
+    thing worse than ignoring a hand-set override is spawning HandBrake with
+    a quality number that means something else on the other encoder's scale.
+    """
+    try:
+        with open(ENCODER_OVERRIDES, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except OSError:
+        return {"map": {}, "corrupt": False}
+    except ValueError:
+        return {"map": {}, "corrupt": True}
+    if not isinstance(raw, dict):
+        return {"map": {}, "corrupt": True}
+    out = {}
+    for title, v in raw.items():
+        if not (isinstance(title, str) and isinstance(v, dict)):
+            continue
+        enc, q = v.get("encoder"), v.get("quality")
+        # ints only: 16.0 == 16 would pass a bare membership test, and the
+        # stated invariant is that encoder_for() can only return a menu entry.
+        if enc in ENCODER_CHOICES and isinstance(q, int) \
+                and not isinstance(q, bool) and q in ENCODER_CHOICES[enc]:
+            out[title] = {"encoder": enc, "quality": q}
+    return {"map": out, "corrupt": False}
+
+
+def save_encoder_overrides(mapping: dict) -> None:
+    """Atomic + fsync'd, exactly like save_overrides(), and for the same
+    reason: the driver reads this file between cycles."""
+    os.makedirs(SMELTR_DIR, exist_ok=True)
+    tmp = ENCODER_OVERRIDES + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(mapping, ensure_ascii=False, indent=2) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, ENCODER_OVERRIDES)
+
+
+def encoder_for(title: str) -> tuple:
+    """(encoder, quality) for a title: its override, else the x265 default.
+
+    Case-insensitive on the folder name, matching how skip/priority match.
+    Any failure -- missing file, corrupt file, invalid entry -- answers the
+    default: the proven software path is the fallback in every direction.
+    """
+    ov = load_encoder_overrides()["map"]
+    want = title.lower()
+    for t, v in ov.items():
+        if t.lower() == want:
+            return v["encoder"], v["quality"]
+    return DEFAULT_ENCODER, DEFAULT_QUALITY
+
 # ---------------------------------------------------------------- log parsing
 
 # HandBrake writes progress with carriage returns and only sometimes includes
@@ -242,6 +334,11 @@ PROGRESS_RE = re.compile(
 DEST_RE = re.compile(r'"File"\s*:\s*"([^"]+)"')
 START_RE = re.compile(r"Starting work at: (.+)")
 CRF_RE = re.compile(r"Rate Control / qCompress\s*:\s*CRF-([\d.]+)")
+# VideoToolbox logs its rate control differently: no "Rate Control" line, but
+# the job header carries '+ quality: 60.00 (CQ)' and the JSON job config names
+# the encoder. Both live in the log HEAD alongside the lines above.
+CQ_RE = re.compile(r"\+ quality: ([\d.]+) \(CQ\)")
+ENC_RE = re.compile(r'"Encoder"\s*:\s*"([^"]+)"')
 GEOM_RE = re.compile(r"\+ storage dimensions: (\d+) x (\d+)")
 SRC_GEOM_RE = re.compile(r"scan: \d+ previews, (\d+)x(\d+)")
 # The scan block enumerates the SOURCE's tracks; the job-configuration block
@@ -291,8 +388,14 @@ def parse_log(path: str) -> dict:
     m = START_RE.search(head)
     out["started_text"] = m.group(1).strip() if m else None
 
-    m = CRF_RE.search(head)
+    m = CRF_RE.search(head) or CQ_RE.search(head)
     out["crf"] = float(m.group(1)) if m else None
+
+    # First "Encoder" that names a VIDEO encoder we know: HandBrake's job JSON
+    # also carries an "Encoder" key inside AudioList, and it appears FIRST --
+    # a build that writes it as a string would otherwise win this search.
+    out["encoder"] = next((m.group(1) for m in ENC_RE.finditer(head)
+                           if m.group(1) in ENCODER_CHOICES), None)
 
     m = GEOM_RE.search(head)
     out["geometry"] = f"{m.group(1)}x{m.group(2)}" if m else None
@@ -354,6 +457,7 @@ def _count_tracks(head: str, header: str) -> Optional[int]:
 # only reliable anchors are the literal flag tokens that always follow.
 PS_IO_RE = re.compile(r"-i\s+(.+?)\s+-o\s+(.+?)(?:\s+-[a-zA-Z-]|\s*$)")
 PS_Q_RE = re.compile(r"-q\s+([\d.]+)")
+PS_E_RE = re.compile(r"-e\s+(\S+)")
 
 
 def _ps_handbrake() -> list[dict]:
@@ -366,7 +470,10 @@ def _ps_handbrake() -> list[dict]:
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return []
+    return _parse_ps(raw)
 
+
+def _parse_ps(raw: str) -> list[dict]:
     procs = []
     for line in raw.splitlines():
         line = line.strip()
@@ -382,19 +489,23 @@ def _ps_handbrake() -> list[dict]:
         # invocation (a test harness, a grep) otherwise renders as a ghost
         # live card with unexpanded $variables for -i/-o, inflates the
         # queue's encoding count, and pins the header beacon on. Same
-        # lesson as the driver's `pgrep -x`.
+        # lesson as the driver's `pgrep -x`. First token only -- the
+        # binary's own path never contains a space here, and file ARGUMENTS
+        # with spaces come later in the line.
         if os.path.basename(cmd.split(" ", 1)[0]) != "HandBrakeCLI":
             continue
         io = PS_IO_RE.search(cmd)
         if not io:
             continue
         q = PS_Q_RE.search(cmd)
+        e = PS_E_RE.search(cmd)
         procs.append(
             {
                 "pid": pid,
                 "source_name": io.group(1).strip(),
                 "output_name": io.group(2).strip(),
                 "crf": float(q.group(1)) if q else None,
+                "encoder": e.group(1) if e else None,
             }
         )
     return procs
@@ -550,17 +661,27 @@ MIN_HISTORY = 3  # below this there is no distribution to speak of
 
 
 def history_ratios(
-    normalised: bool = False, hist: Optional[list] = None
+    normalised: bool = False,
+    hist: Optional[list] = None,
+    encoder: Optional[str] = None,
 ) -> list[float]:
     """output/source as a percentage, for every fully measured past encode.
 
     normalised=True scales each row by its own crop factor where the ledger
     recorded geometry, so the comparison is per retained pixel on BOTH sides.
     Rows predating geometry capture fall back to their raw ratio.
+
+    encoder=<name> keeps only rows made by that encoder. Rows with no
+    recorded encoder are x265: every row before 2026-08-25 was. Software and
+    hardware rows have different rate-quality curves, so a baseline that
+    blends them moves the outlier line for BOTH.
     """
     rows = ledger() if hist is None else hist
     out = []
     for r in rows:
+        if encoder is not None and \
+                (r.get("encoder") or DEFAULT_ENCODER) != encoder:
+            continue
         sb, ob = r.get("source_bytes"), r.get("output_bytes")
         if not sb or not ob:
             continue
@@ -576,12 +697,18 @@ def _verdict(
     hist: Optional[list[float]] = None,
     norm_ratio: Optional[float] = None,
     downscaled: bool = False,
+    encoder: str = DEFAULT_ENCODER,
 ) -> tuple[str, str]:
-    """The CRF ladder, a downscale check, and an outlier check.
+    """The quality ladder, a downscale check, and an outlier check.
 
     ratio      -- projected output / source, by bytes
     norm_ratio -- the same, normalised for auto-cropped pixels; this is the
                   figure compared against history
+    encoder    -- who made the output. The size checks are absolute, but the
+                  outlier comparison only means anything against SAME-encoder
+                  history, and a non-default encoder with no such history is
+                  `suspect` by construction: the first hardware encodes get a
+                  human, not a baseline borrowed from a different curve.
     """
     if downscaled:
         return "downscale", (
@@ -594,7 +721,8 @@ def _verdict(
     if ratio >= 100:
         return (
             "blowup",
-            "Projecting LARGER than the source - kill it and restart at CRF 20.",
+            "Projecting LARGER than the source - kill it and restart at the "
+            "next ladder rung.",
         )
     # 80, not 85: this is the top of the 30-80% target band the dashboard draws.
     # Nothing in 12 titles has ever exceeded 71.3%, so this end has never fired --
@@ -602,10 +730,18 @@ def _verdict(
     if ratio >= 80:
         return (
             "no-saving",
-            "Above the 30-80% target band - kill it and restart at CRF 18.",
+            "Above the 30-80% target band - kill it and restart at the next "
+            "ladder rung.",
         )
 
-    hist = history_ratios(normalised=True) if hist is None else hist
+    hist = history_ratios(normalised=True, encoder=encoder) \
+        if hist is None else hist
+    if encoder != DEFAULT_ENCODER and len(hist) < MIN_HISTORY:
+        return "suspect", (
+            f"NO {encoder} BASELINE YET: this is one of the first encodes "
+            f"made by {encoder}, and the x265 history cannot judge it -- the "
+            "two encoders spend bits differently at the same visual quality. "
+            "Check picture quality on a scene before deleting the original.")
     cmp_ratio = ratio if norm_ratio is None else norm_ratio
     base = statistics.median(hist) if len(hist) >= MIN_HISTORY else None
     # Both tests are on the NORMALISED ratio now, so a heavily auto-cropped
@@ -617,7 +753,7 @@ def _verdict(
         detail = (
             f"the typical encode in this job keeps {base:.1f}% (median of {len(hist)})"
             if base is not None
-            else f"implausibly small for 4K at CRF {CRF_DEFAULT}"
+            else "implausibly small for a 4K encode"
         )
         if below_floor:
             detail = (
@@ -693,7 +829,9 @@ def live_encodes() -> list[dict]:
         os.path.basename(lg["output_name"]): lg for lg in logs if lg.get("output_name")
     }
 
-    hist = history_ratios(normalised=True)
+    # Baselines are per-encoder now, computed lazily: only ONE encode runs at
+    # a time, so this is one ledger pass in practice.
+    hists: dict = {}
     result = []
     for proc in _ps_handbrake():
         if not _alive(proc["pid"]):
@@ -701,6 +839,13 @@ def live_encodes() -> list[dict]:
         src_name = os.path.basename(proc["source_name"])
         out_name = os.path.basename(proc["output_name"])
         lg = by_output.get(out_name, {})
+        # The outlier baseline must come from the SAME encoder: software and
+        # hardware rows have different rate-quality curves, and a blended
+        # median moves the line for both. Memoised per encoder per call.
+        enc = proc.get("encoder") or lg.get("encoder") or DEFAULT_ENCODER
+        if enc not in hists:
+            hists[enc] = history_ratios(normalised=True, encoder=enc)
+        hist = hists[enc]
         src = (
             proc["source_name"]
             if os.sep in proc["source_name"] and os.path.isfile(proc["source_name"])
@@ -725,7 +870,11 @@ def live_encodes() -> list[dict]:
         cf = crop_factor(src_geom, out_geom)
         norm = ratio * cf if ratio is not None else None
         code, note = _verdict(
-            ratio, hist, norm, is_downscale(src_geom, out_geom, lg.get("autocrop"))
+            ratio,
+            hist,
+            norm,
+            is_downscale(src_geom, out_geom, lg.get("autocrop")),
+            encoder=enc,
         )
 
         title = re.sub(r"\s+(Remux-)?2160p.*$", "", src_name).strip()
@@ -735,6 +884,7 @@ def live_encodes() -> list[dict]:
                 "folder": os.path.basename(os.path.dirname(src)) if src else title,
                 "pid": proc["pid"],
                 "crf": proc["crf"] if proc.get("crf") is not None else lg.get("crf"),
+                "encoder": proc.get("encoder") or lg.get("encoder"),
                 "pct": pct,
                 "fps": lg.get("fps"),
                 "avg_fps": lg.get("avg_fps"),
@@ -1091,6 +1241,11 @@ class Entry:
     dest: Optional[str] = None
     finished_at: Optional[str] = None
     crf: Optional[float] = 16.0
+    # Which encoder produced the row. Old rows carry None (all were x265).
+    # Recorded so verdict baselines can tell software and hardware rows apart:
+    # vt_h265_10bit output runs larger at like-for-like quality, and mixing the
+    # two silently would contaminate history_ratios() a second way.
+    encoder: Optional[str] = None
     encode_seconds: Optional[int] = None
     note: str = ""
     # How this row was obtained. Rows reconstructed from a text state file or
@@ -1231,6 +1386,8 @@ def summary(
         "roots_offline": [f"{volume_name(r)}/{os.path.basename(r)}" for r in offline],
         "library_complete": complete,
         "overrides_corrupt": bool(load_overrides().get("corrupt")),
+        "encoder_overrides_corrupt":
+            bool(load_encoder_overrides().get("corrupt")),
         # In summary, not only the dashboard payload: `smeltr report` must
         # never render a paused pipeline as a healthy one (same rule as
         # overrides_corrupt -- every view says it, or the state is invisible

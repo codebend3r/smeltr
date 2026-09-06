@@ -28,6 +28,13 @@ DRY=false
 [ -w "$X9" ] || { echo "staging drive is not writable: $X9" >&2; exit 1; }
 
 rc=0
+# ORDER IS LOAD-BEARING and the glob supplies it: autopilot.sh sorts before
+# watch-encode.sh. The old driver parses a rung with `sed 's/.*next: CRF //'`,
+# a no-op on the new watcher's `next: Q 55` wording -- the whole KILLED line
+# would reach `-q`, which HandBrake reads as quality 0.0, x265 LOSSLESS, until
+# the drive fills. The driver must learn the new wording BEFORE the watcher
+# starts emitting it. A script added here that must land before autopilot.sh
+# needs an explicit list, not this glob.
 for src in "$REPO"/staging/*.sh; do
   name=".$(basename "$src")"
   dst="$X9/$name"
