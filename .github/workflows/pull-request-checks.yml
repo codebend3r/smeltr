@@ -283,6 +283,11 @@ jobs:
       - name: 🔎 test:sh:launcher — launcher server discovery
         run: bun run test:sh:launcher
 
+      # The queue/ + complete/ staging layout in the driver: migration off
+      # the root, the encoding folder left alone, complete/ never staged.
+      - name: 🔎 test:sh:layout — staging layout helpers
+        run: bun run test:sh:layout
+
       - name: 🪜 test:sh:watch-ladder — encoder-aware band ladder rungs
         run: bun run test:sh:watch-ladder
 

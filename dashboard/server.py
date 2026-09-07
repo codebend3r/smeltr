@@ -378,7 +378,7 @@ def _transfers() -> list:
     now = time.monotonic()
     seen = set()
     for folder in core.staged_folders():
-        stage = os.path.join(core.X9, folder)
+        stage = core.folder_dir(folder)
         try:
             names = [
                 n
@@ -513,6 +513,22 @@ def _sync_in_flight() -> bool:
     return False
 
 
+def _hidden_pulls() -> list:
+    """Every hidden ".pull-<title>" folder, as (name, path): in queue/, where
+    a pull lands since 2026-09-07, plus any left at the X9 root by a server
+    that predates the layout. Nothing else ever creates that prefix."""
+    out = []
+    for parent in (core.stage_dir(), core.X9):
+        try:
+            names = os.listdir(parent)
+        except OSError:
+            continue
+        for n in names:
+            if n.startswith(".pull-") and os.path.isdir(os.path.join(parent, n)):
+                out.append((n, os.path.join(parent, n)))
+    return out
+
+
 def _arrivals() -> dict:
     """Pulls still landing on the staging drive, keyed by folder (lowercased).
 
@@ -525,7 +541,7 @@ def _arrivals() -> dict:
     """
     found = {}
     for folder in core.staged_folders():
-        stage = os.path.join(core.X9, folder)
+        stage = core.folder_dir(folder)
         try:
             names = [n for n in os.listdir(stage) if not n.startswith("._")]
         except OSError:
@@ -534,16 +550,7 @@ def _arrivals() -> dict:
         full = [n for n in names if n.endswith(core.SOURCE_EXTS)]
         if partials and not full:
             found[folder.lower()] = os.path.join(stage, partials[0])
-    try:
-        hidden = [
-            n
-            for n in os.listdir(core.X9)
-            if n.startswith(".pull-") and os.path.isdir(os.path.join(core.X9, n))
-        ]
-    except OSError:
-        hidden = []
-    for n in hidden:
-        d = os.path.join(core.X9, n)
+    for n, d in _hidden_pulls():
         try:
             names = [m for m in os.listdir(d) if not m.startswith("._")]
         except OSError:
@@ -875,7 +882,7 @@ def _staging_files(title: str):
     encode" on a staged .mp4 answered "no source file in the staging folder".
     The OUTPUT is always .mkv: HandBrake runs -f av_mkv.
     """
-    d = os.path.join(core.X9, title)
+    d = core.folder_dir(title)
     try:
         names = sorted(n for n in os.listdir(d) if not n.startswith("._"))
     except OSError:
@@ -1214,7 +1221,7 @@ def _begin_pull_locked(row: dict, src: str, size: int):
     # core.staged_folders(), and the replenisher's find) and is renamed into
     # place only once the byte count checks out. A visible folder with no
     # source file HALTS the driver.
-    hidden = os.path.join(core.X9, ".pull-" + row["title"])
+    hidden = os.path.join(core.stage_dir(), ".pull-" + row["title"])
     try:
         os.makedirs(hidden, exist_ok=True)
     except OSError as e:
@@ -1383,8 +1390,9 @@ def _stage_worker(title: str, src: str, hidden: str) -> None:
                 kind="bad",
             )
         if rc == 0:
-            dest = os.path.join(core.X9, title)
+            dest = os.path.join(core.stage_dir(), title)
             try:
+                os.makedirs(core.stage_dir(), exist_ok=True)
                 os.rename(hidden, dest)
                 keep = True
                 _set_note(
@@ -1438,10 +1446,13 @@ def _finish_orphan_locked(title: str, hidden: str) -> None:
         f.endswith(".partial") for f in real
     )
     if complete:
-        dest = os.path.join(core.X9, title)
+        dest = os.path.join(core.stage_dir(), title)
         try:
-            if os.path.exists(dest):
+            # folder_dir() answers the legacy root folder too, so a title
+            # that still sits at the root is a collision, not a free name.
+            if os.path.exists(dest) or os.path.exists(core.folder_dir(title)):
                 raise OSError("a folder named %s already exists" % title)
+            os.makedirs(core.stage_dir(), exist_ok=True)
             os.rename(hidden, dest)
             _set_note(
                 "Staged %s — finished a pull orphaned by a server "
@@ -1483,18 +1494,12 @@ def _sweep_orphans_once() -> bool:
     does not need to), or a worker in THIS process owns a hidden folder
     (_stage_active covers the pre-spawn and post-exit windows pgrep misses).
     """
-    try:
-        names = os.listdir(core.X9)
-    except OSError:
+    if not os.path.isdir(core.X9):
         # No staging drive to sweep. The next restart with it mounted adopts
         # whatever is there; retrying here would tick forever on a machine
         # that simply has no X9.
         return True
-    orphans = [
-        n
-        for n in names
-        if n.startswith(".pull-") and os.path.isdir(os.path.join(core.X9, n))
-    ]
+    orphans = _hidden_pulls()
     if not orphans:
         return True
     with _stage_lock:
@@ -1502,8 +1507,8 @@ def _sweep_orphans_once() -> bool:
             return False
         if _pgrep(r"ssh-xfer\.sh pull"):
             return False
-        for n in orphans:
-            _finish_orphan_locked(n[len(".pull-") :], os.path.join(core.X9, n))
+        for n, d in orphans:
+            _finish_orphan_locked(n[len(".pull-") :], d)
     _drop_state_cache()
     return True
 
@@ -1516,10 +1521,7 @@ def _adopt_orphan_pulls() -> None:
     child survived the restart -- and commits once it exits.
     """
     try:
-        if not any(
-            n.startswith(".pull-") and os.path.isdir(os.path.join(core.X9, n))
-            for n in os.listdir(core.X9)
-        ):
+        if not _hidden_pulls():
             return
     except OSError:
         return
@@ -2310,7 +2312,7 @@ class Handler(BaseHTTPRequestHandler):
             # finds the folder by disk scan and will judge/record/sync it
             # regardless of the overrides file. Accepting the skip would show
             # a greyed row while the library original is deleted.
-            d = os.path.join(core.X9, row["title"])
+            d = core.folder_dir(row["title"])
             try:
                 files = os.listdir(d)
             except OSError:

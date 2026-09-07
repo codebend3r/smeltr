@@ -124,7 +124,10 @@ LOG="/tmp/handbrake-${SLUG}.log"
 # X9 log override: HandBrake logs now live on the X9 too, so /tmp cleanup can't
 # strand the watcher against a vanished log. Prefer it when present.
 [ -f "/Volumes/Crucial X9/4K Movies/.hb-${SLUG}.log" ] && LOG="/Volumes/Crucial X9/4K Movies/.hb-${SLUG}.log"
-BASE="/Volumes/Crucial X9/4K Movies/${FOLDER}"
+# Layout (2026-09-07): movie folders live in queue/; a folder still at the
+# root is the old layout. Same fallback as the driver's folder_dir().
+BASE="/Volumes/Crucial X9/4K Movies/queue/${FOLDER}"
+[ -d "$BASE" ] || BASE="/Volumes/Crucial X9/4K Movies/${FOLDER}"
 SRC="${BASE}/${SRCNAME}"; OUT="${BASE}/${OUTNAME}"
 NEXT=25
 STRIKES=0; STRIKEDIR=""

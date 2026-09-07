@@ -341,7 +341,9 @@ class OrphanPulls(Fixture):
         done = server._sweep_orphans_once()
         self.assertTrue(done)
         self.assertFalse(os.path.exists(hidden))
-        dest = os.path.join(core.X9, "A (1990)")
+        # A legacy root orphan lands in queue/, where every pull lands since
+        # the 2026-09-07 layout -- never back at the root.
+        dest = os.path.join(core.stage_dir(), "A (1990)")
         self.assertTrue(os.path.isfile(os.path.join(dest, "A (1990) Bluray-2160p.mkv")))
         self.assertEqual(server._encode_note["kind"], "ok")
 

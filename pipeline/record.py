@@ -98,7 +98,7 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    d = os.path.join(core.X9, args.folder)
+    d = core.folder_dir(args.folder)
     if not os.path.isdir(d):
         sys.exit(f"no such staging folder: {d}")
 
@@ -114,13 +114,21 @@ def main() -> int:
         and f not in outs
         and not f.endswith(".partial")
     ]
-    if len(outs) != 1 or len(srcs) != 1:
+    # No staged source, but --source-path names a real file: use the library
+    # original as the source. The staged copy was pulled with a byte-count
+    # check, so the two are the same bytes and the same tracks. The case is a
+    # finished folder whose source was moved by hand before the row existed
+    # (three of them on 2026-09-07, under the no-delete policy).
+    if len(outs) == 1 and not srcs and args.source_path and os.path.isfile(args.source_path):
+        src = args.source_path
+    elif len(outs) != 1 or len(srcs) != 1:
         sys.exit(
             f"expected exactly one source and one output in {args.folder}; "
             f"found sources={srcs} outputs={outs}"
         )
-
-    src, out = os.path.join(d, srcs[0]), os.path.join(d, outs[0])
+    else:
+        src = os.path.join(d, srcs[0])
+    out = os.path.join(d, outs[0])
 
     # LIVENESS GATE, before anything else. Recording a still-growing output
     # writes a permanently wrong size into the ledger -- and that row is the

@@ -22,6 +22,15 @@
 set -uo pipefail
 
 X9="/Volumes/Crucial X9/4K Movies"
+# The staging LAYOUT (operator's rule, 2026-09-07). Movie folders live in
+# $X9/queue (everything still to be acted on: waiting, arriving, encoding,
+# errored) and $X9/complete (finished, source + output kept under the
+# no-delete policy). Scripts, logs, markers and the index stay at the root.
+# A movie folder still AT the root is the old layout: every lookup falls back
+# to it, and migrate_layout() moves it into place on each pass -- never the
+# one HandBrake is writing into. Mirrors core.STAGE / core.COMPLETE.
+STAGE="$X9/queue"
+COMPLETE="$X9/complete"
 SMELTR="$HOME/Developer/git/smeltr/smeltr"
 LOG="$X9/.autopilot.log"
 STOP_MBPS=70
@@ -49,7 +58,8 @@ error_out() {
 done_out() {
   local title="$1"; shift
   printf '%s: %s at %s\n' "$title" "$*" "$(date '+%Y-%m-%d %H:%M:%S')" > "$X9/.done-$title"
-  log "DONE $title: $* - kept in place, moving on"
+  log "DONE $title: $* - moving on"
+  move_to_complete "$title"
 }
 
 # Single instance. Two drivers would both pick "the next title" and both start it.
@@ -60,6 +70,75 @@ fi
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT INT TERM
 
 slug_of() { echo "$1" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]' | cut -c1-20; }
+
+# Defaults for the helper block when it is sourced on its own (the suites
+# extract slug_of..library_path_of and set only X9). No-ops in the script.
+: "${STAGE:=$X9/queue}" "${COMPLETE:=$X9/complete}"
+
+# Where a staged title's folder is: queue/<title>, else the legacy root
+# folder, else queue/<title> (where it WOULD be). Same resolver as
+# core.folder_dir(), so the driver and the dashboard never disagree.
+folder_dir() {
+  local t="$1"
+  if [ -d "$STAGE/$t" ]; then printf '%s\n' "$STAGE/$t"
+  elif [ "$t" != queue ] && [ "$t" != complete ] && [ -d "$X9/$t" ]; then printf '%s\n' "$X9/$t"
+  else printf '%s\n' "$STAGE/$t"
+  fi
+}
+
+# Every movie folder the pipeline may still act on, one per line: queue/ plus
+# any legacy folder at the root. complete/ is never listed -- done is done.
+staged_dirs() {
+  find "$STAGE" -mindepth 1 -maxdepth 1 -type d ! -name ".*" 2>/dev/null
+  find "$X9" -mindepth 1 -maxdepth 1 -type d ! -name ".*" ! -name queue ! -name complete 2>/dev/null
+}
+
+# A finished folder goes to complete/ with its source and output both inside.
+# mv on one volume is a rename. A name already there is left for a human:
+# nothing is ever merged or overwritten.
+move_to_complete() {
+  local t="$1" from
+  from=$(folder_dir "$t")
+  [ -d "$from" ] || return 0
+  mkdir -p "$COMPLETE"
+  if [ -e "$COMPLETE/$t" ]; then
+    log "  NOT moved: $COMPLETE/$t already exists - $from left where it is"
+    return 0
+  fi
+  if mv "$from" "$COMPLETE/$t"; then
+    log "  moved to complete/: $t"
+  else
+    log "  could not move $from to complete/ - left where it is"
+  fi
+}
+
+# Bring a root-level movie folder into the layout: complete/ if its .done-
+# marker exists, queue/ otherwise. Skips the folder HandBrake is writing into
+# and any with a sync in flight; a name already taken in the destination is
+# left alone and logged once per pass. Runs every pass and is a no-op once
+# the root holds only scripts, logs and the two layout folders.
+migrate_layout() {
+  local d b dest
+  mkdir -p "$STAGE" "$COMPLETE"
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    b=$(basename "$d")
+    encoding_this "$b" && continue
+    sync_in_flight "$b" && continue
+    # A .partial inside is a pull still landing (replenisher or dashboard):
+    # .ssh-xfer.sh sizes and renames it by the path it was given, so moving
+    # the folder under it strands the transfer as a dead half-file.
+    [ -n "$(find "$d" -maxdepth 1 -name '*.partial' ! -name '._*' 2>/dev/null | head -1)" ] && continue
+    if [ -e "$X9/.done-$b" ]; then dest="$COMPLETE/$b"; else dest="$STAGE/$b"; fi
+    if [ -e "$dest" ]; then
+      log "LAYOUT: $b is at the root and $dest already exists - not touching either"
+      continue
+    fi
+    if mv "$d" "$dest"; then log "LAYOUT: moved $b into ${dest#"$X9/"}"
+    else log "LAYOUT: could not move $b into ${dest#"$X9/"} - left at the root"; fi
+  done < <(find "$X9" -mindepth 1 -maxdepth 1 -type d ! -name ".*" ! -name queue ! -name complete 2>/dev/null)
+}
+
 
 # -x matches the process NAME exactly. -f would also match any shell whose
 # arguments merely mention HandBrakeCLI, and a false positive here leaves the
@@ -133,7 +212,7 @@ finished_folder() {
     sync_in_flight "$b" && continue
     printf '%s\n' "$b"
     return
-  done < <(find "$X9" -mindepth 1 -maxdepth 1 -type d ! -name ".*")
+  done < <(staged_dirs)
 }
 
 # The replenisher, DETACHED, its output folded into this log. Detached because
@@ -187,7 +266,7 @@ sync_async() {
   local folder="$1" srcpath="$2" dest="$3" slug
   slug=$(slug_of "$folder")
   (
-    out=$(find "$X9/$folder" -maxdepth 1 -name '*2160p HEVC*.mkv' ! -name '._*' | head -1)
+    out=$(find "$(folder_dir "$folder")" -maxdepth 1 -name '*2160p HEVC*.mkv' ! -name '._*' | head -1)
     # record.py refuses an output touched in the last 120s -- a still-growing
     # file would write a permanently wrong size into the ledger. Wait it out
     # here rather than blocking the loop.
@@ -301,12 +380,13 @@ library_path_of() {
 start_encode() {
   local title="$1" q="${2:-}" slug src out enc defq
   slug=$(slug_of "$title")
-  src=$(find "$X9/$title" -maxdepth 1 "${SRC_FIND[@]}" ! -name '._*' ! -name '*2160p HEVC*' | head -1)
+  local dir; dir=$(folder_dir "$title")
+  src=$(find "$dir" -maxdepth 1 "${SRC_FIND[@]}" ! -name '._*' ! -name '*2160p HEVC*' | head -1)
   [ -z "$src" ] && { error_out "$title" "no source file"; return 1; }
   # Named after the FOLDER, not the source file. An earlier version derived it
   # from the source basename with a sed strip and was overwritten on the very
   # next line -- a dead store that read like it was doing the naming.
-  out="$X9/$title/${title} 2160p HEVC.mkv"
+  out="$dir/${title} 2160p HEVC.mkv"
 
   # Which encoder, at what quality. Read through the SAME core code the
   # dashboard writes through (encoder_overrides.json beside the ledger); any
@@ -401,6 +481,10 @@ deferred=""
 # transfer and encode overlap, and so do the replenish pull and the encode.
 while true; do
 
+  # ---- 0. The layout: any movie folder still at the X9 root goes into
+  #         queue/ or complete/. A no-op on a migrated drive.
+  migrate_layout
+
   # ---- 1. A finished encode: judge here (fast), then detach record + sync.
   #         Resolution runs FIRST, and an empty result is only a halt when the
   #         roots are provably reachable. A NAS blip at this exact line used to
@@ -448,15 +532,25 @@ while true; do
         # original when it resolves, else the staged source itself (a
         # hand-added title has no library folder).
         keysrc="$srcpath"
-        [ -z "$keysrc" ] && keysrc=$(find "$X9/$done_folder" -maxdepth 1 "${SRC_FIND[@]}" ! -name '._*' ! -name '*2160p HEVC*' | head -1)
+        [ -z "$keysrc" ] && keysrc=$(find "$(folder_dir "$done_folder")" -maxdepth 1 "${SRC_FIND[@]}" ! -name '._*' ! -name '*2160p HEVC*' | head -1)
+        # The marker goes on ONLY once the row is in the ledger. `record`
+        # refuses an output modified <120 s ago, and this block runs within
+        # seconds of HandBrake exiting -- so the first attempt usually loses.
+        # A marker written anyway said "recorded" over an encode the ledger
+        # never saw (Addams Family 2, HTTYD and John Wick 2 on 2026-09-07),
+        # and finished_folder() then skipped the folder forever. With no
+        # marker the next pass re-finds it, re-judges (read-only, cheap) and
+        # records once the file has settled. The budget counts the encode
+        # once, on the pass that lands the row.
         if "$SMELTR" record "$done_folder" --source-path "$keysrc" --kept \
              --note "kept in place (no-delete policy): nothing synced, nothing deleted" 2>&1 | while IFS= read -r rl; do log "  $rl"; done; then
           log "RECORDED $done_folder (kept)"
+          done_out "$done_folder" "verdict good; recorded; no-delete policy: nothing synced, nothing deleted - move it by hand"
+          judged=kept
         else
-          log "  record failed for $done_folder - marker still written, nothing deleted"
+          log "  record failed for $done_folder - no marker written; will re-judge and retry next pass (nothing deleted)"
+          judged=retry
         fi
-        done_out "$done_folder" "verdict good; recorded; no-delete policy: nothing synced, nothing deleted - move it by hand"
-        judged=kept
       fi
       if [ "$judged" = ok ] && [ -z "$srcpath" ]; then
         error_out "$done_folder" "cannot locate the library original (roots ARE reachable - zero or multiple matches)"
@@ -464,7 +558,9 @@ while true; do
       fi
       # Every judged encode counts toward the operator's budget, whatever the
       # verdict: the job was "convert N movies", and a finished file is one.
-      budget_check
+      # A record that will be retried is not counted yet, or the retry pass
+      # would count the same encode twice.
+      [ "$judged" != retry ] && budget_check
       if [ "$judged" = ok ]; then
         letter=$(echo "$done_folder" | cut -c1 | tr '[:lower:]' '[:upper:]')
         nas=$(echo "$srcpath" | cut -d/ -f3)

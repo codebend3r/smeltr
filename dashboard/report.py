@@ -309,14 +309,16 @@ def _arriving_on_x9(title: str, staged: bool) -> bool:
     web dashboard reports these as "arriving"; without this check the table
     calls a mostly-missing file "staged", as if it were encodable right now.
     """
-    if os.path.isdir(os.path.join(core.X9, ".pull-" + title)):
+    if os.path.isdir(os.path.join(core.stage_dir(), ".pull-" + title)) or os.path.isdir(
+        os.path.join(core.X9, ".pull-" + title)
+    ):
         return True
     if not staged:
         return False
     try:
         names = [
             n
-            for n in os.listdir(os.path.join(core.X9, title))
+            for n in os.listdir(core.folder_dir(title))
             if not n.startswith("._")
         ]
     except OSError:

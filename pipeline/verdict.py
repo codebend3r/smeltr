@@ -35,7 +35,7 @@ def main() -> int:
         print('usage: verdict.py "<staged folder>"', file=sys.stderr)
         return 4
     folder = sys.argv[1]
-    d = os.path.join(core.X9, folder)
+    d = core.folder_dir(folder)
     if not os.path.isdir(d):
         print(json.dumps({"error": f"no such staged folder: {d}"}))
         return 4

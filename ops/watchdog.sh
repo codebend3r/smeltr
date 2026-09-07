@@ -215,8 +215,16 @@ fi
 # Sort out what is already sitting on the staging drive BEFORE asking what to
 # do next, so the pick is made against a clean drive and the driver is never
 # handed a file that can only halt it.
-verdicts=$(find "$X9" -mindepth 2 -maxdepth 2 -type f -name '*2160p HEVC*.mkv' \
-             ! -name '._*' 2>/dev/null | triage_outputs)
+# Movie folders live in $X9/queue since 2026-09-07; a folder still at the
+# root is the old layout and is swept too. complete/ holds FINISHED encodes
+# and is never triaged: nothing there is a corpse, whatever its duration.
+verdicts=$( { find "$X9/queue" -mindepth 2 -maxdepth 2 -type f -name '*2160p HEVC*.mkv' \
+                ! -name '._*' 2>/dev/null
+              find "$X9" -mindepth 1 -maxdepth 1 -type d ! -name '.*' ! -name queue ! -name complete 2>/dev/null \
+                | while IFS= read -r d; do
+                    find "$d" -mindepth 1 -maxdepth 1 -type f -name '*2160p HEVC*.mkv' ! -name '._*' 2>/dev/null
+                  done
+            } | triage_outputs)
 if printf '%s\n' "$verdicts" | grep -q '^unknown$'; then
   wlog "NOT restarting: an output could not be judged - the drive may be sick"
   notify "Autopilot is down and an encode cannot be judged - needs you."

@@ -43,6 +43,30 @@ SMELTR_DIR = os.environ.get("SMELTR_DIR") or os.path.dirname(
 LEDGER = os.path.join(SMELTR_DIR, "ledger.jsonl")
 
 X9 = os.environ.get("SMELTR_X9", "/Volumes/Crucial X9/4K Movies")
+# The staging LAYOUT (operator's rule, 2026-09-07): movie folders live in two
+# subfolders of the X9, never at its root. `queue/` holds every title waiting
+# to encode, encoding, arriving, errored -- everything the pipeline may still
+# act on. `complete/` holds a finished encode with its source beside it (the
+# no-delete policy keeps both); nothing in the pipeline reads it except to
+# know the title is done. The scripts, logs, markers and the bitrate index
+# stay at the root, where they always were. A movie folder still found AT the
+# root is the pre-2026-09-07 layout: every reader below falls back to it, so
+# a deploy mid-encode leaves the running title findable, and .autopilot.sh
+# moves such folders into place on every pass (never the one being encoded).
+STAGE_DIRNAME = "queue"
+COMPLETE_DIRNAME = "complete"
+
+
+def stage_dir() -> str:
+    """$X9/queue. A function, not a constant: the test suites swap core.X9 at
+    runtime, and a path frozen at import would keep pointing at the live
+    drive while every other reader had moved to the fixture."""
+    return os.path.join(X9, STAGE_DIRNAME)
+
+
+def complete_dir() -> str:
+    """$X9/complete. See stage_dir()."""
+    return os.path.join(X9, COMPLETE_DIRNAME)
 LIBRARY_ROOTS = [
     "/Volumes/Vhagar/Media/4K Movies",
     "/Volumes/Vermithor/Media/4K Movies",
@@ -582,14 +606,10 @@ def _find_in_staging(filename: str) -> Optional[str]:
     """Locate a bare filename inside a staged movie folder. One level deep."""
     if not filename or os.sep in filename:
         return None
-    try:
-        folders = os.listdir(X9)
-    except OSError:
-        return None
     hits = [
-        os.path.join(X9, f, filename)
-        for f in folders
-        if not f.startswith(".") and os.path.isfile(os.path.join(X9, f, filename))
+        os.path.join(folder_dir(f), filename)
+        for f in staged_folders()
+        if os.path.isfile(os.path.join(folder_dir(f), filename))
     ]
     # Duplicate basenames genuinely exist in this library. Guessing one would put
     # the wrong file's size in the denominator of a deletion decision.
@@ -1009,7 +1029,7 @@ def staged_detail() -> list[dict]:
     """
     rows = []
     for folder in staged_folders():
-        d = os.path.join(X9, folder)
+        d = folder_dir(folder)
         try:
             files = [f for f in os.listdir(d) if not f.startswith("._")]
         except OSError:
@@ -1046,15 +1066,20 @@ def done_marker(title: str) -> Optional[str]:
     """First line of $X9/.done-<title>, or None.
 
     Written by .autopilot.sh under the no-delete policy when an encode is
-    judged good: the output stays beside its source for the operator to move
-    by hand. NOT an error -- the title is finished. Unpickable and never
-    re-judged, like the error marker; rendered green, not red.
+    judged good: the output stays beside its source and the folder moves to
+    $X9/complete/. NOT an error -- the title is finished. Unpickable and
+    never re-judged, like the error marker; rendered green, not red. A folder
+    sitting in complete/ is done even with no marker (the operator may move
+    one there by hand), so the replenisher can never pull it back.
     """
     try:
         with open(os.path.join(X9, ".done-" + title), encoding="utf-8") as fh:
             return fh.readline().strip() or "done"
     except OSError:
-        return None
+        pass
+    if os.path.isdir(os.path.join(complete_dir(), title)):
+        return "done - in complete/"
+    return None
 
 
 def error_marker(title: str) -> Optional[str]:
@@ -1073,15 +1098,49 @@ def error_marker(title: str) -> Optional[str]:
         return None
 
 
-def staged_folders() -> list[str]:
+def _movie_dirs(parent: str) -> list[str]:
     try:
-        return sorted(
+        return [
             n
-            for n in os.listdir(X9)
-            if not n.startswith(".") and os.path.isdir(os.path.join(X9, n))
-        )
+            for n in os.listdir(parent)
+            if not n.startswith(".") and os.path.isdir(os.path.join(parent, n))
+        ]
     except OSError:
         return []
+
+
+def staged_folders() -> list[str]:
+    """Every movie folder the pipeline may still act on: queue/, plus any
+    legacy folder still at the X9 root (see stage_dir). complete/ is NOT staged
+    -- a finished title is not work -- and the two layout folders themselves
+    are never titles."""
+    names = set(_movie_dirs(stage_dir()))
+    names.update(
+        n for n in _movie_dirs(X9) if n not in (STAGE_DIRNAME, COMPLETE_DIRNAME)
+    )
+    return sorted(names)
+
+
+def folder_dir(title: str) -> str:
+    """Where a staged title's folder is: queue/<title>, else the legacy root
+    folder if one exists, else queue/<title> (the place it WOULD be). One
+    resolver for every reader -- verdict, record, the queue, the dashboard --
+    so no two of them can disagree about which folder a title means."""
+    d = os.path.join(stage_dir(), title)
+    if os.path.isdir(d):
+        return d
+    if title not in (STAGE_DIRNAME, COMPLETE_DIRNAME):
+        legacy = os.path.join(X9, title)
+        if os.path.isdir(legacy):
+            return legacy
+        # Last resort: a finished title in complete/. Never staged (see
+        # staged_folders), but `verdict`/`record` may be pointed at one by
+        # hand -- the 2026-09-07 case was three folders moved to complete/
+        # before their ledger rows existed.
+        done = os.path.join(complete_dir(), title)
+        if os.path.isdir(done):
+            return done
+    return d
 
 
 # What a staged folder holds. The integers ARE the queue sort's second key,
@@ -1106,7 +1165,7 @@ def staged_state(folder: str) -> Optional[int]:
     the page for a title the driver will never start.
     """
     try:
-        files = [f for f in os.listdir(os.path.join(X9, folder)) if not f.startswith("._")]
+        files = [f for f in os.listdir(folder_dir(folder)) if not f.startswith("._")]
     except OSError:
         return None
     if any("2160p HEVC" in f and f.endswith(".mkv") for f in files):
@@ -1184,7 +1243,7 @@ def queue(
         if not root_offline and not os.path.exists(path):
             continue
         size = (
-            _size(os.path.join(X9, folder, os.path.basename(path)))
+            _size(os.path.join(folder_dir(folder), os.path.basename(path)))
             if root_offline
             else _size(path)
         )
