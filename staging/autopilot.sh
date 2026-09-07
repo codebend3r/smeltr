@@ -52,6 +52,9 @@ log() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 # Nothing here deletes anything; a human ends the state by deleting the marker.
 error_out() {
   local title="$1"; shift
+  # The mid-write strike count is per-attempt state, not history: a title
+  # that reaches a terminal state must not carry it into a later life.
+  rm -f "$X9/.midwrite-$(slug_of "$title")"
   printf '%s: %s at %s\n' "$title" "$*" "$(date '+%Y-%m-%d %H:%M:%S')" > "$X9/.error-$title"
   log "ERROR $title: $* - marked for review, moving on"
   log "  Nothing was deleted. Delete $X9/.error-$title after review."
@@ -63,6 +66,7 @@ error_out() {
 # ledger note.
 done_out() {
   local title="$1"; shift
+  rm -f "$X9/.midwrite-$(slug_of "$title")"
   printf '%s: %s at %s\n' "$title" "$*" "$(date '+%Y-%m-%d %H:%M:%S')" > "$X9/.done-$title"
   log "DONE $title: $* - moving on"
   move_to_complete "$title"
@@ -219,6 +223,62 @@ finished_folder() {
     printf '%s\n' "$b"
     return
   done < <(staged_dirs)
+}
+
+# How many unexplained mid-write deaths a title gets before a human is owed a
+# look. A ladder retry is not one of them (see midwrite_route).
+MIDWRITE_STRIKES=3
+
+# Throw away a partial output and every shape it leaves behind: the file, its
+# AppleDouble sidecar (this volume is exFAT), and the `.killing` rename
+# .watch-encode.sh makes before it kills a band violation -- which is left
+# behind if the watcher itself is killed between the rename and its cleanup.
+# The SOURCE is never matched: every name here carries "2160p HEVC", which is
+# the driver's own output naming and never a remux's.
+drop_partial() {
+  local dir; dir=$(folder_dir "$1")
+  find "$dir" -maxdepth 1 \
+       \( -name '*2160p HEVC*.mkv' -o -name '*2160p HEVC*.mkv.killing' \) \
+       -exec rm -f {} + 2>/dev/null
+}
+
+# WHAT TO DO WITH A VERDICT EXIT 4 THAT SAYS "died mid-write" (2026-09-07,
+# operator's call: "this does not qualify as an error").
+#
+# An output with no completion marker in its HandBrake log was never
+# finished. There is nothing for a human to look at and nothing was produced
+# -- it is a worthless partial, the same thing the watcher's auto-kill throws
+# away. Mapping it to error_out() parked titles the ladder was mid-way
+# through retrying, and because pick_next passes over a marked title, a thin
+# queue then had nothing to start: Minions idled the encoder 1h35m on
+# 2026-09-06, Shazam 2h27m on 2026-09-07.
+#
+# Answers one word on stdout:
+#   wait   an encode is ALIVE, so this partial cannot be proved a corpse --
+#          it may be the running encode's own output that ps raced us on.
+#          Touch nothing and look again next pass. Deleting here would throw
+#          away hours of live work.
+#   retry  drop the partial and let the next pass re-pick the title. The
+#          KILLED line, if there is one, supplies the next rung as usual.
+#   error  it has died this way MIDWRITE_STRIKES times with no watcher line
+#          to explain any of them. That is HandBrake crashing, not the ladder
+#          working, and the driver must not spin on one title forever.
+#
+# A KILLED line CLEARS the count: each rung is progress, not a repeat of the
+# same failure, and a ladder that legitimately walks five rungs must never
+# trip the crash bound.
+midwrite_route() {
+  local title="$1" slug f n
+  slug=$(slug_of "$title")
+  f="$X9/.midwrite-$slug"
+  if hb_running; then printf 'wait\n'; return; fi
+  if grep -q '^KILLED|' "$X9/.watch-$slug.log" 2>/dev/null; then
+    rm -f "$f"; printf 'retry\n'; return
+  fi
+  n=$(cat "$f" 2>/dev/null)
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  n=$((n + 1)); printf '%s\n' "$n" > "$f"
+  if [ "$n" -ge "$MIDWRITE_STRIKES" ]; then printf 'error\n'; else printf 'retry\n'; fi
 }
 
 # The replenisher, DETACHED, its output folded into this log. Detached because
@@ -394,6 +454,13 @@ start_encode() {
   # next line -- a dead store that read like it was doing the naming.
   out="$dir/${title} 2160p HEVC.mkv"
 
+  # Anything left over from a previous attempt at this title: the partial
+  # itself, and the `.killing` rename .watch-encode.sh makes before it kills
+  # a band violation, which survives if the watcher is killed between the
+  # rename and its own cleanup. Neither is an encode; both waste the drive
+  # this encode is about to write ~30 GB into.
+  drop_partial "$title"
+
   # Which encoder, at what quality. Read through the SAME core code the
   # dashboard writes through (encoder_overrides.json beside the ledger); any
   # failure -- helper missing, file corrupt, entry invalid -- answers the
@@ -541,7 +608,37 @@ while true; do
       case $vrc in
         0) ;;
         2|3) vword=$(echo "$vjson" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("verdict"),"-",d.get("note",""))'); judged=done ;;
-        4) error_out "$done_folder" "could not be evaluated (verdict exit 4)"; judged=error ;;
+        4)
+          # NOT EVERY EXIT 4 IS A HUMAN'S PROBLEM (2026-09-07, operator's
+          # call: "this does not qualify as an error"). "died mid-write"
+          # means the output has no completion marker in its HandBrake log,
+          # so it was never finished: an auto-kill's partial caught in the
+          # window before .watch-encode.sh renamed it away, or a HandBrake
+          # that crashed. Nothing was produced and there is nothing to
+          # review -- the answer is to throw the partial away and re-pick the
+          # title, which is what its KILLED line is already asking for.
+          # Erroring it instead parked Minions on 2026-09-06 (1h35m of idle
+          # encoder) and Shazam on 2026-09-07 (2h27m). midwrite_route() owns
+          # the wait/retry/error split and the crash bound; see its comment.
+          # Every OTHER exit 4 -- no HandBrake log at all, a zero-byte
+          # source, an ambiguous file count -- really does need a human.
+          if printf '%s' "$vjson" | grep -q 'died mid-write'; then
+            case $(midwrite_route "$done_folder") in
+              wait)
+                log "  $done_folder has an unfinished output and an encode is running - leaving it for the next pass"
+                judged=retry ;;
+              retry)
+                log "  $done_folder: unfinished output from an encode that never completed - dropping the partial and retrying"
+                drop_partial "$done_folder"
+                judged=retry ;;
+              *)
+                drop_partial "$done_folder"
+                error_out "$done_folder" "the encode never completed on $MIDWRITE_STRIKES attempts and no watcher line explains it - HandBrake is failing on this source"
+                judged=error ;;
+            esac
+          else
+            error_out "$done_folder" "could not be evaluated (verdict exit 4)"; judged=error
+          fi ;;
       esac
 
       # KEPT IN PLACE: a non-good verdict under any policy, or a good verdict

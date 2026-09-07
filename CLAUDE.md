@@ -703,6 +703,65 @@ Minions 17.2%) will now ladder DOWN and **finish** at CRF 10 — since
 file, so an implausibly small one can still end red; it just ends red WITH an
 encode beside it. `tests/test_error_state.py` pins the mechanics.
 
+### An unfinished output is not an error (2026-09-07, operator's rule)
+
+**"This does not qualify as an error."** An output with no completion marker
+in its HandBrake log was never finished. Nothing was produced, there is
+nothing for a human to look at, and it is the same worthless partial the
+auto-kill throws away — so it is a RETRY, never the ERROR state.
+
+Two independent defects put Shazam (2019) in the error tab at 11:30 on
+2026-09-07 and idled the encoder for **2h27m** with the queue down to one
+startable title. Either one alone still parks a title, so both are fixed:
+
+1. **The watcher killed HandBrake and THEN deleted the partial.** In between,
+   the partial sat on disk with no live encoder — and `finished_folder()`'s
+   only live-encode guard is `encoding_this()`, which goes false the instant
+   the process dies. The driver's 30 s pass landed in that window, handed the
+   corpse to `verdict.py`, and got the correct refusal: exit 4, *log shows no
+   completion marker; encode died mid-write*.
+2. **`.autopilot.sh` mapped EVERY exit 4 to `error_out()`**, so a title whose
+   `KILLED|` line was asking for a ladder retry got a `.error-` marker
+   instead. `pick_next` passes over a marked title, so with a thin `queue/`
+   the driver had nothing left to start.
+
+This is the SECOND time: Minions at CQ 65 cost 1h35m on 2026-09-06 through
+the AppleDouble variant of the same window, and the patch then (a
+`! -name '._*'` on the glob) addressed neither defect.
+
+**The watcher now RENAMES the partial out of the glob before it kills.**
+`mv -f "$OUT" "$OUT.killing"` (and the sidecar) runs first; HandBrake holds
+the fd and keeps writing to the same inode, but the name no longer ends in
+`.mkv`, so `*2160p HEVC*.mkv` cannot match it at any instant. Narrowing the
+window is not a fix — this closes it. Both names are removed afterwards,
+because the rename can fail on a full or locked volume.
+`tests/test_watch_kill_race.sh` drives the real loop with a fake HandBrake
+that IGNORES SIGTERM, so the 30 s kill grace becomes a window in which the
+process is provably still alive; if the rename has already landed there, it
+landed before the kill could complete.
+
+**`midwrite_route()` owns the driver half**, in the sourced helper block, and
+answers one word:
+
+- **`wait`** — an encode is ALIVE, so this partial cannot be proved a corpse;
+  it may be the running encode's own output that `ps` raced us on. Touch
+  nothing, look again next pass. Deleting here costs hours of live work.
+- **`retry`** — drop the partial (`drop_partial()`, which also sweeps a
+  leftover `.killing`) and let the next pass re-pick the title. The `KILLED`
+  line, if there is one, supplies the next rung as usual.
+- **`error`** — it has died this way `MIDWRITE_STRIKES` (3) times with no
+  watcher line explaining any of them. That is HandBrake crashing on the
+  source, not the ladder working, and the driver must not spin on one title
+  forever. A `KILLED` line CLEARS the count, so a ladder legitimately walking
+  five rungs never trips the bound.
+
+Every OTHER exit 4 — no HandBrake log at all, a zero-byte source, an
+ambiguous file count — really does need a human and still errors.
+`tests/test_midwrite_retry.sh` sources the real helper block and drives all
+three answers (a string match cannot tell them apart);
+`test_error_state.py::UnfinishedOutputIsNotAnError` pins the routing and the
+rename-before-kill ordering.
+
 ### No gap between encodes — the operator's standing requirement (2026-08-31)
 
 **The only sanctioned gap between one encode finishing and the next starting
@@ -724,8 +783,9 @@ permanent refusal, so the folder is still marked and moved, with "NOT
 recorded" in the marker; any other refusal (the 120 s settle window) retries
 next pass as before. What is still the ERROR state is only what is NOT a
 finished encode: no source file, a track mismatch at the 120 s gate, an output
-that cannot be evaluated (verdict exit 4), and an unresolvable library
-original for a `good` verdict outside the no-delete policy. The `DONE` line is
+that cannot be evaluated (verdict exit 4 — but see *An unfinished output is
+not an error* below), and an unresolvable library original for a `good`
+verdict outside the no-delete policy. The `DONE` line is
 event kind `done` (green chip) and notification `kept` ("Done — kept in
 place", with the verdict word) — it REPLACED the ERROR line a thin verdict
 used to produce, so it may not be silent.

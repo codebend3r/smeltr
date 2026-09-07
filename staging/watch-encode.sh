@@ -276,6 +276,26 @@ while true; do
           STRIKES=0; STRIKEDIR=""
           ;;
         *)
+          # HIDE THE PARTIAL BEFORE THE KILL, never after (2026-09-07).
+          # Killing first left a window -- from the process dying to the `rm`
+          # below -- in which the partial sat on disk with no live encoder.
+          # The driver's 30 s pass reads exactly that as a FINISHED encode:
+          # finished_folder()'s only live-encode guard is encoding_this(),
+          # which goes false the instant the process dies. verdict.py then
+          # correctly refuses to judge it ("died mid-write", exit 4), and the
+          # driver errored the title out -- parking a title whose KILLED line
+          # was asking for a ladder retry behind a marker only a human can
+          # clear. Minions at CQ 65 on 2026-09-06 (via the AppleDouble
+          # sidecar, patched there with a `! -name '._*'`) cost 1h35m of idle
+          # encoder; Shazam at Q70 on 2026-09-07 (via the real file) cost
+          # 2h27m. Narrowing that window is not a fix -- this closes it.
+          # A rename is safe under a running HandBrake: it holds the fd and
+          # keeps writing to the same inode. The name simply stops ending in
+          # .mkv, so the driver's `*2160p HEVC*.mkv` glob cannot match it at
+          # any instant. `tests/test_watch_kill_race.sh` pins the ordering.
+          mv -f "$OUT" "$OUT.killing" 2>/dev/null
+          mv -f "$(dirname "$OUT")/._$(basename "$OUT")" \
+                "$(dirname "$OUT")/._$(basename "$OUT").killing" 2>/dev/null
           kill "$HBPID" 2>/dev/null
           for _ in $(seq 1 60); do kill -0 "$HBPID" 2>/dev/null || break; sleep 0.5; done
           kill -0 "$HBPID" 2>/dev/null && kill -9 "$HBPID" 2>/dev/null
@@ -284,7 +304,11 @@ while true; do
           # The AppleDouble sidecar goes with it: on this exFAT volume the driver's
           # finished_folder() once matched a leftover `._*2160p HEVC*.mkv` as a
           # finished encode and errored the title instead of laddering (2026-09-06).
-          rm -f "$OUT" "$(dirname "$OUT")/._$(basename "$OUT")"
+          # Both names are removed: the rename above may have failed (a locked
+          # volume, a full drive), in which case the original is still there.
+          rm -f "$OUT" "$OUT.killing" \
+                "$(dirname "$OUT")/._$(basename "$OUT")" \
+                "$(dirname "$OUT")/._$(basename "$OUT").killing"
           echo "KILLED|${FOLDER}|projected ${RATIO}% of original at ${PCT}% (${ENC} Q${Q})|band ${BAND_LO}-${BAND_HI}|partial deleted|next: Q ${NEXTQ}"
           break
           ;;

@@ -179,16 +179,20 @@ class DriverContract(unittest.TestCase):
         encode SYNCS; it must not decide whether a finished encode is done.
         Exit 2 (a non-good word) and 3 (a ladder code) both route to the
         kept-in-place branch: record --kept, `.done-` marker, complete/.
-        Only exit 4 -- the output could not be evaluated -- is still an error.
+        Exit 4 -- the output could not be EVALUATED -- can still be an
+        error, but since 2026-09-07 not unconditionally: an output that was
+        never finished is a partial, not a finished encode, and retries.
+        See UnfinishedOutputIsNotAnError below.
         """
         src = _read_repo_file("staging", "autopilot.sh")
         self.assertNotIn("needs a human:", src)
-        case = src.split("case $vrc in", 1)[1].split("esac", 1)[0]
+        case = src.split("case $vrc in", 1)[1].split("\n      esac", 1)[0]
         two_three = next(ln for ln in case.splitlines() if ln.strip().startswith("2|3)"))
         self.assertIn("judged=done", two_three)
         self.assertNotIn("error_out", two_three)
-        four = next(ln for ln in case.splitlines() if ln.strip().startswith("4)"))
+        four = case.split("\n        4)", 1)[1]
         self.assertIn("error_out", four)
+        self.assertIn("judged=error", four)
         # The kept branch takes `done` under ANY policy, not only no-delete.
         self.assertIn(
             'if [ "$judged" = done ] || { [ "$judged" = ok ] && no_delete_policy; }; then',
@@ -457,6 +461,77 @@ class LastRungFinishes(unittest.TestCase):
         self.assertIn('lastrung: "bad"', app)
         self.assertIn('lastrung: "last rung"', app)
         self.assertIn('"last-rung"', _read_repo_file("dashboard", "notify.py"))
+
+
+class UnfinishedOutputIsNotAnError(unittest.TestCase):
+    """A verdict exit 4 that says "died mid-write" is a RETRY (2026-09-07).
+
+    Operator's call, on finding Shazam in the error tab: "this does not
+    qualify as an error." An output with no completion marker in its
+    HandBrake log was never finished -- there is nothing to review and
+    nothing was produced. It is the same worthless partial the auto-kill
+    throws away.
+
+    Two independent defects produced it, and BOTH are pinned here because
+    either one alone still parks a title:
+
+    1. `.watch-encode.sh` killed HandBrake and THEN deleted the partial. In
+       between, the file sat on disk with no live encoder -- and
+       finished_folder()'s only live-encode guard is encoding_this(), which
+       goes false the instant the process dies.
+    2. `.autopilot.sh` mapped EVERY exit 4 to error_out(), so the title the
+       ladder was mid-way through retrying got a `.error-` marker instead.
+       pick_next passes over marked titles, so a thin queue then had nothing
+       to start.
+
+    Minions at CQ 65 idled the encoder 1h35m on 2026-09-06 (the sidecar
+    variant, patched then with a `! -name '._*'` that did not address
+    either defect); Shazam at Q70 idled it 2h27m on 2026-09-07.
+    """
+
+    def test_exit_4_is_no_longer_unconditionally_an_error(self):
+        src = _read_repo_file("staging", "autopilot.sh")
+        self.assertNotIn(
+            '4) error_out "$done_folder" "could not be evaluated (verdict exit 4)"',
+            src,
+        )
+        # The mid-write case routes; every OTHER exit 4 still errors, because
+        # a missing log or an ambiguous file count really is a human's.
+        self.assertIn("died mid-write", src)
+        self.assertIn('error_out "$done_folder" "could not be evaluated (verdict exit 4)"', src)
+
+    def test_the_routing_lives_in_the_helper_block(self):
+        """Sourced and driven for real by tests/test_midwrite_retry.sh --
+        a string match cannot tell wait from retry from error."""
+        src = _read_repo_file("staging", "autopilot.sh")
+        self.assertIn("midwrite_route() {", src)
+        self.assertIn("drop_partial() {", src)
+        self.assertIn("case $(midwrite_route \"$done_folder\") in", src)
+
+    def test_a_retry_is_bounded(self):
+        """A HandBrake crashing on one source leaves the same unfinished
+        output every time and would otherwise spin forever. A KILLED line
+        clears the count, so a ladder walking five rungs never trips it."""
+        src = _read_repo_file("staging", "autopilot.sh")
+        self.assertIn("MIDWRITE_STRIKES=3", src)
+        self.assertIn('[ "$n" -ge "$MIDWRITE_STRIKES" ]', src)
+
+    def test_a_live_encode_is_never_touched(self):
+        """`wait` exists so a partial that might belong to a RUNNING encode
+        is never deleted: ps can race, and hours of work is the cost."""
+        src = _read_repo_file("staging", "autopilot.sh")
+        self.assertIn("if hb_running; then printf 'wait", src)
+
+    def test_the_watcher_hides_the_partial_before_it_kills(self):
+        """The ORDERING is the fix -- narrowing the window is not.
+        tests/test_watch_kill_race.sh drives it for real."""
+        src = _read_repo_file("staging", "watch-encode.sh")
+        rename = src.index('mv -f "$OUT" "$OUT.killing"')
+        kill = src.index('kill "$HBPID" 2>/dev/null')
+        self.assertLess(rename, kill, "the partial must be renamed BEFORE the kill")
+        # Both names are cleaned up: the rename can fail on a full or locked
+        # volume, and the original is still there if it does.
+        self.assertIn('rm -f "$OUT" "$OUT.killing"', src)
 
 
 if __name__ == "__main__":

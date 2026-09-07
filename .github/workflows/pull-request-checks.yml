@@ -293,11 +293,25 @@ jobs:
       - name: 🔎 test:sh:replenisher — independent replenisher tick
         run: bun run test:sh:replenisher
 
+      # A verdict exit 4 that says "died mid-write" is a RETRY, not the ERROR
+      # state: the partial an auto-kill leaves behind is not a finished
+      # encode and not something a human is owed a look at. Erroring it
+      # parked mid-ladder titles and idled the encoder for hours twice.
+      - name: 🔎 test:sh:midwrite — an unfinished output retries, never errors
+        run: bun run test:sh:midwrite
+
       - name: 🪜 test:sh:watch-ladder — encoder-aware band ladder rungs
         run: bun run test:sh:watch-ladder
 
       - name: 🏁 test:sh:watch-finish — end of the ladder finishes, other arm still kills
         run: bun run test:sh:watch-finish
+
+      # The auto-kill must rename the partial out of the driver's
+      # `*2160p HEVC*.mkv` glob BEFORE it kills HandBrake. Killing first left
+      # a window in which the partial sat on disk with no live encoder, which
+      # the driver reads as a finished encode.
+      - name: 🏁 test:sh:watch-race — the partial leaves the glob before the kill
+        run: bun run test:sh:watch-race
 
       - name: 🐕 test:sh:watchdog — watchdog corpse/finished boundary
         run: bun run test:sh:watchdog
