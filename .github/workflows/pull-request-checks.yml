@@ -288,6 +288,11 @@ jobs:
       - name: 🔎 test:sh:layout — staging layout helpers
         run: bun run test:sh:layout
 
+      # The independent replenisher's tick: blind drive refused, off switch,
+      # a picking run stamped into the driver log in the driver's format.
+      - name: 🔎 test:sh:replenisher — independent replenisher tick
+        run: bun run test:sh:replenisher
+
       - name: 🪜 test:sh:watch-ladder — encoder-aware band ladder rungs
         run: bun run test:sh:watch-ladder
 

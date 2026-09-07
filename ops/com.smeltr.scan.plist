@@ -19,6 +19,14 @@
   <!-- NOT RunAtLoad: the scan is a ~4 min, 8-way ffprobe over both NAS mounts,
        and firing it on every login/reload buys nothing the nightly run doesn't. -->
   <key>RunAtLoad</key><false/>
+  <!-- launchd's PATH has no Homebrew, and the scan's ffprobe is Homebrew's.
+       ops/scan-bitrates.sh exports this too; belt and braces, because a
+       missing ffprobe wrote 1415 zero bitrates on 2026-09-07 and emptied
+       the queue. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
   <!-- NOT on the staging drive: launchd cannot create a log on a volume that
        may be unmounted, and fails the job with EX_CONFIG (78) before it runs. -->
   <key>StandardOutPath</key><string>/Users/snowball/Library/Logs/smeltr/scan.out.log</string>

@@ -45,6 +45,16 @@
 # in ~/Library/Logs/smeltr/scan.log rather than destroy the index.
 set -uo pipefail
 
+# launchd hands a job the bare system PATH (/usr/bin:/bin:/usr/sbin:/sbin).
+# ffprobe is Homebrew's, and the X9 script swallows its absence: every
+# `ffprobe ... 2>/dev/null` comes back empty, every bitrate is written as 0,
+# and the row count is right. On 2026-09-07 03:00 that installed 1415 rows
+# of zeros over a good index, the queue read "nothing above 70 Mb/s", and the
+# driver idled for hours. Put Homebrew on PATH here, and prove ffprobe
+# resolves before the scan runs (guard 3 below catches the same failure by
+# its output, in case some other reason zeroes it).
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 X9="${SMELTR_X9:-/Volumes/Crucial X9/4K Movies}"
 REPO="${SMELTR_DIR:-$HOME/Developer/git/smeltr}"
 PY="${SMELTR_PYTHON:-python3}"
@@ -81,12 +91,26 @@ except Exception:
 PY
 }
 
+nonzero_in() {  # rows of a bitrate index with a bitrate > 0, or empty when it will not parse
+  "$PY" - "$1" <<'PY' 2>/dev/null
+import json, sys
+try:
+    rows = json.load(open(sys.argv[1], encoding='utf-8'))["files"]
+    print(sum(1 for r in rows if (r.get("overall_bitrate") or 0) > 0))
+except Exception:
+    pass
+PY
+}
+
 trap 'rm -f "$STAGE"' EXIT
 
 slog "--- scan start ---"
 
 # ---------------------------------------------------------------- preflight
 [ -f "$SCAN" ] || die "$SCAN is missing (X9 not mounted?)"
+command -v ffprobe >/dev/null 2>&1 || die "ffprobe is not on PATH ($PATH).
+  The X9 scan silences ffprobe errors and writes bitrate 0 for every file,
+  which empties the queue while the row count looks fine. Refusing to scan."
 entries=$(ls -1 "$X9" 2>/dev/null | wc -l | tr -d ' ')
 [ "${entries:-0}" -ge 1 ] || die "$X9 is mounted but unreadable from here (0 entries).
   A blind scan writes an EMPTY index, which empties the queue and reads as the
@@ -133,6 +157,25 @@ after=$(rows_in "$STAGE")
 [ -n "$after" ] || die "scan produced no readable index at $STAGE"
 [ "$after" -ge 1 ] || die "scan indexed 0 files -- refusing to install an empty index"
 
+# Guard 3: the VALUES, not just the row count. A scan whose ffprobe never ran
+# (missing binary, dead mount mid-scan) indexes every file at bitrate 0 --
+# 1415 rows, all of them below the stop threshold -- and the queue empties
+# exactly as it would on an empty index. Refuse when nothing has a bitrate,
+# and apply the same 90% floor to the count of real bitrates that the row
+# count already gets.
+after_nz=$(nonzero_in "$STAGE"); after_nz=${after_nz:-0}
+before_nz=$(nonzero_in "$INDEX"); before_nz=${before_nz:-0}
+[ "$after_nz" -ge 1 ] || die "scan found $after files but NONE has a bitrate (ffprobe produced nothing).
+  Installing this would empty the queue. Not installing."
+if [ "$before_nz" -gt 0 ]; then
+  floor_nz=$(( before_nz * 9 / 10 ))
+  if [ "$after_nz" -lt "$floor_nz" ] && [ "$FORCE" != true ]; then
+    die "scan measured $after_nz bitrates, index holds $before_nz (floor $floor_nz).
+  ffprobe failed on a large share of the library. Not installing. Re-run with
+  --force if the drop is genuine."
+  fi
+fi
+
 if [ -n "${before:-}" ] && [ "$before" -gt 0 ]; then
   # 90% floor: a root that vanished mid-scan takes a third of the library with
   # it and `find` reports nothing wrong.
@@ -153,4 +196,4 @@ fi
 # rename(2) on one filesystem: a concurrent load_index() sees the old file or
 # the new one. Never a torn read, which is what an empty queue is made of.
 mv -f "$STAGE" "$INDEX" || die "could not install the new index -- old one is intact"
-slog "installed: $after rows (was ${before:-0})"
+slog "installed: $after rows, $after_nz with a bitrate (was ${before:-0} rows, ${before_nz:-0} with a bitrate)"

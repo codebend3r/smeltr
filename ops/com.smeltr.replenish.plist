@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.smeltr.replenish</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/snowball/Developer/git/smeltr/ops/replenisher.sh</string>
+  </array>
+  <!-- One tick a minute, like the watchdog. The X9 script's own lock makes a
+       tick that lands mid-pull a no-op. -->
+  <key>StartInterval</key><integer>60</integer>
+  <key>RunAtLoad</key><true/>
+  <!-- launchd's PATH has no Homebrew; the pull is plain ssh but the index
+       rebuild path inside .replenish-queue.sh needs ffprobe. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <!-- NOT on the staging drive: launchd cannot create a log on a volume that
+       may be unmounted, and fails the job with EX_CONFIG (78) before it runs. -->
+  <key>StandardOutPath</key><string>/Users/snowball/Library/Logs/smeltr/replenish.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/snowball/Library/Logs/smeltr/replenish.err.log</string>
+</dict>
+</plist>

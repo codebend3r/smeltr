@@ -60,13 +60,15 @@
     "test:sh:drift": "bash tests/test_staging_in_sync.sh",
     "test:sh:launcher": "bash tests/test_launcher_pids.sh",
     "test:sh:layout": "bash tests/test_layout.sh",
+    "test:sh:replenisher": "bash tests/test_replenisher.sh",
     "test:sh:watch-finish": "bash tests/test_watch_finish.sh",
     "test:sh:watch-ladder": "bash tests/test_watch_ladder.sh",
     "test:sh:watchdog": "bash tests/test_watchdog_triage.sh",
     "url": "./smeltr url",
     "verify": "bun run --sequential lint test build",
     "visual": "bun tests/visual/shoot.mts",
-    "watchdog": "bash ops/watchdog.sh --supervise"
+    "watchdog": "bash ops/watchdog.sh --supervise",
+    "replenisher": "bash ops/replenisher.sh --supervise"
   },
   "devDependencies": {
     "@types/bun": "^1.4.1",
