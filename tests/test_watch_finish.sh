@@ -6,7 +6,7 @@
 # that made it necessary was invisible to a string match: a single flag
 # ("the ladder is done") switched the band check off in BOTH directions, so
 # one noisy low sample at 6% progress removed the only ceiling on the rest of
-# a multi-hour encode and a 1000%-of-source blowup ran unopposed.
+# a multi-hour encode and a 500%-of-source blowup ran unopposed.
 #
 # The watcher hardcodes the X9 paths, so the copy under test is `sed`-rewritten
 # to a temp dir. NOTHING here touches the staging drive, the ledger, or any
@@ -31,8 +31,9 @@ ck(){ if [ "$2" = "$3" ]; then echo "PASS $1"; pass=$((pass+1))
 # 100 MiB "source"; "output" size is what moves the projection.
 dd if=/dev/zero of="$TMP/sb/$FOLDER/src.mkv" bs=1048576 count=100 2>/dev/null
 out(){ dd if=/dev/zero of="$TMP/sb/$FOLDER/out.mkv" bs=1048576 count="$1" 2>/dev/null; }
-# 6% progress: 1 MiB projects to 16.7% of source (too small), 60 MiB to 1000%.
-printf 'task 1 of 1, 6.00 %%\n' > "$TMP/sb/.hb-sandbox.log"
+# 12% progress: 1 MiB projects to 8.3% of source (too small, under the 10%
+# floor of the 10-70 band), 60 MiB to 500% (a blowup).
+printf 'task 1 of 1, 12.00 %%\n' > "$TMP/sb/.hb-sandbox.log"
 
 # Wait for a pattern, or give up -- never hang the suite.
 waitfor(){ n=0; until grep -q "$1" "$TMP/log.txt" 2>/dev/null; do

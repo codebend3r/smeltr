@@ -102,12 +102,15 @@ class PerEncoderVerdict(unittest.TestCase):
     """The verdict that authorises a deletion must never judge one encoder's
     output against another encoder's history."""
 
-    def test_vt_with_no_vt_baseline_is_suspect_never_good(self):
-        # A healthy-looking ratio that x265 history would call good.
-        code, note = core._verdict(40.0, [], 40.0, False,
-                                   encoder="vt_h265_10bit")
-        self.assertEqual(code, "suspect")
-        self.assertIn("vt_h265_10bit", note)
+    def test_vt_with_no_vt_baseline_is_judged_on_band_and_floor(self):
+        # The "first encodes on a new encoder are suspect" gate is GONE
+        # (operator's call, 2026-09-06): it held a deletion for a human, and
+        # nothing is deleted any more. With no same-encoder history the
+        # relative check has no base, so the band and the 15% floor decide.
+        code, _ = core._verdict(40.0, [], 40.0, False, encoder="vt_h265_10bit")
+        self.assertEqual(code, "good")
+        code, _ = core._verdict(5.0, [], 12.0, False, encoder="vt_h265_10bit")
+        self.assertEqual(code, "suspect")  # the floor still applies
 
     def test_vt_with_a_vt_baseline_can_pass(self):
         hist = [35.0, 40.0, 45.0]  # MIN_HISTORY same-encoder rows

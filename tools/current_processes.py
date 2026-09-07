@@ -194,7 +194,9 @@ def _handbrake_detail(pid: int, encodes: list) -> str:
         quality = enc.get("crf")
         if quality is None:
             return title
-        scale = "CQ" if encoder != core.DEFAULT_ENCODER else "CRF"
+        # By NAME, never "is it the default": the default is VideoToolbox
+        # since 2026-09-06, and "not the default" would label an x265 run CQ.
+        scale = "CQ" if str(encoder).startswith("vt") else "CRF"
         return "%s · %s %s %g" % (title, encoder, scale, quality)
     return ""
 

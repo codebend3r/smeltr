@@ -89,6 +89,12 @@ def main() -> int:
         default=None,
         help="evidence that a SUSPECT encode was independently checked",
     )
+    # KEPT IN PLACE (no-delete policy, 2026-09-06): the encode finished and
+    # was judged, but nothing was synced and nothing was deleted -- the
+    # output sits beside its source for the operator to move. Recorded so the
+    # title is history (dedup key, History tab), flagged so summary() never
+    # counts its saving as bytes RECLAIMED: no original was removed.
+    ap.add_argument("--kept", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -168,6 +174,7 @@ def main() -> int:
         audio=oa,
         subs=osb,
         dest=args.dest,
+        kept=bool(args.kept),
         finished_at=__import__("time").strftime("%Y-%m-%d %H:%M:%S"),
         crf=info.get("crf"),
         encoder=info.get("encoder"),

@@ -205,9 +205,23 @@ class DriverContract(unittest.TestCase):
         # A violation opposite to a rung's own direction exhausts immediately.
         self.assertEqual(_next_rung("x265_10bit", up[-1], "small"), "none-too-small")
         self.assertEqual(_next_rung("x265_10bit", down[-1], "big"), "none-too-big")
-        # The watcher's own default argument is the pivot too: a caller that
-        # omits [quality] must not land on a rung the ladder cannot leave.
-        self.assertIn('Q="${6:-%d}"' % core.CRF_DEFAULT, src)
+        # The watcher's own default arguments are the DEFAULT encoder and its
+        # pivot (VideoToolbox CQ 70 since 2026-09-06): a caller that omits
+        # [quality]/[encoder] must not land on a rung the ladder cannot leave.
+        self.assertIn('Q="${6:-%d}"' % core.DEFAULT_QUALITY, src)
+        self.assertIn('ENC="${7:-%s}"' % core.DEFAULT_ENCODER, src)
+        # And the VT ladder pivots on that default too, both arms, on the
+        # reversed scale: too big steps DOWN, too small steps UP.
+        vt = sorted(core.ENCODER_CHOICES["vt_h265_10bit"])
+        vp = vt.index(core.DEFAULT_QUALITIES["vt_h265_10bit"])
+        vt_up = vt[vp:]            # too small -> higher CQ (bigger file)
+        vt_down = vt[: vp + 1][::-1]  # too big -> lower CQ (smaller file)
+        for arm, direction in ((vt_up, "small"), (vt_down, "big")):
+            for a, b in zip(arm, arm[1:]):
+                self.assertEqual(_next_rung("vt_h265_10bit", a, direction), str(b))
+            self.assertEqual(
+                _next_rung("vt_h265_10bit", arm[-1], direction), "none-too-" + direction
+            )
 
 
 class LastRungFinishes(unittest.TestCase):

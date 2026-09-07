@@ -10,7 +10,7 @@
 # and the watcher reports a phantom FAILED on its first tick.
 #
 # AUTO-KILL (2026-08-20, at the user's direction; band rules 2026-08-31): when the
-# projection lands OUTSIDE the 30-80% target band, this script KILLS the encode and
+# projection lands OUTSIDE the 10-70% target band, this script KILLS the encode and
 # deletes the partial. Steel Magnolias flagged NOSAVING->CRF18 at its 25% checkpoint
 # and nobody was listening, so it ran a further ~12 hours to produce a file 1% smaller
 # than its source. Detection without authority to act is just a slower way to waste a day.
@@ -27,8 +27,10 @@
 #     so a single noisy sample (studio logos, black frames) cannot kill on its own.
 #
 # THE LADDER RUNS BOTH WAYS (operator's rule, 2026-08-31):
-#   projection > 80%  (too big)  -> next CRF UP:   14-16-18-20-22, then FINISH at 22
-#   projection < 30%  (too small)-> next CRF DOWN: 14-12-10, then FINISH at 10
+#   projection > 70%  (too big)  -> next CRF UP:   14-16-18-20-22, then FINISH at 22
+#   projection < 10%  (too small)-> next CRF DOWN: 14-12-10, then FINISH at 10
+#   (10-70% since 2026-09-06, operator's call; was 30-80%. BAND_LO/BAND_HI below
+#   are the ONE place the numbers live in this script.)
 #
 # PAST THE LAST RUNG THE ENCODE IS NOT KILLED (operator's rule, 2026-09-06).
 # There is no better rung to retry at, so the run in flight IS the answer: it
@@ -38,9 +40,9 @@
 # judge. THE VERDICT, NOT THE LADDER, DECIDES WHAT HAPPENS TO THE ORIGINAL --
 # and the two arms end differently, so do not read this as "nothing is
 # deleted":
-#   too BIG  -> the finished file is >80% of source -> `no-saving` -> the
+#   too BIG  -> the finished file is >70% of source -> `no-saving` -> the
 #              driver marks the ERROR state and the library original survives.
-#   too SMALL-> anything from 15% to 30% of source is a `good` verdict (the
+#   too SMALL-> anything from 15% to 70% of source is a `good` verdict (the
 #              band is a TARGET, not a defect threshold -- Kubo 23.7% and
 #              Minions 17.2% are both good), so it SYNCS and the ~90 GB
 #              library original IS DELETED unattended. Under the old
@@ -72,7 +74,7 @@
 # Set SMELTR_NO_AUTOKILL=1 to return to report-only behaviour.
 # (SMELTER_NO_AUTOKILL is still honoured -- the app was renamed 2026-08-21 and a
 #  watcher launched before the rename is still running against the old name.)
-SLUG="$1"; FOLDER="$2"; SRCNAME="$3"; OUTNAME="$4"; HBPID="$5"; Q="${6:-14}"; ENC="${7:-x265_10bit}"
+SLUG="$1"; FOLDER="$2"; SRCNAME="$3"; OUTNAME="$4"; HBPID="$5"; Q="${6:-75}"; ENC="${7:-vt_h265_10bit}"
 
 # Next rung of the ladder for this encoder and this direction, or "none-too-*"
 # past the last one. Every rung except the pivot is one-directional: a
@@ -83,7 +85,9 @@ SLUG="$1"; FOLDER="$2"; SRCNAME="$3"; OUTNAME="$4"; HBPID="$5"; Q="${6:-14}"; EN
 next_rung() { # $1=encoder $2=quality $3=big|small
   if [ "$3" = big ]; then
     case "$1" in
-      vt_h265_10bit) case "$2" in 60) echo 55 ;; 55) echo 50 ;; *) echo none-too-big ;; esac ;;
+      # VT pivots on CQ 75 (the default since 2026-09-06 23:10; 60 -> 70 -> 75).
+      # Too big steps DOWN the reversed scale all the way to 50.
+      vt_h265_10bit) case "$2" in 75) echo 70 ;; 70) echo 65 ;; 65) echo 60 ;; 60) echo 55 ;; 55) echo 50 ;; *) echo none-too-big ;; esac ;;
       *)             case "$2" in
                        14) echo 16 ;; 16) echo 18 ;; 18) echo 20 ;; 20) echo 22 ;;
                        *)  echo none-too-big ;;
@@ -91,7 +95,10 @@ next_rung() { # $1=encoder $2=quality $3=big|small
     esac
   else
     case "$1" in
-      vt_h265_10bit) case "$2" in 60) echo 65 ;; 65) echo 70 ;; *) echo none-too-small ;; esac ;;
+            # Too small steps UP the reversed scale from the pivot, 75 -> 80 -> ...
+      # -> 100 (the menu runs to CQ 100 since 2026-09-06). Below the pivot
+      # every rung was reached by laddering DOWN, so too-small there exhausts.
+      vt_h265_10bit) case "$2" in 75) echo 80 ;; 80) echo 85 ;; 85) echo 90 ;; 90) echo 95 ;; 95) echo 100 ;; *) echo none-too-small ;; esac ;;
       *)             case "$2" in 14) echo 12 ;; 12) echo 10 ;; *) echo none-too-small ;; esac ;;
     esac
   fi
@@ -129,6 +136,10 @@ STRIKES=0; STRIKEDIR=""
 # ladder to. A single flag switched the whole band check off, so one noisy
 # 6%-progress sample removed the only ceiling on the rest of a multi-hour run.
 FINAL_DIRS=""
+# The target band, % of source. Both kill checks, both log wordings and the
+# QUARTER label read these two -- a number typed anywhere else drifts.
+BAND_LO=10
+BAND_HI=70
 SRCSZ=$(stat -f%z "$SRC")
 
 while true; do
@@ -156,9 +167,9 @@ while true; do
   if awk -v p="$PCT" -v n="$NEXT" 'BEGIN{exit !(p>=n)}'; then
     CUR=$(stat -f%z "$OUT" 2>/dev/null || echo 0)
     ETA=$(tr '\r' '\n' < "$LOG" | grep -o "ETA [0-9hms]*" | tail -1)
-    awk -v p="$PCT" -v c="$CUR" -v s="$SRCSZ" -v n="$NEXT" -v e="$ETA" -v f="$FOLDER" 'BEGIN{
+    awk -v p="$PCT" -v c="$CUR" -v s="$SRCSZ" -v n="$NEXT" -v e="$ETA" -v f="$FOLDER" -v lo="$BAND_LO" -v hi="$BAND_HI" 'BEGIN{
       proj=c/(p/100); r=proj/s*100
-      v=(r>80 ? "OVER-BAND(>80%)" : r<30 ? "UNDER-BAND(<30%)" : "OK(30-80%)")
+      v=(r>hi ? "OVER-BAND(>" hi "%)" : r<lo ? "UNDER-BAND(<" lo "%)" : "OK(" lo "-" hi "%)")
       printf "QUARTER|%s|%d%% (actual %.2f%%)|current %.2f GB|projected %.2f GB|original %.2f GB|%.1f%% of original|%s|%s\n",
         f, n, p, c/1073741824, proj/1073741824, s/1073741824, r, v, e}'
     NEXT=$((NEXT+25)); [ $NEXT -gt 75 ] && NEXT=101
@@ -167,8 +178,8 @@ while true; do
   # The band check, every tick. Two consecutive agreeing violations kill.
   if [ -n "$RATIO" ] && [ "${SMELTR_NO_AUTOKILL:-${SMELTER_NO_AUTOKILL:-0}}" != "1" ]; then
     DIR=""
-    awk -v r="$RATIO" 'BEGIN{exit !(r>80)}' && DIR=big
-    awk -v r="$RATIO" 'BEGIN{exit !(r<30)}' && DIR=small
+    awk -v r="$RATIO" -v hi="$BAND_HI" 'BEGIN{exit !(r>hi)}' && DIR=big
+    awk -v r="$RATIO" -v lo="$BAND_LO" 'BEGIN{exit !(r<lo)}' && DIR=small
     if [ -n "$DIR" ] && [ "$DIR" = "$STRIKEDIR" ]; then
       STRIKES=$((STRIKES+1))
     else
@@ -219,7 +230,7 @@ while true; do
           # too-small projection at CRF 16 "the last rung of the small arm"
           # names a rung that is not on that arm at all.
           QL=$(q_label "$ENC")
-          echo "FINAL|${FOLDER}|$(date '+%Y-%m-%d %H:%M:%S')|projected ${RATIO}% of original at ${PCT}% (${ENC} ${QL} ${Q})|outside the 30-80% target band|no rung left for a too-${DIR} projection from ${QL} ${Q} - finishing there, not killed"
+          echo "FINAL|${FOLDER}|$(date '+%Y-%m-%d %H:%M:%S')|projected ${RATIO}% of original at ${PCT}% (${ENC} ${QL} ${Q})|outside the ${BAND_LO}-${BAND_HI}% target band|no rung left for a too-${DIR} projection from ${QL} ${Q} - finishing there, not killed"
           FINAL_DIRS="$FINAL_DIRS $DIR"
           STRIKES=0; STRIKEDIR=""
           ;;
@@ -229,8 +240,11 @@ while true; do
           kill -0 "$HBPID" 2>/dev/null && kill -9 "$HBPID" 2>/dev/null
           # The partial is worthless and would otherwise be mistaken for a finished
           # encode by the sync and record steps, both of which key off "2160p HEVC".
-          rm -f "$OUT"
-          echo "KILLED|${FOLDER}|projected ${RATIO}% of original at ${PCT}% (${ENC} Q${Q})|band 30-80|partial deleted|next: Q ${NEXTQ}"
+          # The AppleDouble sidecar goes with it: on this exFAT volume the driver's
+          # finished_folder() once matched a leftover `._*2160p HEVC*.mkv` as a
+          # finished encode and errored the title instead of laddering (2026-09-06).
+          rm -f "$OUT" "$(dirname "$OUT")/._$(basename "$OUT")"
+          echo "KILLED|${FOLDER}|projected ${RATIO}% of original at ${PCT}% (${ENC} Q${Q})|band ${BAND_LO}-${BAND_HI}|partial deleted|next: Q ${NEXTQ}"
           break
           ;;
       esac

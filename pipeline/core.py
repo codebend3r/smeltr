@@ -67,10 +67,35 @@ SOURCE_EXTS = (".mkv", ".mp4", ".m2ts")
 
 # Titles the user has permanently excluded. Substring match, lowercased, on the
 # full path. Kept here so the app and the terminal report can never disagree.
-SKIP = ("lord of the rings",)
+# .replenish-queue.sh on the X9 carries its OWN copy of this tuple (it cannot
+# import core) -- a title added here and not there is re-staged from the
+# library by the next replenish and encoded again. Keep the two identical.
+SKIP = (
+    "lord of the rings",
+    # Blacklisted by the operator 2026-09-06 -- staging folders rm -rf'd by
+    # hand, never to be attempted again.
+    "skyscraper (2018)",
+    "timecop (1994)",
+    "mechanic resurrection (2016)",
+    "bloodsport (1988)",  # blacklisted 2026-09-06, mid-pull
+)
 
 # The stop condition: encoding pauses once nothing above this remains.
 STOP_MBPS = 70.0
+
+# The TARGET BAND, % of source (operator's call, 2026-09-06: 10-70, was 30-80).
+# Three consumers must agree on it: .watch-encode.sh kills a projection that
+# lands outside it (BAND_LO/BAND_HI there), _verdict() below calls a finished
+# file at or above the top `no-saving`, and the dashboard draws it on the
+# projection strip. `summary()` carries both numbers so the page and the
+# terminal report read them from here rather than typing them again.
+# NOTE the absolute plausibility floor OUTLIER_FLOOR_NORM (15.0) sits INSIDE
+# this band on purpose: a 10-15% encode is in band for the ladder (it will
+# finish rather than be killed) and still `suspect` for the verdict (a human
+# looks before the original is deleted). The band is a target; the floor is a
+# deletion policy.
+BAND_LO = 10.0
+BAND_HI = 70.0
 
 # Hand overrides from the dashboard: titles to skip, and titles to encode
 # first. One JSON file beside the ledger, written ONLY through
@@ -138,16 +163,32 @@ ENCODER_OVERRIDES = os.path.join(SMELTR_DIR, "encoder_overrides.json")
 # tuple drifts the moment the pivot moves again (16 -> 14 already happened).
 ENCODER_CHOICES: dict = {
     "x265_10bit": CRF_CHOICES,
-    "vt_h265_10bit": (50, 55, 60, 65, 70),
+    # CQ 50-100 in steps of 5 (operator's call, 2026-09-06; was 50-70).
+    # Apple's scale runs 0-100, HIGHER = better = bigger file.
+    "vt_h265_10bit": tuple(range(50, 101, 5)),
 }
-DEFAULT_ENCODER = "x265_10bit"
-DEFAULT_QUALITY = CRF_DEFAULT
 # Per-encoder default quality for a start that names an encoder but no
 # quality. NEVER derived from menu position: index [0] is the BEST x265
 # CRF and the WORST VideoToolbox CQ -- the same expression means opposite
 # things on the two scales. x265 tracks CRF_DEFAULT so the pivot cannot
-# move under the ladder; VT's 60 is the pivot .watch-encode.sh leaves from.
-DEFAULT_QUALITIES: dict = {"x265_10bit": CRF_DEFAULT, "vt_h265_10bit": 60}
+# move under the ladder; VT's 70 is the pivot .watch-encode.sh leaves from
+# (moved 60 -> 70 on 2026-09-06 with the default below; the two MUST move
+# together, exactly like CRF_DEFAULT and the x265 ladder).
+DEFAULT_QUALITIES: dict = {"x265_10bit": CRF_DEFAULT, "vt_h265_10bit": 75}
+# THE GLOBAL DEFAULT IS VIDEOTOOLBOX CQ 75 (operator's call, 2026-09-06 23:10; was
+# x265 CRF 14). Every title with no encoder override starts here. Known
+# consequence, accepted: with fewer than MIN_HISTORY VT rows in the ledger a
+# VT encode is `suspect` by construction, and `suspect` never records, so the
+# VT baseline cannot build itself -- every default encode ends in the ERROR
+# state with its output left beside the source for a human, and nothing is
+# synced or deleted. That is the VT beta flow the operator asked for.
+DEFAULT_ENCODER = "vt_h265_10bit"
+DEFAULT_QUALITY = DEFAULT_QUALITIES[DEFAULT_ENCODER]
+# Ledger rows written before the `encoder` field existed are x265 -- the ONLY
+# encoder that existed then. This is what a missing field means, and it must
+# never follow DEFAULT_ENCODER: the day the default moved to VideoToolbox,
+# 34 software rows would otherwise have become the hardware baseline.
+LEGACY_ENCODER = "x265_10bit"
 
 
 def paused() -> bool:
@@ -695,7 +736,7 @@ def history_ratios(
     out = []
     for r in rows:
         if encoder is not None and \
-                (r.get("encoder") or DEFAULT_ENCODER) != encoder:
+                (r.get("encoder") or LEGACY_ENCODER) != encoder:
             continue
         sb, ob = r.get("source_bytes"), r.get("output_bytes")
         if not sb or not ob:
@@ -739,24 +780,25 @@ def _verdict(
             "Projecting LARGER than the source - kill it and restart at the "
             "next ladder rung.",
         )
-    # 80, not 85: this is the top of the 30-80% target band the dashboard draws.
-    # Nothing in 12 titles has ever exceeded 71.3%, so this end has never fired --
-    # but when it does, the strip and the verdict must say the same thing.
-    if ratio >= 80:
+    # BAND_HI, not a literal: this is the top of the target band the dashboard
+    # draws and the watcher ladders against, and the three must say the same
+    # thing. (Was 80; the band moved to 10-70 on 2026-09-06.)
+    if ratio >= BAND_HI:
         return (
             "no-saving",
-            "Above the 30-80% target band - kill it and restart at the next "
-            "ladder rung.",
+            f"Above the {BAND_LO:.0f}-{BAND_HI:.0f}% target band - kill it and "
+            "restart at the next ladder rung.",
         )
 
     hist = history_ratios(normalised=True, encoder=encoder) \
         if hist is None else hist
-    if encoder != DEFAULT_ENCODER and len(hist) < MIN_HISTORY:
-        return "suspect", (
-            f"NO {encoder} BASELINE YET: this is one of the first encodes "
-            f"made by {encoder}, and the x265 history cannot judge it -- the "
-            "two encoders spend bits differently at the same visual quality. "
-            "Check picture quality on a scene before deleting the original.")
+    # No "first encodes on a new encoder are suspect" gate any more
+    # (operator's call, 2026-09-06: "did I tell you to consider them
+    # suspect?"). It existed to hold a DELETION until a human had seen a new
+    # encoder's first results; nothing is deleted under the no-delete policy,
+    # and an encode that clears the band and the floor is simply done. With
+    # no same-encoder history the relative check below has no base and only
+    # the floor applies -- exactly how x265 was judged with an empty ledger.
     cmp_ratio = ratio if norm_ratio is None else norm_ratio
     base = statistics.median(hist) if len(hist) >= MIN_HISTORY else None
     # Both tests are on the NORMALISED ratio now, so a heavily auto-cropped
@@ -796,7 +838,10 @@ def _verdict(
             "check picture quality on a scene before deleting the original."
         )
 
-    if ratio >= 70:
+    # The ten points under the top of the band, as it always was (70-80 under
+    # the old 80 ceiling): a real saving that is close to not worth it. Only
+    # ever asks for a human; never authorises a deletion.
+    if ratio >= BAND_HI - 10:
         return "thin", "Real but thin saving - worth a human call."
     return "good", "Solid reduction - let it run."
 
@@ -997,11 +1042,26 @@ def offline_roots() -> list[str]:
     return [r for r in LIBRARY_ROOTS if not os.path.isdir(r)]
 
 
+def done_marker(title: str) -> Optional[str]:
+    """First line of $X9/.done-<title>, or None.
+
+    Written by .autopilot.sh under the no-delete policy when an encode is
+    judged good: the output stays beside its source for the operator to move
+    by hand. NOT an error -- the title is finished. Unpickable and never
+    re-judged, like the error marker; rendered green, not red.
+    """
+    try:
+        with open(os.path.join(X9, ".done-" + title), encoding="utf-8") as fh:
+            return fh.readline().strip() or "done"
+    except OSError:
+        return None
+
+
 def error_marker(title: str) -> Optional[str]:
     """First line of $X9/.error-<title>, or None when the title is fine.
 
     Written by .autopilot.sh when the CRF ladder exhausts (projection outside
-    the 30-80% band at every rung -- up 14-16-18-20-22 for too-big, down
+    the 10-70% band at every rung -- up 14-16-18-20-22 for too-big, down
     14-12-10 for too-small). The marker is the title's ERROR state: never
     deleted, never skipped (a skip is the operator's click, 2026-08-31),
     just unpickable and rendered red until a human deletes the marker file.
@@ -1159,6 +1219,9 @@ def queue(
         note = error_marker(r["title"])
         r["error"] = note is not None
         r["error_note"] = note
+        dnote = done_marker(r["title"])
+        r["done"] = dnote is not None
+        r["done_note"] = dnote
         # One listdir per staged folder, cached onto the row: pick_next() and
         # the sort below both need it, and the dashboard renders it.
         r["stage_state"] = staged_state(r["title"]) if r["staged"] else None
@@ -1175,7 +1238,7 @@ def queue(
     #
     # Bitrate still decides everything WITHIN a band -- and it is still what
     # .replenish-queue.sh pulls by, which is untouched by this. The bands:
-    _ENCODING, _STAGED, _LIBRARY, _ERRORED, _SKIPPED = 0, 1, 2, 3, 4
+    _ENCODING, _STAGED, _LIBRARY, _DONE, _ERRORED, _SKIPPED = 0, 1, 2, 3, 4, 5
 
     def _band(r: dict) -> tuple:
         if r["encoding"]:
@@ -1185,6 +1248,8 @@ def queue(
         # preference; an error is the pipeline reporting it could not finish.
         if r["error"]:
             return (_ERRORED, 0)
+        if r.get("done"):
+            return (_DONE, 0)
         if r["skipped"]:
             return (_SKIPPED, 0)
         if r["staged"]:
@@ -1289,6 +1354,10 @@ def pick_next(rows: list) -> tuple[Optional[dict], set]:
             # error out on "no source file".
             reasons.add("arriving")
             continue
+        if row.get("done"):
+            # Finished and kept in place under the no-delete policy. Not an
+            # error and not a wait: the row is simply complete.
+            continue
         if row.get("error"):
             # Ladder-exhausted titles wait for a human; re-picking one would
             # loop the same doomed encode forever. Distinct from "skipped":
@@ -1335,6 +1404,10 @@ class Entry:
     audio: Optional[int] = None
     subs: Optional[int] = None
     dest: Optional[str] = None
+    # Kept in place under the no-delete policy: encoded and judged, nothing
+    # synced, nothing deleted. summary() leaves these out of the RECLAIMED
+    # totals -- no original was removed -- and they never carry a dest.
+    kept: bool = False
     finished_at: Optional[str] = None
     crf: Optional[float] = 16.0
     # Which encoder produced the row. Old rows carry None (all were x265).
@@ -1405,9 +1478,13 @@ def summary(
     # with a known output but an unknown original into these sums silently
     # skews every headline percentage.
     paired = [r for r in hist if r.get("source_bytes") and r.get("output_bytes")]
-    reclaimed = sum(r["saved_bytes"] for r in paired)
-    src_total = sum(r["source_bytes"] for r in paired)
-    out_total = sum(r["output_bytes"] for r in paired)
+    # A KEPT row (no-delete policy) is an encode, not a reclaim: its original
+    # is still on the NAS, so its saving must not be added to bytes freed.
+    freed = [r for r in paired if not r.get("kept")]
+    reclaimed = sum(r["saved_bytes"] for r in freed)
+    src_total = sum(r["source_bytes"] for r in freed)
+    out_total = sum(r["output_bytes"] for r in freed)
+    kept_rows = len(paired) - len(freed)
     unknown = len(hist) - len(paired)
     offline = offline_roots()
     complete = not offline
@@ -1455,6 +1532,7 @@ def summary(
         "completed_measured": len(paired),
         "completed_unknown_source": unknown,
         "reclaimed_bytes": reclaimed,
+        "kept_rows": kept_rows,
         "source_total_bytes": src_total,
         "output_total_bytes": out_total,
         "avg_saved_pct": round(shrink, 1) if shrink is not None else None,
@@ -1500,6 +1578,8 @@ def summary(
         # from exactly the terminal a 1am SSH session uses).
         "paused": paused(),
         "stop_mbps": STOP_MBPS,
+        "band_lo": BAND_LO,
+        "band_hi": BAND_HI,
         "x9_online": os.path.isdir(X9),
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }

@@ -53,14 +53,19 @@ ck "x265 small at an up-rung exhausts" "$(next_rung x265_10bit 20 small)" none-t
 ck "x265 big at a down-rung exhausts"  "$(next_rung x265_10bit 12 big)"   none-too-big
 
 # --- VideoToolbox: BOTH arms are the mirror image ------------------------
-ck "vt big 60 -> 55 (DOWN, reversed scale)" "$(next_rung vt_h265_10bit 60 big)" 55
+ck "vt big 75 -> 70 (DOWN, reversed scale; 75 is the pivot)" "$(next_rung vt_h265_10bit 75 big)" 70
+ck "vt big 70 -> 65"                        "$(next_rung vt_h265_10bit 70 big)" 65
+ck "vt big 65 -> 60"                        "$(next_rung vt_h265_10bit 65 big)" 60
+ck "vt big 60 -> 55"                        "$(next_rung vt_h265_10bit 60 big)" 55
 ck "vt big 55 -> 50"                        "$(next_rung vt_h265_10bit 55 big)" 50
 ck "vt big 50 is the last rung"             "$(next_rung vt_h265_10bit 50 big)" none-too-big
-ck "vt small 60 -> 65 (UP, reversed scale)" "$(next_rung vt_h265_10bit 60 small)" 65
-ck "vt small 65 -> 70"                      "$(next_rung vt_h265_10bit 65 small)" 70
-ck "vt small 70 is the last rung"           "$(next_rung vt_h265_10bit 70 small)" none-too-small
+ck "vt small 75 -> 80 (UP, reversed scale; 75 is the pivot)" "$(next_rung vt_h265_10bit 75 small)" 80
+ck "vt small at 70 (a down-rung now) exhausts" "$(next_rung vt_h265_10bit 70 small)" none-too-small
+ck "vt small 95 -> 100"                     "$(next_rung vt_h265_10bit 95 small)" 100
+ck "vt small 100 is the last rung"          "$(next_rung vt_h265_10bit 100 small)" none-too-small
 ck "vt small at a big-rung exhausts"        "$(next_rung vt_h265_10bit 50 small)" none-too-small
-ck "vt big at a small-rung exhausts"        "$(next_rung vt_h265_10bit 70 big)"   none-too-big
+ck "vt small at 60 (a down-rung now) exhausts" "$(next_rung vt_h265_10bit 60 small)" none-too-small
+ck "vt big at the pivot steps down, never exhausts" "$(next_rung vt_h265_10bit 75 big)" 70
 
 # A CRF number handed to the VT arm must NOT be read as a CQ, and vice versa:
 # each is off the other's ladder entirely, so it exhausts rather than

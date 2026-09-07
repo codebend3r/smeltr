@@ -83,8 +83,11 @@ class Floor(unittest.TestCase):
 
     NO_HIST = []  # len < MIN_HISTORY -> base is None
 
+    # x265 BY NAME: these tests reason about the floor on the software curve,
+    # and the default encoder is VideoToolbox since 2026-09-06 -- which, with
+    # no VT rows in the ledger, answers `suspect` for everything.
     def v(self, raw, norm):
-        return core._verdict(raw, self.NO_HIST, norm, False)[0]
+        return core._verdict(raw, self.NO_HIST, norm, False, encoder="x265_10bit")[0]
 
     # Against the CONSTANT, never a copy of today's value. These broke as a
     # block when the floor moved 6.0 -> 15.0, which is five failures saying
@@ -205,7 +208,11 @@ class RelativeToHistory(unittest.TestCase):
 
 
 class Band(unittest.TestCase):
-    """The dashboard draws a 30-80% target band; the verdict must agree with it."""
+    """The dashboard draws the target band; the verdict must agree with it.
+
+    The band is core.BAND_LO..BAND_HI (10-70 since 2026-09-06); `no-saving`
+    starts AT the top, `thin` covers the ten points under it.
+    """
 
     def setUp(self):
         self.hist = core.history_ratios(normalised=True)
@@ -213,20 +220,28 @@ class Band(unittest.TestCase):
     def v(self, r):
         return core._verdict(r, self.hist, r, False)[0]
 
+    def test_the_band_is_ten_to_seventy(self):
+        self.assertEqual((core.BAND_LO, core.BAND_HI), (10.0, 70.0))
+
     def test_top_of_band_is_thin_not_no_saving(self):
-        self.assertEqual(self.v(79.9), "thin")
+        self.assertEqual(self.v(core.BAND_HI - 0.1), "thin")
 
     def test_above_band_is_no_saving(self):
-        self.assertEqual(self.v(80.0), "no-saving")
+        self.assertEqual(self.v(core.BAND_HI), "no-saving")
 
     def test_no_saving_names_the_band(self):
         self.assertIn(
-            "30-80% target band", core._verdict(80.0, self.hist, 80.0, False)[1]
+            "10-70% target band",
+            core._verdict(core.BAND_HI, self.hist, core.BAND_HI, False)[1],
         )
 
-    def test_thin_starts_at_70(self):
-        self.assertEqual(self.v(69.9), "good")
-        self.assertEqual(self.v(70.0), "thin")
+    def test_thin_starts_ten_under_the_top(self):
+        self.assertEqual(self.v(core.BAND_HI - 10.1), "good")
+        self.assertEqual(self.v(core.BAND_HI - 10), "thin")
+
+    def test_summary_carries_the_band(self):
+        s = core.summary()
+        self.assertEqual((s["band_lo"], s["band_hi"]), (core.BAND_LO, core.BAND_HI))
 
     def test_blowup(self):
         self.assertEqual(self.v(100.0), "blowup")
@@ -263,7 +278,10 @@ class LedgerRegression(unittest.TestCase):
     # the invariant below rather than being added to this list.
     ANCHORS = {
         "Flight (2012)": "suspect",  # SSIM-verified good, kept for review
-        "Oldboy (Oldeuboi) (2003)": "thin",
+        # 71.3%: `thin` under the old 80% ceiling, `no-saving` since the band
+        # moved to 10-70 on 2026-09-06. Already synced; the row is history and
+        # the verdict is the policy -- a 71% result is no longer one we keep.
+        "Oldboy (Oldeuboi) (2003)": "no-saving",
         "Shrek (2001)": "good",
         "Hunt for the Wilderpeople (2016)": "good",  # heavy crop: 22.8 raw, 30.8 norm
     }
@@ -292,11 +310,20 @@ class LedgerRegression(unittest.TestCase):
                 )
         self.assertEqual(set(seen), set(self.ANCHORS), "an anchor row left the ledger")
 
+    # Rows that shipped under an OLDER band and would not ship today. Each one
+    # is a policy change the operator made, dated, not a threshold bug.
+    SHIPPED_UNDER_OLD_BAND = {
+        "Oldboy (Oldeuboi) (2003)",  # 71.3%, band top moved 80 -> 70 on 2026-09-06
+    }
+
     def test_no_shipped_row_reads_as_kill_it(self):
         """Every row here is work that completed. `blowup` / `no-saving` /
         `downscale` all mean "kill it and start over", which cannot be true of
-        something already on the NAS -- if one fires, a threshold is wrong."""
+        something already on the NAS -- if one fires, a threshold is wrong,
+        UNLESS the row is listed above as shipped under a band since moved."""
         for title, raw, norm, code in self.measured():
+            if title in self.SHIPPED_UNDER_OLD_BAND:
+                continue
             self.assertIn(
                 code,
                 ("good", "thin", "suspect"),
@@ -362,6 +389,8 @@ class FixtureIntegrity(unittest.TestCase):
                 r.get("source_geometry"), r.get("output_geometry")
             )
             code = core._verdict(raw, hist, norm, False)[0]
+            if r["title"] in LedgerRegression.SHIPPED_UNDER_OLD_BAND:
+                continue
             self.assertIn(
                 code,
                 ("good", "thin", "suspect"),

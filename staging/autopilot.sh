@@ -42,6 +42,15 @@ error_out() {
   log "ERROR $title: $* - marked for review, moving on"
   log "  Nothing was deleted. Delete $X9/.error-$title after review."
 }
+# A FINISHED title under the no-delete policy: not an error, not synced, just
+# done and left beside its source. The marker keeps finished_folder() and
+# next_title.py off it; the dashboard renders it green. The operator moves the
+# file and deletes the marker.
+done_out() {
+  local title="$1"; shift
+  printf '%s: %s at %s\n' "$title" "$*" "$(date '+%Y-%m-%d %H:%M:%S')" > "$X9/.done-$title"
+  log "DONE $title: $* - kept in place, moving on"
+}
 
 # Single instance. Two drivers would both pick "the next title" and both start it.
 LOCK="$X9/.autopilot.lock"
@@ -104,15 +113,70 @@ finished_folder() {
   local d b
   while IFS= read -r d; do
     b=$(basename "$d")
-    ls "$d"/*"2160p HEVC"*.mkv >/dev/null 2>&1 || continue
+    # AppleDouble sidecars are NOT an output. This volume is exFAT, so every
+    # write leaves a `._<name>` beside the file -- and when .watch-encode.sh
+    # kills a band violation it deletes the partial and leaves that sidecar
+    # behind. A bare `*2160p HEVC*.mkv` glob matched the sidecar, so the driver
+    # read "finished encode" while verdict.py (which excludes `._*`, as does
+    # sync_async below) read "no output" and returned 4 -- and error_out then
+    # fired on a title whose KILLED line was asking for a ladder retry. That
+    # cost 1h35m of idle CPU on 2026-09-06 with Minions at CQ 65: the retry at
+    # Q70 never ran, the marker made the title unpickable, and every other
+    # staged folder was already errored, so the loop had nothing left to pick.
+    # Same `find ... ! -name '._*'` as every other output lookup in this file.
+    [ -n "$(find "$d" -maxdepth 1 -name '*2160p HEVC*.mkv' ! -name '._*' 2>/dev/null | head -1)" ] || continue
     # An ERROR-state title keeps its finished output beside the source for a
     # human to look at; re-judging it every 30 s pass would just re-fail it.
     [ -e "$X9/.error-$b" ] && continue
+    [ -e "$X9/.done-$b" ] && continue
     encoding_this "$b" && continue
     sync_in_flight "$b" && continue
     printf '%s\n' "$b"
     return
   done < <(find "$X9" -mindepth 1 -maxdepth 1 -type d ! -name ".*")
+}
+
+# The replenisher, DETACHED, its output folded into this log. Detached because
+# it now fills the drive to 14 folders in one run (operator's 10-18 rule,
+# 2026-09-06) and a synchronous call would park this loop behind hours of
+# transfers while the FIRST landed title sat unencoded. Safe to background
+# since 2026-08-23: next_title.py passes over a folder holding only a
+# .partial (exit 3, a wait), so a landing pull can never be picked early.
+# The replenisher's own lock keeps two instances apart.
+# ---- OPERATOR POLICY FLAGS, beside the ledger (2026-09-06) ------------------
+# `no-delete`     : NOTHING is synced and NOTHING is deleted, locally or on the
+#                   NAS, whatever the verdict. A `good` encode is kept beside
+#                   its source under a marker (note "DONE - kept") for a human
+#                   to move. The watcher's auto-kill ladder is OFF under this
+#                   policy too, so every encode finishes at exactly the
+#                   quality it started on ("encode 10 movies using VT CQ 70").
+# `encode_budget` : an integer. When `encode_done` (incremented here after
+#                   every judged encode) reaches it, the `pause` flag is
+#                   written and the loop does nothing further: no encode, no
+#                   replenish. The operator clears/raises it.
+SMELTR_HOME="$(dirname "$SMELTR")"
+PAUSE_FLAG="$SMELTR_HOME/pause"
+no_delete_policy() { [ -e "$SMELTR_HOME/no-delete" ]; }
+paused_flag()      { [ -e "$PAUSE_FLAG" ]; }
+budget_check() {  # call after every judged encode
+  local budget n_done
+  budget=$(tr -cd '0-9' < "$SMELTR_HOME/encode_budget" 2>/dev/null)
+  [ -z "$budget" ] && return 0
+  n_done=$(tr -cd '0-9' < "$SMELTR_HOME/encode_done" 2>/dev/null); n_done=${n_done:-0}
+  n_done=$((n_done + 1)); printf '%s\n' "$n_done" > "$SMELTR_HOME/encode_done"
+  log "BUDGET: $n_done of $budget encodes done"
+  if [ "$n_done" -ge "$budget" ]; then
+    : > "$PAUSE_FLAG"
+    log "BUDGET REACHED: $n_done encodes done - pausing; doing nothing further until the pause flag is cleared"
+  fi
+}
+
+replenish_running() { pgrep -f "replenish-queue.sh" >/dev/null 2>&1; }
+replenish_async() {
+  paused_flag && { log "  paused - not replenishing (do nothing at all)"; return 0; }
+  replenish_running && { log "  replenisher already running"; return 0; }
+  log "REPLENISH (detached): topping the staging drive up"
+  ( bash "$X9/.replenish-queue.sh" 2>&1 | while IFS= read -r rl; do log "  $rl"; done ) &
 }
 
 # Record + push + purge + replenish, detached, so the CPU is never idle waiting
@@ -250,8 +314,12 @@ start_encode() {
   # proven default, x265_10bit at CRF_DEFAULT. A ladder retry passes $2 to override the
   # QUALITY only: the encoder choice always comes from the override file, so
   # a vt title ladders down the CQ scale and an x265 title up the CRF scale.
-  read -r enc defq <<<"$("$SMELTR" encoder "$title" 2>/dev/null || echo "x265_10bit 14")"
-  [ -z "$enc" ] && enc=x265_10bit
+  # Crash-safe fallback = the global default (VideoToolbox CQ 75 since
+  # 2026-09-06, operator's call; was x265 CRF 14). core.DEFAULT_ENCODER /
+  # DEFAULT_QUALITY are the source of truth; this literal only answers when
+  # the checkout itself is broken.
+  read -r enc defq <<<"$("$SMELTR" encoder "$title" 2>/dev/null || echo "vt_h265_10bit 75")"
+  [ -z "$enc" ] && enc=vt_h265_10bit
   # A ladder rung is only meaningful on the ENCODER whose violation produced
   # it: CRF 18 handed to VideoToolbox is CQ 18, near the bottom of the
   # reversed scale -- a valid file with full track parity that only the size
@@ -264,7 +332,7 @@ start_encode() {
     q=""
   fi
   if [ -z "$q" ]; then
-    q="${defq:-14}"
+    q="${defq:-75}"
     # The dashboard's per-title CRF picker (`smeltr crf`, queue_overrides.json)
     # is an x265 RUNG and means nothing on VideoToolbox's reversed CQ scale, so
     # it is consulted only for x265. Like `smeltr encoder` it always answers an
@@ -316,7 +384,9 @@ start_encode() {
   fi
   log "  tracks OK ${oa}a/${os}s"
 
-  nohup "$X9/.watch-encode.sh" "$slug" "$title" "$(basename "$src")" "$(basename "$out")" "$pid" "$q" "$enc" \
+  local nokill=0; no_delete_policy && nokill=1
+  [ "$nokill" = 1 ] && log "  no-delete policy: auto-kill ladder OFF, this encode finishes at Q$q"
+  SMELTR_NO_AUTOKILL="$nokill" nohup "$X9/.watch-encode.sh" "$slug" "$title" "$(basename "$src")" "$(basename "$out")" "$pid" "$q" "$enc" \
     >> "$X9/.watch-${slug}.log" 2>&1 &
   log "  watcher pid $! (detached)"
 }
@@ -369,10 +439,32 @@ while true; do
       # Roots reachable and still no (or no unique) match: that is the real
       # "needs a human" -- deleting depends on exactly-one match. Still one
       # title's problem, not the pipeline's.
+      # NO-DELETE POLICY outranks a good verdict: keep the output beside the
+      # source, mark it so it is never re-judged, sync nothing, delete nothing.
+      if [ "$judged" = ok ] && no_delete_policy; then
+        # RECORD it -- a finished encode is history, and the History tab is
+        # where the operator expects to see it -- flagged --kept so its
+        # saving is never counted as reclaimed. The dedup key is the library
+        # original when it resolves, else the staged source itself (a
+        # hand-added title has no library folder).
+        keysrc="$srcpath"
+        [ -z "$keysrc" ] && keysrc=$(find "$X9/$done_folder" -maxdepth 1 "${SRC_FIND[@]}" ! -name '._*' ! -name '*2160p HEVC*' | head -1)
+        if "$SMELTR" record "$done_folder" --source-path "$keysrc" --kept \
+             --note "kept in place (no-delete policy): nothing synced, nothing deleted" 2>&1 | while IFS= read -r rl; do log "  $rl"; done; then
+          log "RECORDED $done_folder (kept)"
+        else
+          log "  record failed for $done_folder - marker still written, nothing deleted"
+        fi
+        done_out "$done_folder" "verdict good; recorded; no-delete policy: nothing synced, nothing deleted - move it by hand"
+        judged=kept
+      fi
       if [ "$judged" = ok ] && [ -z "$srcpath" ]; then
         error_out "$done_folder" "cannot locate the library original (roots ARE reachable - zero or multiple matches)"
         judged=error
       fi
+      # Every judged encode counts toward the operator's budget, whatever the
+      # verdict: the job was "convert N movies", and a finished file is one.
+      budget_check
       if [ "$judged" = ok ]; then
         letter=$(echo "$done_folder" | cut -c1 | tr '[:lower:]' '[:upper:]')
         nas=$(echo "$srcpath" | cut -d/ -f3)
@@ -399,7 +491,22 @@ while true; do
       # a pull still landing, and a wrong hard-coded message sent the
       # operator debugging overrides that were fine.
       log "waiting: $(next_reason)"
-      sleep 300; continue
+      # AN IDLE ENCODER MUST GO AND FETCH WORK (operator's standing rule, and
+      # the reason this call is here as well as in sync_async). Replenishment
+      # used to run ONLY after a successful sync, so a run of ERRORED titles
+      # starved the drive: no sync, no replenish, no new staged folders. On
+      # 2026-09-06 six of seven staged folders were errored and the loop sat
+      # in 300 s waits with 128 library titles unqueued -- it had work to do
+      # and no way to reach for it. Skipped and paused are the two states
+      # where staging more is still right (the drive fills with encodable
+      # work for when the human clears the state); a pull already landing is
+      # held off by the replenisher's own lock, so calling it is a no-op
+      # there. Synchronous ON PURPOSE: the replenisher may pull into a
+      # VISIBLE folder only because the driver cannot be at the next_title
+      # step while its own pull is in flight, and backgrounding it here would
+      # break exactly that.
+      replenish_async
+      sleep 60; continue
     fi
     if [ $nrc -ne 0 ] || [ -z "$title" ]; then
       # Never exit while a sync is still running (its replenish stages the
@@ -409,8 +516,26 @@ while true; do
         log "nothing startable yet - waiting on an in-flight or deferred sync"
         sleep 60; continue
       fi
-      log "STOP CONDITION: nothing staged above ${STOP_MBPS} Mb/s. Encoding paused; staging continues."
-      exit 0
+      # One more reach for work before claiming the job is done: the stop
+      # condition means nothing PICKABLE is staged, which is not the same as
+      # nothing being LEFT. If the replenisher stages something, the next
+      # pass picks it up instead of exiting on a drive that had simply run
+      # dry.
+      # The stop condition is claimed ONLY when the replenisher has just said
+      # there is nothing left to stage (.replenish-empty, written by it, and
+      # removed the moment a pull lands). Anything else -- a pull in flight,
+      # no verdict from the replenisher yet -- is a wait, never an exit.
+      if replenish_running; then
+        log "nothing startable - a replenish pull is in flight; waiting for it to land"
+        sleep 60; continue
+      fi
+      if [ -f "$X9/.replenish-empty" ] && [ $(( $(date +%s) - $(stat -f%m "$X9/.replenish-empty" 2>/dev/null || echo 0) )) -lt 600 ]; then
+        log "STOP CONDITION: nothing staged above ${STOP_MBPS} Mb/s and the replenisher found nothing left to stage. Encoding paused; staging continues."
+        exit 0
+      fi
+      log "nothing startable - asking the replenisher for more before stopping"
+      replenish_async
+      sleep 60; continue
     fi
 
     # The quality ladder. .watch-encode.sh deletes the partial when it
