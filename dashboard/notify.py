@@ -89,6 +89,7 @@ WHATS = {
     "ladder-down": ("🔻", "Ladder DOWN"),
     "last-rung": ("🏁", "Last rung — finishing anyway"),
     "error": ("🚨", "Error state"),
+    "kept": ("📦", "Done — kept in place"),
     "sync-failed": ("⛔", "Sync failed"),
     "stopped": ("🛑", "Driver stopped"),
     "deleted": ("🗑️", "Original deleted"),
@@ -111,6 +112,7 @@ PRIORITY = (
     "last-rung",
     "ladder-up",
     "ladder-down",
+    "kept",
     "finished",
 )
 
@@ -269,6 +271,21 @@ def classify(e: dict, err=_err):
             title=title,
             text=f"{why} · nothing deleted · row stays red until the "
             f".error marker is removed",
+        )
+    if kind == "done":
+        # `DONE <title>: <why> - moving on` -- a finished encode that was NOT
+        # synced: a non-good verdict under any policy, or a good one under the
+        # no-delete policy (operator's rule 2026-09-07: a finished encode is
+        # always done, whatever the verdict). This line REPLACED the ERROR
+        # line a thin/suspect verdict used to produce, so it must not be
+        # silent: the verdict word is the whole message.
+        title, _, why = text[len("DONE ") :].partition(": ")
+        why = why.replace(" - moving on", "").strip()
+        return dict(
+            base,
+            what="kept",
+            title=title,
+            text=f"{why} · moved to complete/ beside its source",
         )
     if kind == "info" and text.startswith("STOP CONDITION:"):
         return dict(

@@ -154,15 +154,53 @@ class DriverContract(unittest.TestCase):
         self.assertNotIn("halt()", src)
         self.assertNotIn('halt "', src)
         self.assertIn("error_out()", src)
-        # Each of the old halt sites now goes through error_out.
+        # Each of the old halt sites that is NOT a finished encode still goes
+        # through error_out.
         for needle in (
-            "needs a human:",
+            "could not be evaluated",
             "no source file",
             "track mismatch:",
             "cannot locate the library original",
         ):
-            line = next(ln for ln in src.splitlines() if needle in ln)
+            line = next(
+                ln
+                for ln in src.splitlines()
+                if needle in ln and not ln.strip().startswith("#")
+            )
             self.assertIn("error_out", line, needle)
+
+    def test_a_finished_encode_is_done_whatever_the_verdict(self):
+        """Operator's rule (2026-09-07): "it doesn't matter if the output is
+        thin or not, it should ALWAYS be moved to complete/ when it's done."
+
+        The Island (2005) finished at 63.6% of source, was judged `thin`, and
+        sat red in queue/ as an ERROR with a finished 50 GB file beside its
+        source until a human moved it. A verdict decides whether a `good`
+        encode SYNCS; it must not decide whether a finished encode is done.
+        Exit 2 (a non-good word) and 3 (a ladder code) both route to the
+        kept-in-place branch: record --kept, `.done-` marker, complete/.
+        Only exit 4 -- the output could not be evaluated -- is still an error.
+        """
+        src = _read_repo_file("staging", "autopilot.sh")
+        self.assertNotIn("needs a human:", src)
+        case = src.split("case $vrc in", 1)[1].split("esac", 1)[0]
+        two_three = next(ln for ln in case.splitlines() if ln.strip().startswith("2|3)"))
+        self.assertIn("judged=done", two_three)
+        self.assertNotIn("error_out", two_three)
+        four = next(ln for ln in case.splitlines() if ln.strip().startswith("4)"))
+        self.assertIn("error_out", four)
+        # The kept branch takes `done` under ANY policy, not only no-delete.
+        self.assertIn(
+            'if [ "$judged" = done ] || { [ "$judged" = ok ] && no_delete_policy; }; then',
+            src,
+        )
+        kept = src.split('if [ "$judged" = done ] ||', 1)[1].split("\n      fi\n", 1)[0]
+        self.assertIn("--kept", kept)
+        self.assertIn("done_out", kept)
+        self.assertNotIn("error_out", kept)
+        # A permanent record refusal (output not smaller than source) still
+        # moves the folder: done is done, and a retry would never land.
+        self.assertIn("not smaller than source", kept)
 
     def test_finished_folder_passes_over_an_errored_title(self):
         """The errored folder keeps source AND finished output for a human.

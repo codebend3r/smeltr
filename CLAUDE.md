@@ -568,8 +568,9 @@ hours; an out-of-band file is something a human can look at.
 one of them.** The ladder stops deciding; the verdict still does — and the
 verdict reads 30–80% as a TARGET, not a defect threshold:
 
-- **too big** → the finished file is >80% of source → `no-saving` → ERROR
-  state, and the library original survives.
+- **too big** → the finished file is >80% of source → `no-saving` → recorded
+  kept and moved to `complete/` (since 2026-09-07; it was the ERROR state),
+  and the library original survives.
 - **too small** → anything from the 15.0 floor to the 30% band edge is a
   **`good` verdict**, which syncs and **deletes the ~90 GB library original
   unattended**. That is exactly where a too-small terminal rung lands — Kubo
@@ -646,6 +647,30 @@ encode beside it. `tests/test_error_state.py` pins the mechanics.
 
 **The only sanctioned gap between one encode finishing and the next starting
 is the dashboard's pause toggle.**
+
+**A finished encode is DONE whatever the verdict (2026-09-07, operator's
+rule: "it doesn't matter if the output is thin or not, it should ALWAYS be
+moved to complete/ when it's done").** The verdict decides ONE thing — whether
+a `good` encode syncs and deletes its library original — and nothing else. A
+`thin` / `suspect` / `no-saving` / `downscale` / ladder verdict (exit 2 or 3
+from `verdict.py`) goes down the same kept-in-place branch as a `good` verdict
+under the no-delete policy: `record --kept` with `verdict <word>: <note>` in
+the ledger note, `.done-` marker, folder moved to `complete/` beside its
+source, nothing synced, nothing deleted. The operator reads the verdict off
+the History tab. It used to be the ERROR state, which left The Island (63.6%,
+`thin`) red in `queue/` with a finished 50 GB file a human had to move. A
+`record` that refuses because the output is NOT smaller than the source is a
+permanent refusal, so the folder is still marked and moved, with "NOT
+recorded" in the marker; any other refusal (the 120 s settle window) retries
+next pass as before. What is still the ERROR state is only what is NOT a
+finished encode: no source file, a track mismatch at the 120 s gate, an output
+that cannot be evaluated (verdict exit 4), and an unresolvable library
+original for a `good` verdict outside the no-delete policy. The `DONE` line is
+event kind `done` (green chip) and notification `kept` ("Done — kept in
+place", with the verdict word) — it REPLACED the ERROR line a thin verdict
+used to produce, so it may not be silent.
+`tests/test_error_state.py::DriverContract::test_a_finished_encode_is_done_whatever_the_verdict`
+pins the routing; `tests/test_notify.py` pins the message.
 
 **The driver no longer halts on anything (2026-09-04).** `halt()` is gone
 from `.autopilot.sh`; `error_out()` replaced every call site. A non-`good`

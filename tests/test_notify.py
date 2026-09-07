@@ -258,6 +258,26 @@ class Classify(unittest.TestCase):
         self.assertIn("needs a human: suspect", n["text"])
         self.assertIn("nothing deleted", n["text"].lower())
 
+    def test_a_kept_done_line_is_notified_with_its_verdict(self):
+        """A finished encode is DONE whatever the verdict (2026-09-07). The
+        DONE line replaced the ERROR line a thin/suspect verdict used to log,
+        so it must carry the verdict word or the operator loses the only
+        message that result ever produced."""
+        n = notify.classify(
+            self._ev(
+                "done",
+                "DONE Island, The (2005): verdict thin - Real but thin saving - "
+                "worth a human call.; recorded; nothing synced, nothing deleted - moving on",
+            )
+        )
+        self.assertEqual(n["what"], "kept")
+        self.assertEqual(n["title"], "Island, The (2005)")
+        self.assertIn("verdict thin", n["text"])
+        self.assertIn("complete/", n["text"])
+        self.assertNotIn("moving on", n["text"])
+        self.assertIn("kept", notify.WHATS)
+        self.assertIn("kept", notify.PRIORITY)
+
     def test_an_old_halt_is_an_error_too(self):
         """The driver no longer halts, but the parser still yields the kind
         from old logs; a HALTED line must never fall through to silence."""

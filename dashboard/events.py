@@ -47,6 +47,7 @@ _KINDS = {
     "START": "start",
     "JUDGE": "judge",
     "RECORD": "record",
+    "DONE": "done",
     "SYNC": "sync",
     "CYCLE": "cycle",
     "PLANNED": "planned",

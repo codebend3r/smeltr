@@ -7,11 +7,16 @@
 # COMPLETE and type the next command.
 #
 # IT NEVER GUESSES, AND IT NEVER STOPS (operator's standing rule, 2026-09-04).
-# The only path that deletes a library original is a `good` verdict. suspect /
-# thin / downscale / decoder-errors / an unresolvable library original all put
-# THAT TITLE into the ERROR state -- `$X9/.error-<title>` marker, output and
-# source left intact on the staging drive, red row on the dashboard -- and the
-# loop moves on to the next title. Flight (2012) projected 9.4% of source and
+# The only path that deletes a library original is a `good` verdict. A FINISHED
+# encode with any other verdict -- suspect / thin / no-saving / downscale /
+# decoder-errors / a ladder code -- is still DONE (operator's rule, 2026-09-07:
+# "it doesn't matter if the output is thin or not, it should ALWAYS be moved
+# to complete/ when it's done"): recorded --kept with the verdict in its note,
+# `.done-` marked, and moved to complete/ beside its source, nothing synced and
+# nothing deleted. Only what is NOT a finished encode -- no source file, a track
+# mismatch, an output that cannot be evaluated, an unresolvable library original
+# for a good verdict -- puts THAT TITLE into the ERROR state (`$X9/.error-<title>`
+# marker, red row on the dashboard), and the loop moves on to the next title. Flight (2012) projected 9.4% of source and
 # was genuinely fine, but that took an SSIM measurement to establish, not a
 # size comparison, so the CALL stays with a human; the CPU does not wait for
 # it. A halt on The Little Mermaid at 04:05 on 2026-09-04 idled the encoder
@@ -51,10 +56,11 @@ error_out() {
   log "ERROR $title: $* - marked for review, moving on"
   log "  Nothing was deleted. Delete $X9/.error-$title after review."
 }
-# A FINISHED title under the no-delete policy: not an error, not synced, just
-# done and left beside its source. The marker keeps finished_folder() and
-# next_title.py off it; the dashboard renders it green. The operator moves the
-# file and deletes the marker.
+# A FINISHED title that is not being synced -- a non-good verdict under any
+# policy, or a good one under the no-delete policy: not an error, just done and
+# left beside its source in complete/. The marker keeps finished_folder() and
+# next_title.py off it; the dashboard renders it green with the verdict in the
+# ledger note.
 done_out() {
   local title="$1"; shift
   printf '%s: %s at %s\n' "$title" "$*" "$(date '+%Y-%m-%d %H:%M:%S')" > "$X9/.done-$title"
@@ -225,8 +231,8 @@ finished_folder() {
 # ---- OPERATOR POLICY FLAGS, beside the ledger (2026-09-06) ------------------
 # `no-delete`     : NOTHING is synced and NOTHING is deleted, locally or on the
 #                   NAS, whatever the verdict. A `good` encode is kept beside
-#                   its source under a marker (note "DONE - kept") for a human
-#                   to move. The watcher's auto-kill ladder is OFF under this
+#                   its source under a `.done-` marker in complete/, exactly
+#                   like a non-good one. The watcher's auto-kill ladder is OFF under this
 #                   policy too, so every encode finishes at exactly the
 #                   quality it started on ("encode 10 movies using VT CQ 70").
 # `encode_budget` : an integer. When `encode_done` (incremented here after
@@ -509,23 +515,32 @@ while true; do
       log "JUDGE $done_folder"
       vjson=$("$SMELTR" verdict "$done_folder"); vrc=$?
       log "  $vjson"
-      # Anything but `good` is this title's ERROR state, never a halt: the
-      # marker goes on, the output stays beside the source for a human, and
-      # the loop carries on to step 2 in this same pass.
-      judged=ok
+      # A FINISHED encode is DONE, whatever the verdict (operator's rule,
+      # 2026-09-07: "it doesn't matter if the output is thin or not, it should
+      # ALWAYS be moved to complete/ when it's done"). The verdict decides ONE
+      # thing -- whether a `good` encode syncs and deletes its library
+      # original -- and nothing else. thin / suspect / no-saving / downscale /
+      # a ladder code is recorded (--kept, the word in the note), marked and
+      # moved to complete/ beside its source, and the operator reads the
+      # verdict off the History tab. It used to be the ERROR state, which left
+      # the folder red in queue/ with a finished 50 GB file a human had to
+      # move (The Island, 63.6% of source, `thin`, 2026-09-07). Exit 4 -- the
+      # output could not be EVALUATED at all -- is not a finished encode and
+      # stays an error. Never a halt: the loop carries on to step 2 in this
+      # same pass either way.
+      judged=ok; vword=""
       case $vrc in
         0) ;;
-        2) error_out "$done_folder" "needs a human: $(echo "$vjson" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("verdict"),"-",d.get("note",""))')"; judged=error ;;
-        3) error_out "$done_folder" "returned a ladder verdict after finishing - unexpected"; judged=error ;;
+        2|3) vword=$(echo "$vjson" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("verdict"),"-",d.get("note",""))'); judged=done ;;
         4) error_out "$done_folder" "could not be evaluated (verdict exit 4)"; judged=error ;;
       esac
 
-      # Roots reachable and still no (or no unique) match: that is the real
-      # "needs a human" -- deleting depends on exactly-one match. Still one
-      # title's problem, not the pipeline's.
-      # NO-DELETE POLICY outranks a good verdict: keep the output beside the
-      # source, mark it so it is never re-judged, sync nothing, delete nothing.
-      if [ "$judged" = ok ] && no_delete_policy; then
+      # KEPT IN PLACE: a non-good verdict under any policy, or a good verdict
+      # under the NO-DELETE POLICY (which outranks it). Sync nothing, delete
+      # nothing, keep the output beside the source, mark it so it is never
+      # re-judged, move the folder to complete/.
+      if [ "$judged" = done ] || { [ "$judged" = ok ] && no_delete_policy; }; then
+        if [ "$judged" = done ]; then why="verdict $vword"; else why="verdict good; no-delete policy"; fi
         # RECORD it -- a finished encode is history, and the History tab is
         # where the operator expects to see it -- flagged --kept so its
         # saving is never counted as reclaimed. The dedup key is the library
@@ -542,10 +557,20 @@ while true; do
         # marker the next pass re-finds it, re-judges (read-only, cheap) and
         # records once the file has settled. The budget counts the encode
         # once, on the pass that lands the row.
-        if "$SMELTR" record "$done_folder" --source-path "$keysrc" --kept \
-             --note "kept in place (no-delete policy): nothing synced, nothing deleted" 2>&1 | while IFS= read -r rl; do log "  $rl"; done; then
+        rout=$("$SMELTR" record "$done_folder" --source-path "$keysrc" --kept \
+                 --note "$why: kept in place - nothing synced, nothing deleted" 2>&1); rrc=$?
+        [ -n "$rout" ] && printf '%s\n' "$rout" | while IFS= read -r rl; do log "  $rl"; done
+        if [ "$rrc" -eq 0 ]; then
           log "RECORDED $done_folder (kept)"
-          done_out "$done_folder" "verdict good; recorded; no-delete policy: nothing synced, nothing deleted - move it by hand"
+          done_out "$done_folder" "$why; recorded; nothing synced, nothing deleted"
+          judged=kept
+        elif printf '%s' "$rout" | grep -q "not smaller than source"; then
+          # A PERMANENT refusal: the ledger never takes a row claiming a saving
+          # that did not happen, and retrying it would leave the folder in
+          # queue/ forever. Done is done -- mark and move, and say there is no
+          # ledger row.
+          log "  not recordable (output not smaller than source) - marking done without a ledger row"
+          done_out "$done_folder" "$why; NOT recorded (output not smaller than source); nothing synced, nothing deleted"
           judged=kept
         else
           log "  record failed for $done_folder - no marker written; will re-judge and retry next pass (nothing deleted)"

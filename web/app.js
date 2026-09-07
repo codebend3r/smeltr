@@ -2317,6 +2317,7 @@
     defer: "warn",
     cycle: "good",
     complete: "good",
+    done: "good",
   };
   function renderEvents(x9on) {
     progRefs = {};
