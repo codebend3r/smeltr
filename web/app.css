@@ -1229,6 +1229,12 @@ th.unit {
 .evtime {
   font-size: 11.5px;
 }
+/* Processes tab: the caption lines between and under its two tables. */
+.evfoot {
+  margin: 10px 4px 4px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
 .evcount {
   margin-left: 8px;
   font-family: var(--mono);

@@ -2118,6 +2118,139 @@
     );
   }
 
+  /* ---- the Processes tab ----------------------------------------------------
+   Every smeltr process on this Mac with what it is FOR, plus the
+   LaunchAgents that start things when nothing is running. Fetched from
+   /api/processes on its own clock while the tab is open. A missing detail
+   (no title in a command line) renders as an em dash, never a guess. */
+  var PROC_EVERY = 5000;
+  var prData = null,
+    prErr = false,
+    prFetching = false,
+    prFetchedAt = 0,
+    prKey = "";
+  function fetchProcs() {
+    if (prFetching) return;
+    prFetching = true;
+    fetch("/api/processes" + (token ? "?t=" + encodeURIComponent(token) : ""))
+      .then(function (r) {
+        if (!r.ok) throw 0;
+        return r.json();
+      })
+      .then(function (j) {
+        prFetching = false;
+        prErr = false;
+        prData = j;
+        /* The key is the SHAPE of the list -- pids, kinds, details -- so a
+         changed cpu% alone never rebuilds the table. */
+        prKey =
+          JSON.stringify(
+            j.procs.map(function (p) {
+              return [p.pid, p.kind, p.detail, p.dup];
+            }),
+          ) + JSON.stringify(j.agents);
+        if (tab === "procs" && last.state) paint(last.state);
+      })
+      .catch(function () {
+        prFetching = false;
+        prErr = true;
+        prKey = "err" + Date.now();
+        if (tab === "procs" && last.state) {
+          last.key = null;
+          paint(last.state);
+        }
+      });
+  }
+  /* Kind -> chip colour. Movers are good (something is happening), the
+   driver and its guardians are plain, a duplicate driver is bad. */
+  var PR_CLS = {
+    encode: "good",
+    pull: "good",
+    push: "good",
+    sync: "warn",
+    sweeper: "warn",
+  };
+  function renderProcs() {
+    progRefs = {};
+    var pane = document.getElementById("pane");
+    pane.replaceChildren();
+    if (prData === null) {
+      pane.appendChild(
+        el("div", "empty", prErr ? "Could not list processes — retrying" : "Listing processes…"),
+      );
+      return;
+    }
+    var procs = prData.procs || [];
+    if (!procs.length) {
+      pane.appendChild(el("div", "empty", "Nothing of smeltr's is running on this Mac."));
+    } else {
+      pane.appendChild(
+        table(
+          [
+            { label: "Process" },
+            { label: "PID", n: true },
+            { label: "Purpose" },
+            { label: "Working on" },
+            { label: "Running for", n: true },
+            { label: "CPU %", n: true, cls: "unit" },
+          ],
+          procs,
+          function (p) {
+            var tr = el("tr", p.dup ? "rowerr" : null);
+            var td = el("td");
+            var cls = p.dup ? "bad" : PR_CLS[p.kind] || "";
+            var chip = el("span", "mark" + (cls ? " ev-" + cls : ""), p.label);
+            chip.title = p.cmd;
+            td.appendChild(chip);
+            if (p.dup)
+              td.appendChild(
+                el("span", "evtext", "two drivers — the lock should make this impossible"),
+              );
+            tr.appendChild(td);
+            tr.appendChild(el("td", "n mono", String(p.pid)));
+            tr.appendChild(el("td", "muted", p.purpose));
+            tr.appendChild(el("td", "title-cell", p.detail || "—"));
+            tr.appendChild(el("td", "n mono", p.elapsed));
+            tr.appendChild(el("td", "n mono", p.cpu));
+            return tr;
+          },
+        ),
+      );
+    }
+    var agents = prData.agents || [];
+    var h = el("div", "evfoot");
+    h.appendChild(
+      el(
+        "span",
+        null,
+        agents.length
+          ? "Scheduled by launchd — these start things when nothing is running:"
+          : "No smeltr LaunchAgents are loaded on this Mac.",
+      ),
+    );
+    pane.appendChild(h);
+    if (agents.length) {
+      pane.appendChild(
+        table([{ label: "Agent" }, { label: "Purpose" }, { label: "State" }], agents, function (a) {
+          var tr = el("tr");
+          tr.appendChild(el("td", "mono", a.label));
+          tr.appendChild(el("td", "muted", a.purpose));
+          /* launchctl's third column is the pid while a run is up, else
+             the LAST EXIT STATUS: 0 is "ran and finished", anything else
+             is the last run failing and is said so. */
+          var st = a.pid
+            ? "running (pid " + a.pid + ")"
+            : a.status === "0"
+              ? "loaded · last run ok"
+              : "loaded · last run exited " + a.status;
+          tr.appendChild(el("td", a.pid || a.status === "0" ? null : "err", st));
+          return tr;
+        }),
+      );
+    }
+    pane.appendChild(el("div", "evfoot", "snapshot " + clock12(prData.generated_at || "")));
+  }
+
   /* ---- the Events tab -------------------------------------------------------
    The driver/watcher timeline, for debugging: every stamped line of
    .autopilot.log plus the band ladder's KILLED/COMPLETE verdicts, newest
@@ -2284,12 +2417,20 @@
       evFetchedFor = s.events_rev;
       fetchEvents();
     }
+    /* The Processes tab polls on its own clock (every PROC_EVERY ms while
+     open): a process list has no rev to ride, and `ps` twice a second
+     for a tab that changes once a minute would be waste. */
+    if (tab === "procs" && Date.now() - prFetchedAt >= PROC_EVERY) {
+      prFetchedAt = Date.now();
+      fetchProcs();
+    }
     /* The queue key carries the transfer COUNT (it decides the empty-state
      sentence), never the transfers themselves — their bytes and shape belong
      to the ledger key alone. */
     var key =
       tab +
       "|" +
+      (tab === "procs" ? prKey : "") +
       JSON.stringify(
         tab === "queue"
           ? [
@@ -2342,7 +2483,9 @@
             ? renderLedger(s.ledger, s.transfers)
             : tab === "errors"
               ? renderErrors(s.errors || [])
-              : renderEvents(s.summary.x9_online);
+              : tab === "procs"
+                ? renderProcs()
+                : renderEvents(s.summary.x9_online);
       }
     }
     /* EVERY frame, rebuilt or not: this is what keeps the bars moving now that
@@ -2399,6 +2542,8 @@
       (evData
         ? " (" + (evTotal > evData.length ? evData.length + " of " + evTotal : evData.length) + ")"
         : "");
+    document.getElementById("tabProcs").textContent =
+      "Processes" + (prData ? " (" + prData.procs.length + ")" : "");
     var anyPin = s.queue.some(function (r) {
       return r.pinned && !r.skipped;
     });
@@ -2413,7 +2558,7 @@
    a shared link all land on the same tab. replaceState, not pushState -- a
    tab switch is not a page the back button should walk through. The token
    and anything else in the query survive untouched. */
-  var TABS = { queue: 1, ledger: 1, errors: 1, events: 1 };
+  var TABS = { queue: 1, ledger: 1, errors: 1, events: 1, procs: 1 };
   function tabFromUrl() {
     try {
       var v = new URLSearchParams(location.search).get("tab");
@@ -2439,6 +2584,9 @@
     document.getElementById("tabLedger").setAttribute("aria-selected", String(name === "ledger"));
     document.getElementById("tabErrors").setAttribute("aria-selected", String(name === "errors"));
     document.getElementById("tabEvents").setAttribute("aria-selected", String(name === "events"));
+    document.getElementById("tabProcs").setAttribute("aria-selected", String(name === "procs"));
+    /* Opening the tab fetches now, not at the next poll boundary. */
+    if (name === "procs") prFetchedAt = 0;
     if (last.state) paint(last.state);
   }
   document.getElementById("tabQueue").addEventListener("click", function () {
@@ -2452,6 +2600,9 @@
   });
   document.getElementById("tabEvents").addEventListener("click", function () {
     setTab("events");
+  });
+  document.getElementById("tabProcs").addEventListener("click", function () {
+    setTab("procs");
   });
   document.getElementById("resetOrder").addEventListener("click", function () {
     api("/api/queue/order", { order: [] });

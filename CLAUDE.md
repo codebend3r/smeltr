@@ -407,6 +407,101 @@ fewer than `MIN_HISTORY` VT rows in the ledger is `suspect` by
 construction — the first hardware encodes halt for a human, never
 auto-delete on a baseline borrowed from x265's curve.
 
+### The staging LAYOUT — `queue/` and `complete/` (2026-09-07, operator's rule)
+
+Movie folders live in two subfolders of the X9, never at its root:
+
+- **`$X9/queue/`** — every title the pipeline may still act on: waiting,
+  arriving, encoding, errored. A replenish pull and a dashboard stage pull
+  both LAND here (`.pull-<title>` hidden folders too).
+- **`$X9/complete/`** — a finished encode with its source beside it (the
+  no-delete policy keeps both). `done_out()` writes the `.done-` marker and
+  then `mv`s the folder here. Nothing in the pipeline reads `complete/`
+  except to know the title is done: `core.done_marker()` answers for a
+  folder in `complete/` even with no marker, and the replenisher's
+  "already on the drive" set covers `queue/`, `complete/` AND the root, so a
+  finished title can never be pulled again.
+
+Scripts, logs, markers, the lock and the bitrate index stay at the root,
+where every path in this file already names them.
+
+**One resolver per side.** `core.folder_dir(title)` (Python) and
+`folder_dir` in `.autopilot.sh` answer `queue/<title>`, else a legacy folder
+still at the root, else `queue/<title>` (where it WOULD be). `verdict`,
+`record`, the queue, the dashboard's encode start/abort and skip guard all go
+through it. `core.staged_folders()` / `staged_dirs` list `queue/` plus any
+legacy root folder, never `complete/`, and never the two layout folders
+themselves. `core.stage_dir()`/`complete_dir()` are FUNCTIONS, not
+constants: the suites swap `core.X9` at runtime and a path frozen at import
+kept pointing at the live drive.
+
+**The root is a legacy layout the driver migrates on every pass.**
+`migrate_layout()` runs at step 0 of the loop and moves a root movie folder
+into `complete/` (if its `.done-` marker exists) or `queue/`, skipping the
+folder HandBrake is writing into, one with a sync in flight, and one holding
+a `.partial` (a pull still landing — `.ssh-xfer.sh` sizes and renames by
+the path it was given, so moving the folder under it strands the transfer).
+A name already taken in the destination is logged and left alone, never
+merged. That is what made the deploy safe mid-pull on 2026-09-07 and is
+why every reader keeps the root fallback. `.watch-encode.sh`,
+`.sync-to-library.sh` and `watchdog.sh`'s corpse triage carry the same
+`queue/`-then-root fallback; `complete/` is never triaged. `tests/test_layout.sh`
+(driver helpers) and `tests/test_layout.py` (core) pin it.
+
+### The replenisher is INDEPENDENT of the encoder (2026-09-07, operator's rule)
+
+"The queue folder MUST always have at least 10 movie folders in it; the max
+is 18. The replenisher is independent of the encoder: its only job is to
+ensure `queue/` has enough files to encode, and once the folder has fewer
+than 10 it starts downloading more automatically."
+
+`ops/replenisher.sh` is that loop — `com.smeltr.replenish.plist` ticks it
+every 60 s (installed per machine like the watchdog; `bun run replenisher`
+is the foreground `--supervise` form). A tick proves the X9 is READABLE
+(the Full Disk Access trap: a blind agent reads `queue/` as empty, which is
+exactly the signal that starts pulling), then runs the X9's own
+`.replenish-queue.sh`, which keeps the thresholds (`TARGET=10`, `FILL=14`,
+`MAX=18`), the skip lists, the free-space gate and the pull. The script's
+single-instance lock is what makes the loop and the driver's own
+`replenish_async` calls coexist: whichever is second exits "another
+replenish is running". The driver still calls it from its wait/stop paths
+and still skips it while paused; the loop is what keeps `queue/` full when
+the driver is paused or dead. A run that PICKS is stamped into
+`.autopilot.log` in the driver's format so the Events tab and the notifier
+see it; a no-op tick goes only to `~/Library/Logs/smeltr/replenish.log`.
+`touch "$X9/.replenish-off"` stops it without unloading anything.
+`tests/test_replenisher.sh` pins the tick.
+
+### The bitrate index can be all zeros — and that empties the queue (2026-09-07)
+
+`ops/scan-bitrates.sh` runs nightly from `com.smeltr.scan.plist`. launchd
+hands a job the bare system PATH, `ffprobe` is Homebrew's, and the X9 scan
+script silences ffprobe's errors — so with no ffprobe every one of 1415
+files was indexed at bitrate 0, the row count looked right, the wrapper
+installed it, and the queue read "nothing above 70 Mb/s" for four hours
+(the driver had idled since 03:20; the replenisher, sorting 1415 ties,
+pulled five titles ALPHABETICALLY). It had not fired before only because
+Full Disk Access was missing until 2026-09-06 and the agent had aborted at
+preflight every night. Now: the wrapper and the plist both put Homebrew on
+PATH, the wrapper refuses to scan if `ffprobe` does not resolve, and it
+refuses to install an index in which no file has a bitrate (or the count of
+real bitrates drops >10%, same floor as the row count). **Never edit a shell
+script while a copy is running** — the ops scripts too, not only the X9
+ones: bash reads by byte offset, and editing the wrapper mid-scan garbled
+the running copy (`die library: command not found`) and cost a second
+4-minute scan.
+
+**A failed `record` under the no-delete policy retries next pass.** The
+driver judges within seconds of HandBrake exiting, `record` refuses an output
+modified <120 s ago, and the marker used to be written anyway saying
+"recorded" — three finished encodes (Addams Family 2, HTTYD 3, John Wick 2)
+never reached the ledger and `finished_folder()` skipped them forever. Now
+the marker (and the move to `complete/`, and the budget tick) happen ONLY
+after the row lands; a refused record leaves the folder for the next pass.
+And **the replenisher does not count a done folder as a queue slot** —
+five done folders plus five mis-pulls made "10 of 10" and it refused to
+pull while the driver had nothing startable.
+
 ### The driver is CONCURRENT as of 2026-08-22
 
 HandBrake is never idle waiting on I/O. One pass of the loop dispatches a
@@ -1337,6 +1432,29 @@ second request.
   `QUARTER` progress noise never becomes an event. Severity chips reuse the
   page's three colour tokens; an unmapped kind renders as a plain pill,
   never an error.
+- **The Processes tab (2026-09-07)** — "what is active, at a glance, each
+  with its purpose". `dashboard/procs.py` (imported ONLY by `server.py`;
+  in `DASHBOARD_ONLY`) runs one `ps -axo pid,ppid,etime,%cpu,rss,command`
+  per snapshot (cached 3 s) and classifies every line against `RULES`, an
+  ordered list of (pattern, kind, label, PURPOSE sentence): HandBrake, the
+  band watcher, the driver, a replenish run, the independent replenisher
+  tick, an SSH pull/push, a sync, the watchdog, the bitrate scan, the
+  dashboard itself, the heartbeat, caffeinate. A process matching no rule
+  is not ours and is not shown; a `grep`/`tail`/`pgrep` that merely
+  mentions a script is excluded by its first word. Served at
+  `GET /api/processes` behind the token gate; the page polls it every 5 s
+  ONLY while the tab is open (a process list has no rev to ride the SSE
+  frames) and the repaint key carries pids/kinds/details, never cpu%.
+  Honesty rules, pinned in `tests/test_procs.py`: a bash fork with the
+  IDENTICAL command line as its parent (`$(...)`, `( … ) &`) is one
+  process, not two; a `./.autopilot.sh` copy with a replenish/sync child
+  is labelled "driver subshell", and TWO real drivers are flagged red, not
+  hidden; the title a pull works on is the staging DESTINATION (the last
+  `Name (YYYY)` in the command line), never the library source; the
+  watcher's title comes from its bare second argument. Under the table,
+  the smeltr LaunchAgents from `launchctl list` with their purpose and
+  state — the pid while running, else the LAST EXIT STATUS spelled out
+  ("last run exited 1" is how a failing heartbeat shows up).
 - **Notifications (2026-09-05)** — `dashboard/notify.py`, imported ONLY by
   `server.py`, started from `main()` when `notify.json` sits beside the
   ledger (gitignored, holds the Slack webhook and the Gmail app password;
@@ -1786,11 +1904,29 @@ structure mechanically; if one changes, change the other.
 
 ## Non-negotiables in the domain
 
+- **NEVER use SMB to reach the NAS. ALWAYS use SSH** (operator's rule,
+  repeated 2026-09-07). Every byte moved and every stat taken against
+  Vhagar/Vermithor goes over `ssh crivas@<host>` with the path map in
+  `.ssh-xfer.sh` (`/Volumes/Vhagar/…` → `/volume1/Vhagar/…`, same for
+  Vermithor): the transfer (`.ssh-xfer.sh pull|push`), the replenisher's
+  pre-pull exists/size check (`ssh … stat -c%s`, since 2026-09-07), the
+  library-original lookups `.sync-to-library.sh` performs. The mounted
+  `/Volumes/<NAS>` shares are for the dashboard and `core.queue()` to READ
+  the library's shape, never for moving data, and a stat over them under
+  load answered at ~1 s per file and stalled a replenish pick for minutes
+  while nothing downloaded. SSH is also ~2x faster (18 MB/s vs 9 MB/s,
+  benchmarked 2026-08-17). A new script that opens a `/Volumes/V…` path
+  for reading or writing file CONTENT is wrong by construction.
 - **Every audio and subtitle track is preserved.** `--all-audio --aencoder copy
   --audio-fallback ac3 --all-subtitles`. Never `--audio-lang-list`.
 - **Never invent a missing number.** One ledger row has no original size because
   the file was deleted before it was recorded; it is excluded from every total
   rather than back-solved. Provenance is shown per row.
+- **If a NAS share is not mounted, run `mount-all-drives`** (operator's
+  shell command, 2026-09-07) — it mounts every NAS volume under `/Volumes`.
+  Do that before concluding a root is offline, before a scan, and before
+  any dashboard read that needs the library's shape. It is for the MOUNTS
+  only; data and stats still go over SSH (rule above).
 - **An unmounted NAS must not look like a finished job.** The queue empties when
   a library root is unreachable; `library_complete` / `roots_offline` exist so
   neither view presents that as "nothing left".

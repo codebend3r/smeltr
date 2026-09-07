@@ -48,6 +48,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pipeline import core
 from dashboard import auth
 from dashboard import events as events_mod
+from dashboard import procs as procs_mod
 from dashboard import manual as manual_mod
 from dashboard import notify
 from dashboard import sysmon
@@ -1796,6 +1797,11 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps(
                 {"rev": events_mod.rev(), "events": tl["events"], "total": tl["total"]}
             ).encode()
+            return self._send(200, "application/json; charset=utf-8", body)
+        if route == "/api/processes":
+            # The Processes tab: every smeltr process on this Mac with its
+            # purpose, plus the LaunchAgents. One `ps` per 3 s at most.
+            body = json.dumps(procs_mod.snapshot()).encode()
             return self._send(200, "application/json; charset=utf-8", body)
         if route == "/api/stream":
             return self._stream()
