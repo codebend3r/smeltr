@@ -518,6 +518,19 @@ see it; a no-op tick goes only to `~/Library/Logs/smeltr/replenish.log`.
 `touch "$X9/.replenish-off"` stops it without unloading anything.
 `tests/test_replenisher.sh` pins the tick.
 
+**Every run used to pull exactly ONE title (fixed 2026-09-07).** The pull loop
+reads `$PICKS` on stdin and `.ssh-xfer.sh` runs `ssh … cat` with no `-n`, so
+ssh inherited that stdin and drained the remaining picks into the remote side:
+"need 12 more" pulled Goosebumps and exited, and `queue/` sat at 2 of 10 for
+an hour. The pull now runs `< /dev/null`. `tests/test_replenish_loop.sh`
+drives the real script in a sandbox with a fake transfer that drains stdin
+the way ssh does and counts landings — a string match cannot tell one pull
+from twelve. The same suite pins the download budget (see *The budget counts
+DOWNLOADS*). `staging/replenish-queue.sh` is the tracked mirror. And
+`done_out()` in `.autopilot.sh` calls `replenish_async` after the move to
+`complete/`, so a freed slot is refilled in the same pass, not on the next
+60 s tick (operator's word: "immediately").
+
 ### The bitrate index can be all zeros — and that empties the queue (2026-09-07)
 
 `ops/scan-bitrates.sh` runs nightly from `com.smeltr.scan.plist`. launchd
@@ -1834,12 +1847,19 @@ work, and a gate that halts routinely gets waved through.
 synced and its original already deleted — this is about what happens next, and
 the row is the operator's to revisit.
 
-**The floor is the binding rule today, and that is itself pinned.** 15.0 sits
-above the relative line (12.64%), so the relative check decides nothing until
-the median reaches 37.5%. `test_the_floor_is_what_binds_today` fails when that
-stops being true, because the boundary tests around it would otherwise be
-asserting a line that no longer decides anything — which is how the old
-`test_just_above_the_threshold_is_good` came to pass while testing nothing.
+**Which rule binds is PER ENCODER, and the floor is pinned as a LOWER BOUND,
+not as the binding rule.** `verdict.py` judges a row against same-encoder
+history only, so there is one relative line per encoder and they move
+independently: on 2026-09-07 the x265 line (14.87%) still sat under the floor
+and the VideoToolbox line (18.77%) had already risen above it. The suite used
+to blend every row into one baseline production never computes and assert
+that the floor bound there; the blend crossed 15.0 that day and the test went
+red in the SAFE direction (a rising median means more `suspect`, never a
+deletion). `test_the_floor_is_a_lower_bound_whatever_binds` now pins what
+matters for each encoder: the effective line never drops under 15.0, and the
+`suspect` note names the rule that fired (`floor` vs `median of`). The
+boundary tests read `effective_line(hist)` = max(relative, floor), so they
+always test the line that decides.
 
 **The baseline is contaminated and now says so.** Most ledger rows predate
 geometry capture, so `history_ratios(normalised=True)` cannot crop-adjust them

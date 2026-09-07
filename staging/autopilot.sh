@@ -70,6 +70,13 @@ done_out() {
   printf '%s: %s at %s\n' "$title" "$*" "$(date '+%Y-%m-%d %H:%M:%S')" > "$X9/.done-$title"
   log "DONE $title: $* - moving on"
   move_to_complete "$title"
+  # A folder leaving queue/ is a slot to refill NOW (operator's rule,
+  # 2026-09-07: "every time a file is finished encoded and gets moved from
+  # this folder to complete/, it should immediately start the download of
+  # the next movie"). The independent replenisher would get there within its
+  # 60 s tick; this makes it the same pass. Its single-instance lock makes
+  # the call a no-op while a pull is already landing.
+  replenish_async
 }
 
 # Single instance. Two drivers would both pick "the next title" and both start it.

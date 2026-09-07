@@ -21,6 +21,11 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 X9="$TMP/x9"; mkdir -p "$X9"
 # shellcheck disable=SC2034  # read by the autopilot helpers sourced below
 LOG=/dev/null
+# The helper block derives SMELTR_HOME from $SMELTR, which the script sets
+# above the extracted range; under `set -u` that line otherwise prints
+# "SMELTR: unbound variable" on every run and leaves SMELTR_HOME unset.
+# shellcheck disable=SC2034  # read by the sourced helper block
+SMELTR="$(dirname "$0")/../smeltr"
 log() { :; }
 
 # Pull the helper block out of the real script so this tests shipped code.

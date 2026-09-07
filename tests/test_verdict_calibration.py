@@ -126,10 +126,24 @@ class RelativeToHistory(unittest.TestCase):
     """The baseline MOVES: every completed encode appends a row and shifts the
     median. So assert relationships, never a snapshot of today's number -- an
     earlier version of this file hardcoded 35.1% and 14.0% and broke the moment
-    Kubo landed."""
+    Kubo landed.
+
+    PER ENCODER, the way verdict.py judges: `history_ratios(encoder=enc)`
+    compares a row only against same-encoder rows, because software and
+    hardware have different rate-quality curves. A blended baseline is one
+    production never computes -- this class asserted against it until
+    2026-09-07, when the blend crossed a line neither real baseline had.
+    """
 
     def setUp(self):
-        self.hist = core.history_ratios(normalised=True)
+        # x265 always; VT once it has enough rows to have a median at all.
+        self.hists = {}
+        for enc in (core.LEGACY_ENCODER, core.DEFAULT_ENCODER):
+            h = core.history_ratios(normalised=True, encoder=enc)
+            if len(h) >= core.MIN_HISTORY:
+                self.hists[enc] = h
+        # The x265 baseline is the one every earlier calibration reasoned about.
+        self.hist = self.hists[core.LEGACY_ENCODER]
         self.base = statistics.median(self.hist)
         self.thr = self.base * core.OUTLIER_FACTOR
 
@@ -138,33 +152,60 @@ class RelativeToHistory(unittest.TestCase):
 
     def test_baseline_is_plausible_for_this_library(self):
         """Wide bounds on purpose. This catches a broken ledger, not drift."""
-        self.assertTrue(10.0 < self.base < 80.0, f"median {self.base:.1f}%")
+        for enc, hist in self.hists.items():
+            base = statistics.median(hist)
+            self.assertTrue(10.0 < base < 80.0, f"{enc} median {base:.1f}%")
 
     # `suspect` fires on `below_floor OR below_base`, so the observable line is
-    # whichever is HIGHER. Since 2026-08-30 that is the floor (15.0) and not
-    # the relative line -- the median would have to reach 37.5% before the
-    # relative rule binds again. Asserting against self.thr alone tested a
-    # boundary that no longer decides anything.
-    def effective_line(self):
-        return max(self.thr, core.OUTLIER_FLOOR_NORM)
+    # whichever is HIGHER -- and which one that is differs by encoder and moves
+    # as rows land (on 2026-09-07 the floor bound for x265 and the relative
+    # line for VT). Every boundary below is asserted against the line that
+    # actually decides for THAT encoder, never against `thr` alone.
+    @staticmethod
+    def effective_line(hist):
+        return max(statistics.median(hist) * core.OUTLIER_FACTOR, core.OUTLIER_FLOOR_NORM)
 
     def test_just_below_the_threshold_is_suspect(self):
-        r = self.effective_line() - 0.1
-        self.assertEqual(core._verdict(r, self.hist, r, False)[0], "suspect")
+        for enc, hist in self.hists.items():
+            r = self.effective_line(hist) - 0.1
+            self.assertEqual(
+                core._verdict(r, hist, r, False, encoder=enc)[0], "suspect", enc
+            )
 
     def test_just_above_the_threshold_is_good(self):
-        r = self.effective_line() + 0.1
-        self.assertEqual(core._verdict(r, self.hist, r, False)[0], "good")
+        for enc, hist in self.hists.items():
+            r = self.effective_line(hist) + 0.1
+            self.assertEqual(
+                core._verdict(r, hist, r, False, encoder=enc)[0], "good", enc
+            )
 
-    def test_the_floor_is_what_binds_today(self):
-        """Which rule is live is a fact worth failing on when it changes."""
-        self.assertGreater(
-            core.OUTLIER_FLOOR_NORM,
-            self.thr,
-            f"the relative line ({self.thr:.2f}%) has risen above "
-            f"the floor ({core.OUTLIER_FLOOR_NORM}%); the floor no "
-            f"longer guards Flight-class results on its own",
-        )
+    def test_the_floor_is_a_lower_bound_whatever_binds(self):
+        """The relative line may rise above the floor; it may never replace it.
+
+        This used to assert that the floor was the binding rule. That was a
+        snapshot of 2026-08-30, and it fails in the SAFE direction -- a rising
+        median means more `suspect`, never an unreviewed deletion. What is
+        worth pinning is the other side: whatever the median does, the
+        effective line never drops under the floor, and the note names the
+        rule that actually fired, so a human reading `suspect` knows whether
+        it was policy (the floor) or statistics (the median).
+        """
+        for enc, hist in self.hists.items():
+            line = self.effective_line(hist)
+            self.assertGreaterEqual(line, core.OUTLIER_FLOOR_NORM, enc)
+            # Just under the floor: the floor fired, and the note says so.
+            f = core.OUTLIER_FLOOR_NORM - 0.1
+            code, note = core._verdict(f, hist, f, False, encoder=enc)
+            self.assertEqual(code, "suspect", enc)
+            self.assertIn("floor", note, enc)
+            # Between the floor and a higher relative line: only the median
+            # fired, and the note must not blame the floor for it.
+            if line > core.OUTLIER_FLOOR_NORM + 0.2:
+                r = line - 0.1
+                code, note = core._verdict(r, hist, r, False, encoder=enc)
+                self.assertEqual(code, "suspect", enc)
+                self.assertNotIn("floor", note, enc)
+                self.assertIn("median of", note, enc)
 
     def test_flight_still_asks_for_a_human(self):
         """Flight-class is REJECTED work, and the floor is what says so.
@@ -215,10 +256,10 @@ class Band(unittest.TestCase):
     """
 
     def setUp(self):
-        self.hist = core.history_ratios(normalised=True)
+        self.hist = core.history_ratios(normalised=True, encoder=core.LEGACY_ENCODER)
 
     def v(self, r):
-        return core._verdict(r, self.hist, r, False)[0]
+        return core._verdict(r, self.hist, r, False, encoder=core.LEGACY_ENCODER)[0]
 
     def test_the_band_is_ten_to_seventy(self):
         self.assertEqual((core.BAND_LO, core.BAND_HI), (10.0, 70.0))
@@ -232,7 +273,9 @@ class Band(unittest.TestCase):
     def test_no_saving_names_the_band(self):
         self.assertIn(
             "10-70% target band",
-            core._verdict(core.BAND_HI, self.hist, core.BAND_HI, False)[1],
+            core._verdict(
+                core.BAND_HI, self.hist, core.BAND_HI, False, encoder=core.LEGACY_ENCODER
+            )[1],
         )
 
     def test_thin_starts_ten_under_the_top(self):
@@ -262,7 +305,7 @@ class Band(unittest.TestCase):
 
 class Precedence(unittest.TestCase):
     def test_downscale_outranks_every_size_verdict(self):
-        hist = core.history_ratios(normalised=True)
+        hist = core.history_ratios(normalised=True, encoder=core.LEGACY_ENCODER)
         for r in (5.0, 45.0, 90.0, 130.0):
             self.assertEqual(core._verdict(r, hist, r, True)[0], "downscale")
 
@@ -287,16 +330,22 @@ class LedgerRegression(unittest.TestCase):
     }
 
     def measured(self):
-        hist = core.history_ratios(normalised=True)
+        # Each row against ITS OWN encoder's history, exactly as verdict.py
+        # judged it; a blended baseline is one production never computes.
+        hists = {}
         for r in rows():
             sb, ob = r.get("source_bytes"), r.get("output_bytes")
             if not sb or not ob:
                 continue  # Wanted (2008): no source size, never back-solved
+            enc = r.get("encoder") or core.LEGACY_ENCODER
+            if enc not in hists:
+                hists[enc] = core.history_ratios(normalised=True, encoder=enc)
             raw = ob / sb * 100.0
             norm = raw * core.crop_factor(
                 r.get("source_geometry"), r.get("output_geometry")
             )
-            yield r["title"], raw, norm, core._verdict(raw, hist, norm, False)[0]
+            code = core._verdict(raw, hists[enc], norm, False, encoder=enc)[0]
+            yield r["title"], raw, norm, code
 
     def test_anchor_rows_keep_their_verdict(self):
         seen = {}
@@ -365,7 +414,7 @@ class FixtureIntegrity(unittest.TestCase):
         )
 
     def test_frozen_anchors_keep_their_verdict(self):
-        hist = core.history_ratios(normalised=True)
+        hist = core.history_ratios(normalised=True, encoder=core.LEGACY_ENCODER)
         seen = {}
         for r in self.rows:
             sb, ob = r.get("source_bytes"), r.get("output_bytes")
@@ -375,11 +424,13 @@ class FixtureIntegrity(unittest.TestCase):
             norm = raw * core.crop_factor(
                 r.get("source_geometry"), r.get("output_geometry")
             )
-            seen[r["title"]] = core._verdict(raw, hist, norm, False)[0]
+            seen[r["title"]] = core._verdict(
+                raw, hist, norm, False, encoder=core.LEGACY_ENCODER
+            )[0]
         self.assertEqual(seen, LedgerRegression.ANCHORS)
 
     def test_no_frozen_row_reads_as_kill_it(self):
-        hist = core.history_ratios(normalised=True)
+        hist = core.history_ratios(normalised=True, encoder=core.LEGACY_ENCODER)
         for r in self.rows:
             sb, ob = r.get("source_bytes"), r.get("output_bytes")
             if not sb or not ob:
@@ -388,7 +439,7 @@ class FixtureIntegrity(unittest.TestCase):
             norm = raw * core.crop_factor(
                 r.get("source_geometry"), r.get("output_geometry")
             )
-            code = core._verdict(raw, hist, norm, False)[0]
+            code = core._verdict(raw, hist, norm, False, encoder=core.LEGACY_ENCODER)[0]
             if r["title"] in LedgerRegression.SHIPPED_UNDER_OLD_BAND:
                 continue
             self.assertIn(

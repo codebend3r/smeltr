@@ -177,9 +177,18 @@ if [ $((COUNT + NEED)) -gt "$MAX" ]; then NEED=$((MAX - COUNT)); fi
 # pair counted JUDGED ENCODES in .autopilot.sh and wrote the pause flag; that
 # was the wrong quantity and is gone. Raise or clear the budget to pull again;
 # `echo 0 > downloads_done` starts a new batch.
+# Absent files are the NORMAL case (no budget = no cap). Under `set -e` a
+# failed `< file` redirection aborts the whole run -- which it did on
+# 2026-09-07 14:47, one tick after this landed, with the queue at 2 of 10.
 SMELTR_HOME="${SMELTR_DIR:-$HOME/Developer/git/smeltr}"
-BUDGET=$(tr -cd '0-9' < "$SMELTR_HOME/download_budget" 2>/dev/null)
-DONE_DL=$(tr -cd '0-9' < "$SMELTR_HOME/downloads_done" 2>/dev/null); DONE_DL=${DONE_DL:-0}
+BUDGET=""; DONE_DL=0
+if [ -f "$SMELTR_HOME/download_budget" ]; then
+  BUDGET=$(tr -cd '0-9' < "$SMELTR_HOME/download_budget" || true)
+fi
+if [ -f "$SMELTR_HOME/downloads_done" ]; then
+  DONE_DL=$(tr -cd '0-9' < "$SMELTR_HOME/downloads_done" || true)
+fi
+case "$DONE_DL" in ''|*[!0-9]*) DONE_DL=0 ;; esac
 if [ -n "$BUDGET" ]; then
   if [ "$DONE_DL" -ge "$BUDGET" ]; then
     echo "BUDGET REACHED: $DONE_DL of $BUDGET downloads - not pulling (raise or clear download_budget to continue)"
@@ -317,7 +326,13 @@ while IFS=$'\t' read -r br size folder path; do
   # Pull over SSH, not SMB. Benchmarked 2026-08-17: SSH cat 18 MB/s vs SMB cp 9 MB/s.
   # .ssh-xfer.sh stages to .partial and renames only on a byte-count match, so a
   # half-arrived film can never be picked up by the encoder as if it were complete.
-  if "/Volumes/Crucial X9/4K Movies/.ssh-xfer.sh" pull "$path" "$STAGE/$folder"; then
+  # `< /dev/null` IS THE FIX FOR "one pull per run" (2026-09-07). This loop
+  # reads $PICKS on stdin, and .ssh-xfer.sh runs `ssh ... cat` with no `-n`:
+  # ssh inherits that stdin and drains the remaining picks into the remote
+  # side, so `read` found nothing after the first title and every run ended
+  # one pull in -- "need 12 more" pulled Goosebumps and stopped, and the
+  # queue sat at 2 of 10 for an hour while the operator asked why.
+  if "/Volumes/Crucial X9/4K Movies/.ssh-xfer.sh" pull "$path" "$STAGE/$folder" < /dev/null; then
     echo "  staged OK — library original left in place"
     # One more file downloaded and ready to encode. Counted on the LANDING,
     # never the pick: a failed transfer is cleaned up below and was never a

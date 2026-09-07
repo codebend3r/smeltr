@@ -62,6 +62,7 @@
     "test:sh:layout": "bash tests/test_layout.sh",
     "test:sh:midwrite": "bash tests/test_midwrite_retry.sh",
     "test:sh:replenisher": "bash tests/test_replenisher.sh",
+    "test:sh:replenish-loop": "bash tests/test_replenish_loop.sh",
     "test:sh:watch-finish": "bash tests/test_watch_finish.sh",
     "test:sh:watch-ladder": "bash tests/test_watch_ladder.sh",
     "test:sh:watch-race": "bash tests/test_watch_kill_race.sh",
