@@ -2132,7 +2132,10 @@
         ],
         rows,
         function (r) {
-          var tr = el("tr", r.error ? "rowerr" : r.done ? "rowdone" : "rowskip");
+          /* Done rows never reach this table: server.py sets them aside for
+           the History tab (their ledger row), so the only shapes here are
+           errored and skipped. */
+          var tr = el("tr", r.error ? "rowerr" : "rowskip");
           tr.dataset.title = r.title;
           var st = el("td");
           /* Both chips when a title is both. The error one comes first: a
@@ -2140,9 +2143,6 @@
            not finish, and reading only "skipped" there would credit the
            operator with a decision the pipeline actually made. */
           if (r.error) st.appendChild(el("span", "mark err", "error"));
-          /* Finished and kept in place under the no-delete policy: the job
-           SUCCEEDED on this title. Green, and never the error vocabulary. */
-          if (r.done && !r.error) st.appendChild(el("span", "mark done", "done"));
           if (r.skipped) st.appendChild(el("span", "mark skip", "skipped"));
           tr.appendChild(st);
           var band = r.mbps >= 90 ? "mbps-hi" : r.mbps >= 80 ? "mbps-mid" : "mbps-lo";

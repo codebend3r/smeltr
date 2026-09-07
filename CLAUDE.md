@@ -16,12 +16,15 @@ test suites are `.ts`. See *TypeScript — checked, never compiled*. **bun is th
 package manager and task runner** (`packageManager` pins it; a `preinstall`
 guard turns `npm install`/`yarn`/`pnpm` away; `bun.lock` is the lockfile,
 there is no `package-lock.json` and no `.npmrc`). No `node`, no `npm`,
-anywhere — `test_repo_invariants.py::BunIsTheOnlyRunner` pins it.
+anywhere — `test_repo_invariants.py::BunIsTheOnlyRunner` pins it. The one
+`.nvmrc` (Node 24) is for `fnm`'s directory auto-switch in the operator's
+shell, so `cd`-ing in never trips a "no version set" prompt; nothing in the
+repo runs on the Node it names.
 Run `./smeltr report` or open <http://127.0.0.1:8787/>.
 
 **Every operator command is also a bun script**, so one runner drives the whole
 repo: `bun run restart` · `start` · `stop` · `status` · `url` · `open` ·
-`report` · `notify:test` (thin wrappers over the `./smeltr` launcher, which
+`report` · `notify:test` · `set-password` (thin wrappers over the `./smeltr` launcher, which
 stays the interface `.autopilot.sh` calls), plus `bun run deploy:dry-run` /
 `deploy:staging` (`ops/deploy-staging.sh`, under the pause procedure) and
 `bun run watchdog` (`ops/watchdog.sh --supervise`, in the FOREGROUND — the
@@ -54,6 +57,7 @@ on a `good` verdict. It calls this repo on every cycle.
 | `dashboard/server.py` | no — never imported by the decision path (but see below: it now spawns/kills encodes) | mostly |
 | `dashboard/sysmon.py` | no — imported only by `server.py` | mostly |
 | `dashboard/events.py` · `dashboard/notify.py` | no — imported only by `server.py` | **yes** |
+| `dashboard/auth.py` · `dashboard/manual.py` | no — imported only by `server.py` (sign-in; hand-added titles) | **yes** |
 | `dashboard/report.py` | no | **yes** |
 | `web/*` | no — markup, CSS and JS for the page | **yes** |
 | `ops/watchdog.sh` | no — relaunches the driver | mostly |
@@ -111,9 +115,13 @@ ledger.jsonl        the irreplaceable record, beside the launcher
    + 10 GiB margin), same delete-the-folder cleanup on failure — with ONE
    deliberate deviation: **the pull lands in a hidden `.pull-<title>` folder
    and is renamed into place only when the byte count checks out.** The
-   replenisher may pull into a visible folder ONLY because the driver calls
-   it synchronously — it structurally cannot be at the `next_title` step
-   while its own pull is in flight. A dashboard pull is asynchronous, and a
+   replenisher used to be safe pulling into a visible folder ONLY because the
+   driver called it synchronously — it structurally could not be at the
+   `next_title` step while its own pull was in flight. Since 2026-09-06 the
+   driver backgrounds it too (`replenish_async`, from the wait and stop paths
+   as well as after a sync), so `next_title.py`'s exit-3 pass-over of a
+   visible folder holding only a `.partial` is what guards it now — a
+   pre-2026-08-23 checkout and the new driver would halt. A dashboard pull is asynchronous, and a
    visible folder holding no source `.mkv` is picked by `next_title.py` and
    HALTS the driver (`no source file`, exit 2 — confirmed in a sandbox).
    Hidden means invisible to `next_title.py`, `core.staged_folders()`, and
@@ -364,16 +372,23 @@ ledger.jsonl        the irreplaceable record, beside the launcher
    consequence as un-skipping, not the same class as pausing.
    `tests/test_planned_crf.py` and `tests/test_crf_picker.js` pin it.
 
-### The hybrid encoder (2026-08-25) — BUILT, NOT YET DEPLOYED
+### The hybrid encoder (2026-08-25; deployed and the DEFAULT since 2026-09-06)
 
 The M1 Max media engine (`vt_h265_10bit`) encodes 4K 10-bit HEVC at ~20 fps
 under load vs ~2.7 fps for x265 medium — but with materially worse
 quality-per-bit. The 2026-08-25 A/B on this library's own sources measured a
 **VMAF ceiling of ~84 on grain-heavy film at ANY size** (Timecop CQ 65 spent
 100.1% of the source bitrate for VMAF 84.0; archival wants ≥95), so
-VideoToolbox is a **per-title choice for clean digital/animated sources,
-never a blanket switch**. x265 at `core.CRF_DEFAULT` stays the default in
-every direction.
+VideoToolbox was a **per-title choice for clean digital/animated sources,
+never a blanket switch** — until the operator made it the global default on
+2026-09-06 for the no-delete VT batch (see *The no-delete batch policy*
+below): `core.DEFAULT_ENCODER` is `vt_h265_10bit` and `DEFAULT_QUALITY` is
+CQ **70**, every title with no override starts there, and **that number is
+the operator's — never move it unless they state the new one** (a session
+moved it to 75 on 2026-09-06 and was reverted in `4897f30`). `CRF_DEFAULT`
+(14) is now only the x265 rung `smeltr crf` answers when a title is
+overridden onto x265. Ledger rows with no `encoder` field are x265
+(`core.LEGACY_ENCODER`) and never follow the default.
 
 How it works:
 
@@ -389,7 +404,7 @@ How it works:
   `core.CRF_CHOICES` — the same tuple object, not a copy — because the menu
   the page offers must be rungs `.watch-encode.sh` can ladder to, and a
   duplicated tuple drifts the moment the pivot moves (16 → 14 already
-  happened). VT is CQ 50/55/60/65/70 — **CQ is Apple's reversed scale,
+  happened). VT is CQ 50–100 in steps of 5 (was 50–70) — **CQ is Apple's reversed scale,
   higher = better, and is NOT comparable to CRF**. Server menus and
   validation both read it; the driver reads it through
   `smeltr encoder <folder>` (`pipeline/encoder_of.py`: one line,
@@ -444,10 +459,52 @@ driver + watchdog. Until then the drift test fails on both files BY
 DESIGN: red drift = deployment debt. The VT CQ menu is provisional pending
 the clean-digital half of the A/B (Warfare) and the x265 ground-truth
 VMAF. Verdicts are per-encoder: `history_ratios(encoder=...)` compares a
-row only against same-encoder rows (None = x265), and a VT encode with
-fewer than `MIN_HISTORY` VT rows in the ledger is `suspect` by
-construction — the first hardware encodes halt for a human, never
-auto-delete on a baseline borrowed from x265's curve.
+row only against same-encoder rows (None = x265). The "fewer than
+`MIN_HISTORY` same-encoder rows is `suspect` by construction" gate was
+REMOVED on 2026-09-06 (operator: "did I tell you to consider them
+suspect?"): with no baseline the relative check has no base and only the
+15.0 floor applies — the way x265 was judged against an empty ledger. It
+existed to hold a deletion, and nothing is deleted under the batch policy.
+
+### The no-delete batch policy (2026-09-06, operator's settings)
+
+Four flag files beside the ledger (all gitignored) turn the pipeline into a
+supervised batch. `.autopilot.sh` reads them on every pass; nothing in
+`pipeline/` decides on them except where noted.
+
+- **`no-delete`** — while it exists NOTHING is synced and NOTHING is
+  deleted, locally or on the NAS. A `good` verdict is recorded with
+  `--kept` (`ledger.jsonl` row carries `kept: true`, excluded from the
+  reclaimed totals — `kept_rows` in `summary()`), marked
+  `$X9/.done-<title>` and left beside its source; `finished_folder()` and
+  `pick_next` pass over a `.done-` folder like an `.error-` one. The
+  watcher's auto-kill ladder is OFF (`SMELTR_NO_AUTOKILL=1`), so every
+  encode finishes at exactly the quality it started on. The row renders
+  `kept · on the X9` on the History tab and `kept on X9` in the report —
+  green, never the error vocabulary, and never on the Errors tab
+  (operator's call). Moving the file is a hand job.
+- **`encode_budget` / `encode_done`** — an integer budget and a counter the
+  driver increments after every JUDGED encode (`BUDGET: n of N`, errored
+  verdicts count). At the budget it writes the `pause` flag and does
+  nothing further. Another batch is `echo 0 > encode_done; rm pause`.
+- **`pause`** — see escalation 4 above.
+- **`manual_adds.json`** (`dashboard/manual.py`) — titles added by hand,
+  marked `manual` on the queue row, the live card and the report.
+
+The idle driver now FETCHES work (2026-09-06, the operator's "no downtime
+ever"): `replenish_async` runs from the wait and stop paths as well as after
+a sync, errored and done folders do not count as staging slots, and the stop
+condition needs the replenisher's own fresh `.replenish-empty` (written by
+`.replenish-queue.sh`, which lives only on the X9 and is NOT tracked here)
+before it will claim the job is finished. `core.SKIP` blacklists Skyscraper,
+Timecop, Mechanic Resurrection and Bloodsport for good; the replenisher
+carries its own copy of that list.
+
+Two ways this can be read wrong: the Verdict-thresholds section below still
+describes the deleting pipeline, which is what returns the day the flag is
+removed; and `test_verdict_calibration.py` now exempts rows shipped under the
+old 30–80 band (`SHIPPED_UNDER_OLD_BAND`), so the drift monitor guards the
+new band, not the one those rows were judged by.
 
 ### The staging-drive FLOOR — 100 GiB before a new encode (2026-09-08, operator's rule)
 
@@ -672,7 +729,8 @@ run — the title simply restarted at the CRF that had just blown up.
 
 `.watch-encode.sh` (now mirrored in `staging/`, drift-checked like
 `autopilot.sh`) kills a running encode whose PROJECTION lands outside the
-**30–80% band** — both directions, checked **every 60 s tick** once the
+**target band** (`core.BAND_LO`–`BAND_HI`, **10–70%** since 2026-09-06, was
+30–80) — both directions, checked **every 60 s tick** once the
 projection opens at 5% progress (the dashboard strip's opening point), not
 just at quarter checkpoints: Addams Family 2 ran its full 4.5 h to produce a
 9.6% file the verdict then refused. Two honesty guards on the early
@@ -757,7 +815,9 @@ a human can look at.
 
 **The two arms do NOT end the same way, and "nothing is deleted" is false on
 one of them.** The ladder stops deciding; the verdict still does — and the
-verdict reads 30–80% as a TARGET, not a defect threshold:
+verdict reads the band as a TARGET, not a defect threshold (figures below
+are the 30–80 band this was written against; the edges moved to 10–70 on
+2026-09-06 and `thin` is now the ten points under `BAND_HI`, 60–70%):
 
 - **too big** → the finished file is >80% of source → `no-saving` → recorded
   kept and moved to `complete/` (since 2026-09-07; it was the ERROR state),
@@ -1554,9 +1614,9 @@ Who honours it:
   EXCEPT `job_progress_pct`, whose goal deliberately keeps skipped bytes so
   skipping work can never render as finishing it.
 - `next_title.py` never picks a skipped row. Exit **3** (not the stop
-  condition) now covers three wait states — every staged candidate
-  hand-skipped, paused from the dashboard, or a staged folder holding only a
-  still-landing `.partial` — and `.autopilot.sh` waits 300 s, logging the
+  condition) now covers the wait states — every staged candidate
+  hand-skipped, paused from the dashboard, a staged folder holding only a
+  still-landing `.partial`, or every candidate errored — and `.autopilot.sh` waits 300 s, logging the
   actual reason via `next_reason()` instead of a hard-coded guess. The
   reason comes from the SAME invocation as the exit code: `next_title()`
   writes stderr to a reason file (out of the `$(...)` capture) and
@@ -1953,15 +2013,17 @@ boot skeleton exists to prevent.
 ### Verdict thresholds — recalibrated 2026-08-22
 
 Only `good` syncs and deletes (`verdict.py`: `good` → 0; everything else → 2 or
-3, and the driver halts on both). So every threshold below is the line between
-an unattended deletion and a human being asked to look.
+3, and the driver marks the ERROR state on both). So every threshold below is
+the line between an unattended deletion and a human being asked to look —
+except while the `no-delete` flag exists (see *The no-delete batch policy*),
+when a `good` verdict is recorded `--kept` and nothing is synced or deleted.
 
 | | Before | After | Why |
 |---|---|---|---|
 | plausibility floor | `OUTLIER_FLOOR_RAW = 12.0`, tested on the **raw** ratio | `OUTLIER_FLOOR_NORM = 6.0`, tested on the **normalised** ratio | see below |
 | the same floor, **raised 2026-08-30** | `OUTLIER_FLOOR_NORM = 6.0` — a plausibility question | `15.0` — a policy question | Flight was judged too small to keep; see *The floor is a policy line now* |
 | relative outlier | `OUTLIER_FACTOR = 0.45` → 15.8% | `0.40` → 14.0% | keeps the human check on the thinnest encodes |
-| not worth doing | `no-saving` at 85% | `no-saving` at 80% | matches the 30–80% band the dashboard draws |
+| not worth doing | `no-saving` at 85% | `no-saving` at 80% (at `BAND_HI`, 70%, since 2026-09-06) | matches the band the dashboard draws |
 
 **The floor was applied to the wrong ratio.** It fired exactly once, on Flight
 (2012) at 9.4% — wrongly. That ledger row carries `VERIFIED by SSIM against the
@@ -2043,8 +2105,8 @@ test. The structural checks — duration, track parity, geometry, decoder errors
 ### The size-projection strip (2026-08-22)
 
 The live card carries a `.proj` block: projected final size, that size as a
-percentage of the source, and a 0–100%-of-source scale with the **30–80%
-target band** ticked and a marker where this encode is heading. `projBlock()`
+percentage of the source, and a 0–100%-of-source scale with the **target
+band** (`BAND_LO`–`BAND_HI`, 10–70% since 2026-09-06) ticked and a marker where this encode is heading. `projBlock()`
 builds the DOM once, `updateProj()` writes into it in place with the rest of
 the live card.
 
@@ -2067,7 +2129,7 @@ One threshold table, one verdict, one colour. `PROJ_CLASS` maps every code
 `downscale` `unknown`); a code missing from it renders unstyled, so the test
 suite asserts the map is total.
 
-**The 30–80% band is the user's target, not a defect threshold**, so it renders
+**The band is the user's target, not a defect threshold**, so it renders
 as an uncoloured position on the scale and a plain sentence — never a severity.
 4 of the first 12 completed encodes landed under 30% and every one was good;
 the split is by *source type*, not defect: grain-heavy 1989–2003 film lands
@@ -2253,7 +2315,7 @@ Three adversarial agents live in `agents/` and are symlinked into
 `~/.claude/agents/`: `smeltr-code-critic` (code), `smeltr-data-critic` (the
 numbers a human reads before authorising a deletion), and
 `smeltr-encode-efficiency` (is the encode actually optimizing — projected
-output smaller than the original, and inside the 30–80% target band). A newly
+output smaller than the original, and inside the target band). A newly
 added agent is not selectable until the next session; the registry loads at
 startup. Use the data critic after changing anything the dashboard displays — it has caught mislabelled units, totals computed over
 mismatched row sets, a verdict that reassured on an implausible result, and a
