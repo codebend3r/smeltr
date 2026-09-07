@@ -177,6 +177,24 @@ ledger.jsonl        the irreplaceable record, beside the launcher
      is the outcome the click wanted). One dead title must not wedge the
      queue behind it.
 
+   **The hold reason NAMES the transfer (2026-09-07).** "waiting — another
+   pull owns the wire" named nothing a person could go and check, and on
+   2026-09-07 the only pull on the machine was a *replenish* pull of a
+   hand-skipped title — whose row, and whose arrival bar, had lifted to the
+   Errors tab under the 2026-09-06 split. So the Queue tab reported a
+   blocking transfer that appeared nowhere on it, which reads as the UI
+   inventing one. `_wire_title()` reads the staging DESTINATION (the last
+   `Name (YYYY)` in the command line) through the SAME `procs._title_of` the
+   Processes tab uses, so the two surfaces can never name a transfer
+   differently. A title is stable for the length of a transfer — shape, not a
+   live number — so it cannot thrash the repaint key the way the free-space
+   figure below would. **`_pgrep_cmds()` reads `ps -axo pid=,command=`, never
+   `pgrep -a`**: BSD's `-a` is not GNU's "print the command line" and the
+   divergence is silent — the first cut returned bare pids here, so a live
+   replenisher read as a STALE lock. An unreadable process list answers
+   busy-and-unnamed, never idle: a hold we cannot phrase is still a hold, and
+   answering idle starts a SECOND transfer on a busy wire.
+
    `_stage_wait["why"]` renders on the head row only. It deliberately carries
    **no volatile number** — free space moves every second as the encode
    writes, and a reason string that changed every frame would put the row's

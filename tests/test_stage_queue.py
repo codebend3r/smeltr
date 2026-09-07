@@ -22,6 +22,7 @@ the pump is where the dangerous decisions live:
 """
 
 import os
+import pathlib
 import sys
 import tempfile
 import unittest
@@ -75,6 +76,12 @@ class Fixture(unittest.TestCase):
         self.begin.start()
         self.pgrep = mock.patch.object(server, "_pgrep", return_value=False)
         self.pgrep.start()
+        # ...and no command lines either. `_pgrep_cmds` shells out to `ps`,
+        # so without this the suite reads the DEVELOPER'S machine: a real
+        # pull running beside the tests made five of them fail with the live
+        # title in the assertion message.
+        self.pgrep_cmds = mock.patch.object(server, "_pgrep_cmds", return_value=[])
+        self.pgrep_cmds.start()
         self.index = mock.patch.object(core, "load_index", return_value=[])
         self.index.start()
         # A staging drive with ROOM -- 500 GiB free, fixed. Without this the
@@ -177,13 +184,93 @@ class Dispatch(Fixture):
         self.assertEqual(server._stage_queue, ["A (1990)"])
 
     def test_a_foreign_puller_holds_the_queue(self):
-        """A pull orphaned by a restart owns the wire; pgrep is what sees it."""
+        """A pull orphaned by a restart owns the wire; pgrep is what sees it.
+
+        Command lines, not pids, since 2026-09-07: the hold reason names the
+        title the transfer is moving.
+        """
         server._stage_queue[:] = ["A (1990)"]
-        with mock.patch.object(server, "_pgrep", return_value=True):
+        with mock.patch.object(server, "_pgrep_cmds", return_value=["ssh-xfer.sh pull x"]):
             self.pump([row("A (1990)")])
         self.assertEqual(self.started, [])
         self.assertEqual(server._stage_queue, ["A (1990)"])
         self.assertIn("wire", server._stage_wait["why"])
+
+    def test_a_foreign_pull_is_named_by_the_title_it_is_moving(self):
+        """"Another pull owns the wire" names nothing a person can check.
+
+        On 2026-09-07 the Queue tab said a pull was blocking it while the
+        only pull on the machine was a REPLENISH pull of a hand-skipped
+        title -- so its row (and its arrival bar) had lifted to the Errors
+        tab, and the Queue tab showed a blocking transfer that appeared
+        nowhere on screen. The operator read that as the UI inventing a
+        transfer. The wire is genuinely busy; the reason string just has to
+        say by what.
+
+        The title is the staging DESTINATION -- the last `Name (YYYY)` in
+        the command line -- which is exactly what the Processes tab already
+        reads, through the SAME `procs._title_of`. A title is stable for
+        the length of the transfer, so it is shape, not a live number, and
+        putting it in the reason cannot thrash the repaint key the way a
+        free-space figure would.
+        """
+        cmd = (
+            "/bin/bash /Volumes/Crucial X9/4K Movies/.ssh-xfer.sh pull "
+            "/Volumes/Vhagar/Media/4K Movies/G/Goosebumps (2015)/"
+            "Goosebumps (2015) WEBDL-2160p.mkv "
+            "/Volumes/Crucial X9/4K Movies/queue/Goosebumps (2015)"
+        )
+        server._stage_queue[:] = ["A (1990)"]
+        with mock.patch.object(server, "_pgrep_cmds", return_value=[cmd]):
+            self.pump([row("A (1990)")])
+        self.assertEqual(self.started, [])
+        self.assertIn("Goosebumps (2015)", server._stage_wait["why"])
+
+    def test_an_unreadable_command_line_still_holds(self):
+        """If the title cannot be read the wire is still busy -- fall back to
+        the anonymous wording rather than dropping the hold."""
+        server._stage_queue[:] = ["A (1990)"]
+        with mock.patch.object(server, "_pgrep_cmds", return_value=["ssh-xfer.sh pull"]):
+            self.pump([row("A (1990)")])
+        self.assertEqual(self.started, [])
+        self.assertIn("wire", server._stage_wait["why"])
+
+    def test_the_replenisher_hold_names_its_title_too(self):
+        """Same gap: "the replenisher is staging" named nothing either."""
+        cmd = (
+            "/bin/bash /Volumes/Crucial X9/4K Movies/.ssh-xfer.sh pull "
+            "/Volumes/Vhagar/Media/4K Movies/H/Hocus Pocus (1993)/x.mkv "
+            "/Volumes/Crucial X9/4K Movies/queue/Hocus Pocus (1993)"
+        )
+        os.mkdir(os.path.join(core.X9, ".replenish.lock"))
+        server._stage_queue[:] = ["A (1990)"]
+        with mock.patch.object(server, "_pgrep_cmds", return_value=[cmd]):
+            self.pump([row("A (1990)")])
+        self.assertIn("Hocus Pocus (1993)", server._stage_wait["why"])
+
+    def test_an_unreadable_process_list_is_busy_not_idle(self):
+        """A hold we cannot PHRASE is still a hold.
+
+        `_pgrep_cmds` returning [] must not read as an idle wire: answering
+        idle there starts a SECOND transfer on a wire that already has one.
+        This is not hypothetical -- BSD `pgrep -a` is not GNU's, so the first
+        cut of this code returned [] on a machine with a live pull.
+        """
+        server._stage_queue[:] = ["A (1990)"]
+        with mock.patch.object(server, "_pgrep_cmds", return_value=[]):
+            with mock.patch.object(server, "_pgrep", return_value=[123]):
+                self.pump([row("A (1990)")])
+        self.assertEqual(self.started, [])
+        self.assertIn("wire", server._stage_wait["why"])
+
+    def test_the_command_lines_come_from_ps_not_pgrep_dash_a(self):
+        """`pgrep -a` means "print the command line" on GNU and something
+        else on BSD, silently. `ps -axo pid=,command=` means one thing
+        everywhere, and is what dashboard/procs.py already runs."""
+        src = pathlib.Path(server.__file__).read_text()
+        body = src.split("def _pgrep_cmds", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn('"ps", "-axo", "pid=,command="', body)
+        self.assertNotIn('"-af"', body)
 
     def test_a_stale_replenish_lock_is_named_as_stale(self):
         os.mkdir(os.path.join(core.X9, ".replenish.lock"))
