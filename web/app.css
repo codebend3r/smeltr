@@ -1912,17 +1912,23 @@ footer {
   outline: 2px solid var(--cool);
   outline-offset: 2px;
 }
-/* Folded, the head keeps ONE thing beside the title: a CPU sparkline over
-   the slider's window and the latest reading. The sampling note, the
-   history stamp and the slider are expanded-only -- a control for a chart
-   that is not on screen is noise, and the note describes shading the
-   sparkline does not draw. */
+/* Folded, the head keeps the Utilization chart's three readings beside the
+   title -- CPU, GPU and RAM, each a sparkline over the slider's window plus
+   the latest value, in the same series colour the chart draws them. The
+   sampling note, the history stamp and the slider are expanded-only -- a
+   control for a chart that is not on screen is noise, and the note
+   describes shading the sparklines do not draw. */
 .monmini {
   display: none;
   align-items: center;
-  gap: 8px;
+  gap: 16px;
   font-size: 11.5px;
   color: var(--ink-3);
+}
+.monmini-s {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 .monmini canvas {
   display: block;
@@ -2039,6 +2045,12 @@ footer {
    sliced at a boundary is blanked by the seam script rather than clipped.
    Every colour here is an existing token, so both themes are covered. ---- */
 @media (max-width: 700px) {
+  .monmini {
+    gap: 10px;
+  }
+  .monmini canvas {
+    width: 64px;
+  }
   body {
     padding: 16px 12px 48px;
   }

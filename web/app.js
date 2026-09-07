@@ -3209,18 +3209,27 @@
     ch._geom = { x0: x0, x1: x1, t0: t0, t1: t1 };
   }
 
-  /* The folded head's CPU sparkline: one series, no gutter, axis, grid or
-   wash -- a glance, not a reading. It draws the SAME window the slider
-   holds, through the same monBuckets()/monSmooth() the full chart uses,
-   so folding the card never changes what "the last hour" means and the
-   line here is the CPU line there with the chrome removed. A gap still
-   breaks the path. clientWidth is 0 while the card is expanded
-   (display:none), so the early return makes it free until the fold. */
-  var monMiniCv = /** @type {HTMLCanvasElement} */ (document.getElementById("monMiniCv")),
-    monMiniVal = document.getElementById("monMiniVal"),
-    monMiniBk = { key: "", b: null };
-  function drawMonMini(t0, t1, css) {
-    var cv = monMiniCv,
+  /* The folded head's sparklines: CPU, GPU and RAM, one series each, no
+   gutter, axis, grid or wash -- a glance, not a reading. They are driven by
+   the Utilization chart's OWN series list (MON_CHARTS[0]), so the label,
+   the colour and the sample key here are the chart's by construction. Each
+   draws the SAME window the slider holds, through the same
+   monBuckets()/monSmooth() the full chart uses, so folding the card never
+   changes what "the last hour" means and the line here is that chart's
+   line with the chrome removed. A gap still breaks the path. clientWidth
+   is 0 while the card is expanded (display:none), so the early return
+   makes it free until the fold. */
+  var MON_MINI = MON_CHARTS[0].series.map(function (se) {
+    var host = document.querySelector('#monMini .monmini-s[data-k="' + se.k + '"]');
+    return {
+      se: se,
+      cv: /** @type {HTMLCanvasElement} */ (host.querySelector("canvas")),
+      val: host.querySelector("b"),
+      bk: { key: "", b: null },
+    };
+  });
+  function drawMonMini(m, t0, t1, css) {
+    var cv = m.cv,
       dpr = window.devicePixelRatio || 1;
     var w = cv.clientWidth,
       h = cv.clientHeight;
@@ -3237,16 +3246,16 @@
     var cols = Math.max(1, Math.min(Math.round(w), t1 - t0)),
       cw = w / cols;
     var bkey = t0 + "|" + t1 + "|" + cols + "|" + monDataV;
-    if (monMiniBk.key !== bkey) {
-      var nb = monBuckets(monTs, monV[0], t0, t1, cols);
+    if (m.bk.key !== bkey) {
+      var nb = monBuckets(monTs, monV[m.se.k], t0, t1, cols);
       if ((t1 - t0) / cols >= 4) nb.sm = monSmooth(nb.avg, cols);
-      monMiniBk.key = bkey;
-      monMiniBk.b = nb;
+      m.bk.key = bkey;
+      m.bk.b = nb;
     }
-    var line = monMiniBk.b.sm || monMiniBk.b.avg,
+    var line = m.bk.b.sm || m.bk.b.avg,
       y0 = 1,
       y1 = h - 1,
-      colr = monCss("--ch-1");
+      colr = monCss(m.se.tok);
     function Y(v) {
       return y1 - (Math.min(v, 100) / 100) * (y1 - y0);
     }
@@ -3316,11 +3325,13 @@
     MON_CHARTS.forEach(function (ch) {
       drawMon(ch, t0, t1, css);
     });
-    drawMonMini(t0, t1, css);
     /* The legend is the LATEST sample, and says so; a sampler that has gone
      quiet must show an em dash, not its last reading forever. */
     var stale = !monLast || now - monLast.t > 5;
-    monMiniVal.textContent = monFmtPct(stale ? null : monLast.v[0]);
+    MON_MINI.forEach(function (m) {
+      drawMonMini(m, t0, t1, css);
+      m.val.textContent = monFmtPct(stale ? null : monLast.v[m.se.k]);
+    });
     /* A window we have not fetched yet must NOT report itself as a machine
      with no history: "history since" is a claim about the sampler, and
      while a wider fetch is in flight the only true statement is that we

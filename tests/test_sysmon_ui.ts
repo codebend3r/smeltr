@@ -189,6 +189,38 @@ eq(get.monFmtMibs(0), "0 KiB/s", "a true zero is 0, distinguishable from — (un
 eq(get.axLab(12.4), 12, "axis label >= 10 rounds whole");
 eq(get.axLab(2.5), 2.5, "axis label < 10 keeps one decimal");
 
+sect("folded head");
+/* The collapsed card shows CPU, GPU and RAM, each a sparkline plus the
+   latest reading. The markup is pinned to the Utilization chart's series
+   list by data-k, so a series added or reordered there fails here instead
+   of drawing one line under another's label. */
+{
+  const html = fs.readFileSync(path.join(__dirname, "..", "web", "index.html"), "utf8");
+  const start = html.indexOf('id="monMini"');
+  const mini = html.slice(start, html.indexOf('class="monnote"', start));
+  const items = Array.from(
+    mini.matchAll(
+      /class="monmini-s" data-k="(\d+)"><canvas[^>]*><\/canvas><span>(\w+) <b class="num">/g,
+    ),
+  ).map((m) => ({ k: +m[1], label: m[2] }));
+  const util = src.slice(src.indexOf("var MON_CHARTS"), src.indexOf('cv: "monN"'));
+  const series = Array.from(
+    util.matchAll(/\{ k: (\d+), tok: "--ch-\d", cls: "ch\d", label: "(\w+)" \}/g),
+  ).map((m) => ({ k: +m[1], label: m[2] }));
+  eq(series.length, 3, "the Utilization chart draws three series");
+  eq(
+    JSON.stringify(items),
+    JSON.stringify(series),
+    "folded head carries every Utilization series, same key, same label, same order",
+  );
+  ok(
+    /MON_CHARTS\[0\]\.series\.map/.test(src),
+    "MON_MINI is built from the chart's own series list",
+  );
+  ok(/monCss\(m\.se\.tok\)/.test(src), "each sparkline draws in its series' own colour token");
+  ok(/monLast\.v\[m\.se\.k\]/.test(src), "each reading is that series' latest sample");
+}
+
 if (failures) {
   console.log("\n" + failures + " FAILURE(S)");
   process.exit(1);
