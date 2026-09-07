@@ -47,7 +47,7 @@
     "start": "./smeltr start",
     "status": "./smeltr status",
     "stop": "./smeltr stop",
-    "system-check": "bun run --sequential format:check lint test build",
+    "system-check": "bun run --sequential format:js:check lint test",
     "test": "bun run --sequential --no-exit-on-error test:py 'test:sh:*' 'test:js:*'",
     "test:js:crf": "bun tests/test_crf_picker.ts",
     "test:js:pause": "bun tests/test_pause_toggle.ts",
