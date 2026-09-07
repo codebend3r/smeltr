@@ -25,6 +25,7 @@ in cleartext HTTP, which is acceptable on a home LAN and not on the internet.
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import html
 import ipaddress
@@ -45,7 +46,9 @@ from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pipeline import core
+from dashboard import auth
 from dashboard import events as events_mod
+from dashboard import manual as manual_mod
 from dashboard import notify
 from dashboard import sysmon
 
@@ -204,9 +207,56 @@ else:
         flush=True,
     )
     BINDS = ["127.0.0.1"]
+# Tailscale, OPT-IN ONLY (SMELTR_TAILSCALE=1). _lan_ips() skips utun* on
+# purpose -- a tunnel coming up must never silently widen the listener -- so
+# this variable is the operator's explicit consent to answer on the tailnet as
+# well. The LAN listeners are untouched and the tailnet address is APPENDED,
+# so the printed URL keeps naming the LAN address.
+#
+# Binding the tailnet address DIRECTLY is what keeps the write gate honest,
+# and it is why this is not `tailscale serve`. Serve proxies from 127.0.0.1,
+# and _writes_ok() grants a loopback peer EVERYTHING -- skip, reorder, encode
+# start/abort, stage pulls. Un-skipping re-arms a ~90 GB deletion, so a
+# tailnet device has to stay a REMOTE peer. Bound directly, its source address
+# is its own 100.x: neither loopback nor our own sockname, so LAN_WRITE_ROUTES
+# still holds it to pause/resume and driver start, exactly like a LAN phone.
+def _tailscale_self() -> tuple:
+    """This node's (IPv4, MagicDNS name), or ("", "") when unavailable.
+
+    Shelled out rather than read off the utun interface: the interface carries
+    the address but not the name, and the Host allowlist needs the name.
+    """
+    exe = shutil.which("tailscale") or "/usr/local/bin/tailscale"
+    try:
+        out = subprocess.run(
+            [exe, "status", "--json"], capture_output=True, text=True, timeout=5
+        ).stdout
+        me = json.loads(out).get("Self") or {}
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+        return "", ""
+    ip = next((a for a in (me.get("TailscaleIPs") or []) if ":" not in a), "")
+    return ip, (me.get("DNSName") or "").lower().strip(".")
+
+
+TS_IP, TS_NAME = "", ""
+if os.environ.get("SMELTR_TAILSCALE") == "1":
+    TS_IP, TS_NAME = _tailscale_self()
+    if not TS_IP:
+        print(
+            "smeltr: SMELTR_TAILSCALE=1 but no tailnet IPv4 found "
+            "(is tailscaled running?); not binding the tailnet",
+            file=sys.stderr,
+            flush=True,
+        )
+    elif TS_IP not in BINDS:
+        BINDS.append(TS_IP)
 # The primary keeps naming the printed URL, the footer, and the log lines.
 BIND = BINDS[0]
-LAN_EXPOSED = BIND != "127.0.0.1"
+# ANY non-loopback listener forces the token on -- not just BINDS[0]. With
+# SMELTR_BIND=127.0.0.1 and the tailnet appended, the primary is loopback
+# while a socket reachable off-box exists, which is precisely the case the
+# token has to cover.
+LAN_EXPOSED = any(a != "127.0.0.1" for a in BINDS)
 # Sibling LAN addresses; each gets its own listener alongside the primary.
 EXTRA_BINDS = [a for a in BINDS[1:] if a != "127.0.0.1"]
 
@@ -235,6 +285,29 @@ LAN_WRITES = os.environ.get("SMELTR_LAN_WRITES") == "1"
 # class as resume, which was already LAN-allowed -- and it deletes nothing the
 # normal verified pipeline would not.
 LAN_WRITE_ROUTES = ("/api/pause", "/api/driver/start")
+# Username + password, ON only when auth.json sits beside the ledger (write it
+# with `./smeltr set-password`). It does not REPLACE the token on the LAN or
+# the tailnet -- either credential opens those doors, so every existing
+# bookmark keeps working -- but it is the ONLY thing that opens the public one.
+AUTH_ON = auth.enabled(core.SMELTR_DIR)
+# The public (Funnel) listener. A SEPARATE loopback socket, never the LAN one,
+# and requests arriving on it are structurally untrusted: `tailscale funnel`
+# proxies from 127.0.0.1, and _writes_ok() hands a loopback peer EVERYTHING.
+# Sniffing a header to undo that would put a ~90 GB deletion one spoofed
+# `Tailscale-Funnel-Request` away; a distinct listener carrying
+# `untrusted = True` cannot be talked out of it. Off unless BOTH the opt-in and
+# a password are present -- funnelling an unauthenticated dashboard is not a
+# thing this server will do.
+PUBLIC_PORT = int(os.environ.get("SMELTR_PUBLIC_PORT") or "8788")
+PUBLIC_ON = os.environ.get("SMELTR_PUBLIC") == "1" and AUTH_ON
+if os.environ.get("SMELTR_PUBLIC") == "1" and not AUTH_ON:
+    print(
+        "smeltr: SMELTR_PUBLIC=1 but no auth.json; refusing to expose the "
+        "dashboard to the internet without a password. Run "
+        "`./smeltr set-password` first.",
+        file=sys.stderr,
+        flush=True,
+    )
 NONCE = secrets.token_urlsafe(16)
 POLL_SECONDS = 2.0
 # Must be BELOW POLL_SECONDS. Above it, every second SSE frame was a
@@ -260,6 +333,13 @@ def _allowed_hosts() -> frozenset:
             # Cover the FQDN, the bare name, and the search-domain forms LAN
             # clients actually send: .local (mDNS) and .lan (common router).
             hosts.update({name, short, short + ".local", short + ".lan"})
+    # The MagicDNS name, whenever we know it -- NOT gated on LAN_EXPOSED. It is
+    # the Host both a tailnet browser and `tailscale funnel` send, and the
+    # funnel listener is loopback-bound, so LAN_EXPOSED can legitimately be
+    # false while that name is the only one arriving. Without it: a 421, which
+    # renders as a dead page rather than a refusal.
+    if TS_NAME:
+        hosts.add(TS_NAME)
     return frozenset(h for h in hosts if h)
 
 
@@ -563,14 +643,20 @@ def build_state() -> dict:
         # dicts, and these decorations are a dashboard concern only.
         sd = _src_dirs()
         arr = _arrivals()
+        manual = manual_mod.titles()
         q = [
             dict(
                 r,
                 src_dir=sd.get(r["title"].lower()),
+                manual=r["title"].lower() in manual,
                 **_arr_fields(arr.get(r["title"].lower())),
             )
             for r in q
         ]
+        # The live card reads the same set, so an encode in flight says how it
+        # got there for as long as it runs -- not only while it sat in the queue.
+        live = [dict(e, manual=str(e.get("folder") or "").lower() in manual)
+                for e in live]
         # summary() is the ONE carrier of paused -- the same field report.py
         # banners -- and it feeds _mark_ready so "ready" and the paused banner
         # can never come from two reads that disagree within one snapshot.
@@ -622,8 +708,16 @@ def build_state() -> dict:
         # both ran against the whole list, so the skipped-title totals and
         # the driver's own pick are computed from exactly what they always
         # were -- core.queue() still returns every row.
-        errors = [r for r in q if r.get("error") or r.get("skipped")]
-        active = [r for r in q if not (r.get("error") or r.get("skipped"))]
+        # "done" rows (finished, kept in place under the no-delete policy)
+        # are set aside with the errors and skips -- they are not live work --
+        # but the page renders them green, never as an error.
+        # A "done" row (finished, recorded, kept in place) belongs on the
+        # History tab -- its ledger row -- and NOWHERE else (operator's call,
+        # 2026-09-06: "not in errors tab"). Once recorded the queue drops it
+        # by dedup; until then it is hidden from both tabs here.
+        aside = lambda r: r.get("error") or r.get("skipped")  # noqa: E731
+        errors = [r for r in q if aside(r) and not r.get("done")]
+        active = [r for r in q if not aside(r) and not r.get("done")]
         payload = {
             "summary": summary,
             "live": live,
@@ -638,6 +732,13 @@ def build_state() -> dict:
             # default renames the option instead of quietly meaning something
             # else on rows nobody has touched.
             "crf_default": core.CRF_DEFAULT,
+            # What a row with NO override actually starts on. The picker's
+            # "auto" and the quality cell read these, never crf_default alone:
+            # the default encoder is VideoToolbox now, and a bare "14" on an
+            # untouched row would name an x265 rung the driver will not use.
+            "page_rev": PAGE_REV,
+            "encoder_default": core.DEFAULT_ENCODER,
+            "quality_default": core.DEFAULT_QUALITY,
             # The full per-encoder menu (x265 CRF + VideoToolbox CQ). The
             # legacy crf_choices key above stays the x265 half, so a page
             # cached from before the hybrid encoder still renders.
@@ -1454,6 +1555,11 @@ class Handler(BaseHTTPRequestHandler):
         # same host as without it -- some resolvers append the root label.
         return host.lower().rstrip(".") in ALLOWED_HOSTS
 
+    # Overridden to True by PublicHandler. A class attribute, not a header
+    # test: the listener a request arrived on is a fact about the socket, and
+    # nothing a client sends can change which one it reached.
+    untrusted = False
+
     def _peer_is_loopback(self) -> bool:
         try:
             return ipaddress.ip_address(self.client_address[0]).is_loopback
@@ -1461,6 +1567,15 @@ class Handler(BaseHTTPRequestHandler):
             return False
 
     def _writes_ok(self, route: str = "") -> bool:
+        # The public door first, before any of the local-peer reasoning below
+        # can fire: every Funnel request arrives from 127.0.0.1, so the
+        # loopback and sockname branches would both say yes and hand the open
+        # internet skip/reorder/encode/stage. It is held to LAN_WRITE_ROUTES,
+        # the same pause/resume + driver-start pair a LAN phone gets -- whose
+        # worst case is the pipeline waiting or running as designed, never a
+        # re-armed deletion.
+        if self.untrusted:
+            return route in LAN_WRITE_ROUTES
         # Loopback peers always; LAN peers only with the explicit opt-in, or
         # for the one route in LAN_WRITE_ROUTES.
         # A connection whose SOURCE address equals the listener's own local
@@ -1492,6 +1607,40 @@ class Handler(BaseHTTPRequestHandler):
         return hmac.compare_digest(
             supplied.encode("utf-8", "surrogatepass"), TOKEN.encode("utf-8")
         )
+
+    def _session_ok(self) -> bool:
+        if not AUTH_ON:
+            return False
+        raw = auth.parse_cookie_header(self.headers.get("Cookie") or "")
+        return auth.check_cookie(core.SMELTR_DIR, raw)
+
+    def _authorized(self, query: dict) -> bool:
+        """May this request see anything at all.
+
+        On the public listener the token is NOT accepted. It travels in the
+        query string of every URL that has ever been bookmarked, screenshotted
+        or pasted into a chat window; that is an acceptable credential for a
+        device on the LAN or the tailnet and not for one on the internet. There,
+        the password is the door.
+        """
+        if self.untrusted:
+            return self._session_ok()
+        return self._token_ok(query) or self._session_ok()
+
+    def _set_session(self, value: str, clear: bool = False) -> dict:
+        # Secure only on the public listener: that one is always behind
+        # Funnel's HTTPS, while the LAN and tailnet doors are plain http and a
+        # Secure cookie there is a cookie the browser silently drops.
+        bits = [
+            f"{auth.COOKIE_NAME}={value}",
+            "Path=/",
+            "HttpOnly",
+            "SameSite=Strict",
+        ]
+        if self.untrusted:
+            bits.append("Secure")
+        bits.append("Max-Age=0" if clear else f"Max-Age={auth.SESSION_SECONDS}")
+        return {"Set-Cookie": "; ".join(bits)}
 
     def _headers(self, status: int, ctype: str, extra: dict | None = None) -> None:
         self.send_response(status)
@@ -1529,6 +1678,74 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
         self._send(status, "text/plain; charset=utf-8", msg.encode())
 
+    def _send_json(self, status: int, obj: dict, extra: dict | None = None) -> None:
+        body = json.dumps(obj).encode()
+        hdrs = {"Content-Length": str(len(body))}
+        hdrs.update(extra or {})
+        self._headers(status, "application/json; charset=utf-8", hdrs)
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _do_login(self) -> None:
+        """Check a username + password and hand back a session cookie.
+
+        Deliberately NOT behind _token_ok: on the public listener there is no
+        token to present, and requiring one on the LAN would mean the login
+        form could only be used by someone who already held the credential it
+        exists to replace.
+        """
+        if not AUTH_ON:
+            return self._deny(404, "not found")
+        peer = self.client_address[0] if self.client_address else "?"
+        wait = auth.blocked_for(peer)
+        if wait > 0:
+            # 429 with the real number. A gate that says "try again later"
+            # without saying when reads as broken to the person who typed
+            # their own password wrong twice.
+            self.close_connection = True
+            return self._send_json(
+                429,
+                {"ok": False, "error": f"too many attempts — wait {int(wait) + 1}s"},
+            )
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except ValueError:
+            return self._deny(400, "bad length")
+        if not 0 < length <= self.MAX_BODY:
+            return self._deny(413, "missing or oversized body")
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return self._deny(400, "invalid JSON")
+        if not isinstance(body, dict):
+            return self._deny(400, "invalid JSON")
+        user = body.get("username")
+        pw = body.get("password")
+        if not isinstance(user, str) or not isinstance(pw, str):
+            return self._deny(400, "invalid JSON")
+        if not auth.verify(core.SMELTR_DIR, user, pw):
+            auth.note_failure(peer)
+            self.close_connection = True
+            # One message for both halves. "No such user" tells an attacker
+            # which of the two they still have to guess.
+            return self._send_json(
+                401, {"ok": False, "error": "incorrect username or password"}
+            )
+        auth.note_success(peer)
+        print(
+            f"smeltr: sign-in ok for {user!r} from {peer}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return self._send_json(
+            200,
+            {"ok": True},
+            self._set_session(auth.make_cookie(core.SMELTR_DIR)),
+        )
+
     # ------------------------------------------------------------- endpoints
     def do_GET(self) -> None:
         if not self._host_ok():
@@ -1550,7 +1767,20 @@ class Handler(BaseHTTPRequestHandler):
             # not in it stays behind the token.
             ctype, body = ICONS[route]
             return self._send(200, ctype, body)
-        if not self._token_ok(query):
+        if route == "/login":
+            # Before the gate, necessarily: this IS the gate. Carries no state
+            # and no data -- markup, its own tokens, and a fetch to /login.
+            if not AUTH_ON:
+                return self._deny(404, "not found")
+            return self._send(200, "text/html; charset=utf-8", LOGIN_PAGE.encode())
+        if not self._authorized(query):
+            # A browser asking for the page gets the sign-in form; anything
+            # else gets the refusal, so a script never has to scrape HTML to
+            # discover it was turned away.
+            if AUTH_ON and route == "/":
+                return self._send(
+                    200, "text/html; charset=utf-8", LOGIN_PAGE.encode()
+                )
             return self._deny(403, "missing or invalid token")
         if route == "/":
             return self._send(200, "text/html; charset=utf-8", PAGE.encode())
@@ -1607,22 +1837,34 @@ class Handler(BaseHTTPRequestHandler):
         # stepped over instead of silently dropping them -- a dropped second
         # renders as a gap, and a gap means "the sampler could not read
         # this", which would be a lie.
+        # THE MON FRAME GOES FIRST, AND ON ITS OWN WRITE (2026-09-06). The
+        # charts need nothing from the NAS, but a combined write put them
+        # behind build_state() in the same flush -- and a COLD build_state()
+        # takes ~17 s here, because it stats three SMB roots that have not
+        # been touched since the process started. On the first iteration
+        # after a restart `last_state` is 0.0, so that 17 s lands on the very
+        # first frame: the page sat on its boot skeleton with empty charts,
+        # and a reload (by then warm, 2 ms) looked like the fix. Flushing the
+        # samples before the state means the monitor starts drawing at 1 Hz
+        # no matter how slow the mount is.
         last_state = 0.0
         last_mon_t = None
         try:
             while True:
-                chunks = []
-                now = time.time()
-                if now - last_state >= POLL_SECONDS:
-                    last_state = now
-                    chunks.append(f"data: {json.dumps(build_state())}\n\n")
                 mon = sysmon.get()
                 samples = mon.since(last_mon_t) if mon else []
                 if samples:
                     last_mon_t = samples[-1]["t"]
-                    chunks.append(f"event: mon\ndata: {json.dumps(samples)}\n\n")
-                if chunks:
-                    self.wfile.write("".join(chunks).encode())
+                    self.wfile.write(
+                        f"event: mon\ndata: {json.dumps(samples)}\n\n".encode()
+                    )
+                    self.wfile.flush()
+                now = time.time()
+                if now - last_state >= POLL_SECONDS:
+                    last_state = now
+                    self.wfile.write(
+                        f"data: {json.dumps(build_state())}\n\n".encode()
+                    )
                     self.wfile.flush()
                 time.sleep(1.0)
         except (BrokenPipeError, ConnectionResetError, OSError):
@@ -1638,12 +1880,19 @@ class Handler(BaseHTTPRequestHandler):
         if not self._host_ok():
             return self._deny(421, "bad host")
         parsed = urlparse(self.path)
-        if not self._token_ok(parse_qs(parsed.query)):
-            return self._deny(403, "missing or invalid token")
-        # CSRF gate: a browser cannot attach a custom header cross-origin
-        # without a CORS preflight, and this server never answers one.
+        # The CSRF gate moves ABOVE the credential check so /login is covered
+        # by it too: a cross-origin page must not be able to spend a visitor's
+        # attempts against the lockout, nor log them into our session.
         if self.headers.get("X-Smeltr") != "1":
             return self._deny(403, "missing X-Smeltr header")
+        if parsed.path == "/login":
+            return self._do_login()
+        if parsed.path == "/logout":
+            return self._send_json(
+                200, {"ok": True}, self._set_session("", clear=True)
+            )
+        if not self._authorized(parse_qs(parsed.query)):
+            return self._deny(403, "missing or invalid token")
         # Read-only for LAN peers unless explicitly opted in. Un-skipping a
         # title re-arms a deletion; a device merely holding the URL must not be
         # able to, by default -- but this Mac's own loopback requests still can.
@@ -1723,9 +1972,13 @@ class Handler(BaseHTTPRequestHandler):
             # Only x265 has a per-title CRF picker; another encoder's scale is
             # its own, so it takes that encoder's own default -- NEVER a menu
             # index, which is the best CRF and the worst CQ.
+            # x265 BY NAME, not "the default encoder": the default is
+            # VideoToolbox since 2026-09-06, and planned_crf() answers an
+            # x265 rung -- handed to VT it would be CQ 14, the bottom of the
+            # reversed scale.
             crf = (
                 core.planned_crf(title)
-                if encoder == core.DEFAULT_ENCODER
+                if encoder == "x265_10bit"
                 else core.DEFAULT_QUALITIES[encoder]
             )
         # ints only: 16.0 == 16 would pass a bare membership test and reach
@@ -2356,7 +2609,32 @@ _scope_text = (
     else "127.0.0.1 only"
 )
 _SCOPE = html.escape(_scope_text)
-PAGE = _PAGE.replace("__NONCE__", NONCE).replace("__SCOPE__", _SCOPE)
+# The page's own fingerprint, stamped into the markup AND sent in every state
+# frame. web/* is inlined at import, so an edited page reaches nobody until
+# the process is replaced -- and even then only tabs that RELOAD. On
+# 2026-09-06 the operator watched "CRF 14 (auto)" for twenty minutes after
+# the default had become VT CQ 70, on a tab opened before the restart. Now a
+# tab whose stamp differs from the server's reloads itself once.
+PAGE_REV = hashlib.sha1(_PAGE.encode("utf-8")).hexdigest()[:10]
+PAGE = (
+    _PAGE.replace("__NONCE__", NONCE)
+    .replace("__SCOPE__", _SCOPE)
+    .replace("__PAGE_REV__", PAGE_REV)
+)
+# The sign-in page gets a NEUTRAL footer, never _SCOPE: that string names this
+# machine's LAN and tailnet addresses, and this is the one page an
+# unauthenticated stranger on the internet is allowed to see.
+LOGIN_PAGE = (
+    _asset("login.html")
+    .replace("__NONCE__", NONCE)
+    .replace("__SCOPE__", "Authorised access only")
+)
+
+
+class PublicHandler(Handler):
+    """The Funnel-facing handler. Identical but structurally untrusted."""
+
+    untrusted = True
 
 
 def main() -> None:
@@ -2401,6 +2679,34 @@ def main() -> None:
                     file=sys.stderr,
                     flush=True,
                 )
+    # The public door. LOOPBACK ONLY: `tailscale funnel` connects to it from
+    # this machine, and binding it to the LAN would publish a second port whose
+    # whole design assumes it is fronted by Funnel's HTTPS. PublicHandler is
+    # what makes it untrusted -- token not accepted, writes limited to
+    # LAN_WRITE_ROUTES. It gets its own port so the trusted and public doors
+    # can never be the same socket.
+    if PUBLIC_ON:
+        try:
+            pub = ThreadingHTTPServer(("127.0.0.1", PUBLIC_PORT), PublicHandler)
+            pub.daemon_threads = True
+            threading.Thread(target=pub.serve_forever, daemon=True).start()
+            aux_servers.append(pub)
+            print(
+                f"smeltr: public listener on 127.0.0.1:{PUBLIC_PORT} "
+                f"(sign-in required, token not accepted); expose it with "
+                f"`tailscale funnel --bg {PUBLIC_PORT}`",
+                file=sys.stderr,
+                flush=True,
+            )
+        except OSError as e:
+            # Loud, never silent: SMELTR_PUBLIC=1 with a dead listener means
+            # the operator's public URL 502s with nothing saying why.
+            print(
+                f"smeltr: public listener on 127.0.0.1:{PUBLIC_PORT} failed "
+                f"({e}); the Funnel URL will not work this run",
+                file=sys.stderr,
+                flush=True,
+            )
     # Print the plain URL unless the token is actually required -- a link the
     # user cannot retype is a link they cannot use. When LAN-bound the URL
     # names the LAN address (that is the whole point) and always carries the

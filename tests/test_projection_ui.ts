@@ -10,7 +10,7 @@
  *      pipeline acts on. An earlier version re-derived it in the browser and
  *      disagreed with the server in three ranges. Two were dangerous, and both
  *      are pinned below.
- *   2. The 30-80% band is the user's TARGET, not a defect threshold. 4 of the
+ *   2. The 10-70% band is the user's TARGET, not a defect threshold. 4 of the
  *      first 12 completed encodes landed under it and every one was good.
  */
 "use strict";
@@ -98,6 +98,11 @@ const code = [
   "function _reset(){projClosed=false;projTouched=false;projLoudSeen=false;}",
   "function _fire(n,t){(n.handlers[t]||[]).forEach(function(f){f();});}",
   line("NOTE_HEAD"),
+  // The target band, lifted from the same file so this suite can never pass
+  // on a number web/app.js no longer uses.
+  line("BAND_LO"),
+  line("BAND_HI"),
+  line("BAND_TXT"),
   "var tipSeq=0;",
   tbl("PROJ_CLASS"),
   tbl("PROJ_LEAD"),
@@ -208,7 +213,7 @@ M.updateProj(p, {
 ck("a good 9.4% encode is green", p.ratioWrap.className, "proj-ratio on");
 ck("its marker is green", p.mark.className, "proj-mark on");
 ckNot("nothing calls it implausible", p.lead.textContent + p.detail.textContent, "IMPLAUSIB");
-ckHas("it is described as below target", p.detail.textContent, "below the 30–80% target band");
+ckHas("it is described as below target", p.detail.textContent, "below the 10–70% target band");
 ckHas("and that is called normal", p.detail.textContent, "normal for a clean digital source");
 
 // --- the strip must not reassure where the server is suspicious -----------
@@ -225,27 +230,28 @@ M.updateProj(p, {
   shrink_pct: 86.0,
 });
 ck("server suspicion wins over the band", p.ratioWrap.className, "proj-ratio warn");
-ckHas("and it says to verify first", p.lead.textContent, "verify the picture before deleting");
+ck("and it prints NO lead line for suspect (operator's call, 2026-09-06)", p.lead.textContent, "");
 
-// thin: 70-80% is inside the user's band but the server wants a human call
+// thin: the ten points under the top of the band (60-70) are inside the
+// user's band but the server wants a human call
 p = build();
 M.updateProj(p, {
   pct: 90,
   verdict: "thin",
-  ratio_pct: 71.3,
-  projected_bytes: 52.71 * GIB,
+  ratio_pct: 65.0,
+  projected_bytes: 48.04 * GIB,
   source_bytes: 73.91 * GIB,
   crop_factor: 1.0,
-  shrink_pct: 28.7,
+  shrink_pct: 35.0,
 });
 ck("a thin saving is not green even in band", p.ratioWrap.className, "proj-ratio warn");
-ckHas("band position still stated", p.detail.textContent, "in the 30–80% target band");
+ckHas("band position still stated", p.detail.textContent, "in the 10–70% target band");
 
 // --- band text is positional only, never a severity ----------------------
-ckHas("above band", M.bandText(84.9), "above the 30–80% target band");
-ckHas("top of band", M.bandText(80), "in the 30–80% target band");
-ckHas("bottom of band", M.bandText(30), "in the 30–80% target band");
-ckHas("below band", M.bandText(29.9), "below the 30–80% target band");
+ckHas("above band", M.bandText(74.9), "above the 10–70% target band");
+ckHas("top of band", M.bandText(70), "in the 10–70% target band");
+ckHas("bottom of band", M.bandText(10), "in the 10–70% target band");
+ckHas("below band", M.bandText(9.9), "below the 10–70% target band");
 ck("no ratio, no band text", M.bandText(null), "");
 ["above", "in the", "below"].forEach(() => {});
 [84.9, 80, 30, 29.9].forEach((r) =>

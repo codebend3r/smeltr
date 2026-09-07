@@ -136,6 +136,10 @@ const CQ = [50, 55, 60, 65, 70];
 const S = {
   crf_choices: LADDER,
   crf_default: 14,
+  // The real default since 2026-09-06: an untouched row starts on VideoToolbox
+  // CQ 75, and crf_default is only the x265 rung `smeltr crf` still answers.
+  encoder_default: "vt_h265_10bit",
+  quality_default: 75,
   encoder_choices: { x265_10bit: LADDER, vt_h265_10bit: CQ },
   can_start: true,
   stage_busy: false,
@@ -187,7 +191,7 @@ sect("the menu is the ladder");
   );
   check(
     "the auto option names the default it follows",
-    sel.children[0].textContent === "14 (auto)",
+    sel.children[0].textContent === "VT CQ 75 (auto)",
     sel.children[0].textContent,
   );
   check(
@@ -218,7 +222,7 @@ sect("a hand-picked value reads back");
   );
   check(
     "its tooltip names the default it is following",
-    /default \(CRF 14\)/.test(sel.title),
+    /default \(VT CQ 75\)/.test(sel.title),
     sel.title,
   );
 }
@@ -310,7 +314,21 @@ sect("one quality control per row");
   );
   const go = acts.children.filter((c) => /\bgo\b/.test(c.className))[0];
   check("start encode is still offered on the ready row", !!go);
-  check("and it names the row's planned CRF", go && /CRF 14/.test(go.title), go && go.title);
+  // An untouched row starts on the pipeline default, which is VideoToolbox
+  // CQ 75 since 2026-09-06 -- never the x265 rung crf_default still carries.
+  check(
+    "and it names the row's real start (the default)",
+    go && /VT CQ 75/.test(go.title),
+    go && go.title,
+  );
+  const goSet = ui
+    .rowActions(row({ ready: true, crf: 16, crf_set: true }), S)
+    .children.filter((c) => /\bgo\b/.test(c.className))[0];
+  check(
+    "a hand-picked CRF row names its x265 rung",
+    goSet && /CRF 16/.test(goSet.title),
+    goSet && goSet.title,
+  );
 }
 {
   posted.length = 0;

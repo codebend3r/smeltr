@@ -380,6 +380,15 @@
     var t = el("div", "live-title", name);
     if (name !== e.title) t.title = e.title;
     top.appendChild(t);
+    /* Same fact as the queue's "manual" mark, carried for the whole run: this
+     encode ends in the error state with its output left in place. */
+    if (e.manual) {
+      var mchip = el("span", "chip warn", "manual — left in place");
+      mchip.title =
+        "Added by hand, not from the library index. Nothing will be synced or " +
+        "deleted; move the finished file yourself.";
+      top.appendChild(mchip);
+    }
     if (e.crf != null) top.appendChild(el("span", "chip", qLabel(e.encoder) + " " + e.crf));
     if (e.geometry)
       top.appendChild(
@@ -458,7 +467,7 @@
        original. The abort button is a hover away on that row.
    One threshold table, one verdict, one colour. Do not reintroduce a second.
 
-   The 30-80% band is the user's TARGET, so it stays -- but as an uncoloured
+   The target band is the user's TARGET, so it stays -- but as an uncoloured
    position on the scale and a plain sentence, never as a severity. */
   var PROJ_CLASS = {
     good: "on",
@@ -472,7 +481,11 @@
   var PROJ_LEAD = {
     good: "SOLID REDUCTION",
     thin: "THIN SAVING — worth a human call",
-    suspect: "UNUSUAL FOR THIS JOB — verify the picture before deleting the original",
+    /* Deliberately EMPTY (operator's call, 2026-09-06): the "UNUSUAL FOR THIS
+       JOB -- verify the picture before deleting the original" lead was noise
+       on a page where nothing is deleted. The amber class still marks the
+       ratio; the detail line below still states the numbers. */
+    suspect: "",
     "no-saving": "BARELY SMALLER THAN THE SOURCE",
     blowup: "LARGER THAN THE SOURCE",
     downscale: "RESOLUTION LOST — DO NOT DELETE THE ORIGINAL",
@@ -482,11 +495,18 @@
   /* Where the ratio sits against the user's target. Plain words, no severity:
    4 of the first 12 completed encodes landed under 30% and every one was a
    good encode, so "below" must never read as "broken". */
+  /* The target band, % of source -- the same pair core.BAND_LO/BAND_HI
+   carries in summary() and .watch-encode.sh ladders against (10-70 since
+   2026-09-06, was 30-80). tests/test_repo_invariants.py pins these two to
+   core's, because a band typed in three places drifts. */
+  var BAND_LO = 10;
+  var BAND_HI = 70;
+  var BAND_TXT = BAND_LO + "–" + BAND_HI + "%";
   function bandText(r) {
     if (r == null) return "";
-    if (r > 80) return "above the 30–80% target band";
-    if (r >= 30) return "in the 30–80% target band";
-    return "below the 30–80% target band — normal for a clean digital source";
+    if (r > BAND_HI) return "above the " + BAND_TXT + " target band";
+    if (r >= BAND_LO) return "in the " + BAND_TXT + " target band";
+    return "below the " + BAND_TXT + " target band — normal for a clean digital source";
   }
 
   /* Estimates are marked. The stat cards and the History table already prefix
@@ -578,7 +598,7 @@
 
     var lg = el("div", "proj-legend");
     lg.appendChild(el("span", null, "0% = nothing kept"));
-    lg.appendChild(el("span", null, "target 30–80%"));
+    lg.appendChild(el("span", null, "target " + BAND_TXT));
     lg.appendChild(el("span", null, "100% = source"));
     n.appendChild(lg);
     refs.lead = el("div", "proj-lead", "");
@@ -651,7 +671,13 @@
       "aria-label",
       lost
         ? "Resolution was lost; the size ratio is not comparable"
-        : "Projected output keeps " + pct(r) + " of the source. Target band is 30 to 80 percent.",
+        : "Projected output keeps " +
+            pct(r) +
+            " of the source. Target band is " +
+            BAND_LO +
+            " to " +
+            BAND_HI +
+            " percent.",
     );
   }
 
@@ -1144,6 +1170,13 @@
   function crfPicker(r, s) {
     var choices = (s && s.crf_choices) || [10, 12, 14, 16, 18, 20, 22];
     var def = (s && s.crf_default) || 14;
+    /* What an untouched row ACTUALLY starts on. The default encoder is
+     VideoToolbox since 2026-09-06, so "auto" must say "VT CQ 70", never the
+     x265 rung crf_default carries -- that number is real (smeltr crf still
+     answers it) but the driver only consults it for x265 titles. */
+    var encDef = (s && s.encoder_default) || "x265_10bit";
+    var qDef = s && s.quality_default != null ? s.quality_default : def;
+    var defTxt = qLabel(encDef) + " " + qDef;
     var menus = (s && s.encoder_choices) || { x265_10bit: choices };
     var set = !!(r.crf_set || r.enc);
     var sel = el("select", "crfsel crfcell" + (set ? " set" : ""));
@@ -1160,11 +1193,11 @@
         ? "Chosen by hand — this title's encode starts at CRF " +
           r.crf +
           ". The auto-kill ladder may still step it from there."
-        : "Following the pipeline default (CRF " +
-          def +
+        : "Following the pipeline default (" +
+          defTxt +
           "). Pick a value to fix " +
           "this title's start; the ladder may still step it from there.";
-    var auto = el("option", null, def + " (auto)");
+    var auto = el("option", null, defTxt + " (auto)");
     auto.value = "";
     sel.appendChild(auto);
     Object.keys(menus).forEach(function (enc) {
@@ -1252,15 +1285,31 @@
       go.dataset.title = r.title;
       /* The row's own planned start, encoder included -- the same pair the
        column picker shows and the driver would use. */
-      var startQ = r.enc ? r.enc_q : r.crf;
-      var startLbl = qLabel(r.enc) + " " + startQ;
+      /* Encoder BY NAME in every case. An untouched row starts on the
+       pipeline default (VideoToolbox CQ 70 since 2026-09-06), a hand-picked
+       CRF means x265, and an encoder override names itself -- posting
+       {crf: 14, encoder: null} would have the server pick VT and read 14
+       as a CQ. */
+      var startEnc = r.enc
+        ? r.enc
+        : r.crf_set
+          ? "x265_10bit"
+          : (s && s.encoder_default) || "x265_10bit";
+      var startQ = r.enc
+        ? r.enc_q
+        : r.crf_set
+          ? r.crf
+          : s && s.quality_default != null
+            ? s.quality_default
+            : r.crf;
+      var startLbl = qLabel(startEnc) + " " + startQ;
       go.title = "Start encoding this title now at " + startLbl;
       go.addEventListener("click", function () {
         arm(go, acts, "start at " + startLbl + "?", function () {
           api("/api/encode/start", {
             title: r.title,
             crf: startQ,
-            encoder: r.enc || null,
+            encoder: startEnc,
           });
         });
       });
@@ -1450,12 +1499,15 @@
       !!r.crf_set,
       !!r.skipped,
       !!r.pinned,
+      !!r.manual,
       !!r.encoding,
       !!r.ready,
       !!r.staged,
       !!r.next_up,
       !!r.error,
       r.error_note || null,
+      !!r.done,
+      r.done_note || null,
       r.arriving_bytes != null,
       !!r.arriving_stalled,
       r.stage_queued == null ? null : r.stage_queued,
@@ -1612,6 +1664,19 @@
           if (r.skipped) td.appendChild(el("span", "mark skip", "skipped"));
           else {
             if (r.pinned) td.appendChild(el("span", "mark pin", "pinned"));
+            /* Hand-added: this title is not in the library index, so the driver
+             cannot resolve a library original for it. It encodes normally and
+             then STOPS -- error state, output left beside the source, nothing
+             synced and nothing deleted. Without this mark the row is
+             indistinguishable from a staged title that will sync itself, and a
+             person would wait for a push that is never coming. */
+            if (r.manual) {
+              var man = el("span", "mark manual", "manual");
+              man.title =
+                "Added by hand, not from the library index. It will encode and " +
+                "then be left in place for you to move — nothing is synced or deleted.";
+              td.appendChild(man);
+            }
             if (r.encoding) td.appendChild(el("span", "mark enc", "encoding"));
             else if (r.arriving_bytes != null) {
               /* Cell stays empty on purpose: the arrival rides a full-width row
@@ -1847,6 +1912,14 @@
               else if (rest) destTd.appendChild(el("span", "muted", "/" + rest));
               else destTd.appendChild(el("span", "muted", "—"));
             }
+          } else if (r.kept) {
+            /* Kept in place under the no-delete policy: encoded, recorded,
+             nothing moved. Named, never a dash that reads as "unknown". */
+            nasTd.appendChild(el("span", "mark done", "kept"));
+            destTd = el("td");
+            var kp = el("span", "muted", "on the X9, beside its source");
+            kp.title = "No-delete policy: nothing was synced or deleted. Move it by hand.";
+            destTd.appendChild(kp);
           } else {
             nasTd.appendChild(el("span", "muted", "—"));
             destTd = el("td");
@@ -1955,6 +2028,8 @@
       r.src_dir,
       !!r.error,
       r.error_note || null,
+      !!r.done,
+      r.done_note || null,
       !!r.skipped,
     ];
   }
@@ -1979,7 +2054,7 @@
         ],
         rows,
         function (r) {
-          var tr = el("tr", r.error ? "rowerr" : "rowskip");
+          var tr = el("tr", r.error ? "rowerr" : r.done ? "rowdone" : "rowskip");
           tr.dataset.title = r.title;
           var st = el("td");
           /* Both chips when a title is both. The error one comes first: a
@@ -1987,6 +2062,9 @@
            not finish, and reading only "skipped" there would credit the
            operator with a decision the pipeline actually made. */
           if (r.error) st.appendChild(el("span", "mark err", "error"));
+          /* Finished and kept in place under the no-delete policy: the job
+           SUCCEEDED on this title. Green, and never the error vocabulary. */
+          if (r.done && !r.error) st.appendChild(el("span", "mark done", "done"));
           if (r.skipped) st.appendChild(el("span", "mark skip", "skipped"));
           tr.appendChild(st);
           var band = r.mbps >= 90 ? "mbps-hi" : r.mbps >= 80 ? "mbps-mid" : "mbps-lo";
@@ -2018,13 +2096,21 @@
             "err-note",
             r.error
               ? trimNote(r.error_note, r.title)
-              : "Skipped from the Queue tab — nothing wrong with it.",
+              : r.done
+                ? trimNote(r.done_note, r.title)
+                : "Skipped from the Queue tab — nothing wrong with it.",
           );
           if (r.error)
             why.title =
               "The pipeline moved on. Delete the .error-" +
               r.title +
               " marker file on the staging drive to put this title back in play.";
+          else if (r.done)
+            why.title =
+              "Encoded and kept beside its source (no-delete policy). Move the file " +
+              "by hand, then delete the .done-" +
+              r.title +
+              " marker on the staging drive.";
           tr.appendChild(why);
           return tr;
         },
@@ -2317,8 +2403,30 @@
       "pausing below " + s.summary.stop_mbps + " Mb/s";
   }
 
+  /* The selected tab lives in the URL (?tab=queue|ledger|errors|events) and
+   the URL is the state: a refresh, a self-reload after a server restart, or
+   a shared link all land on the same tab. replaceState, not pushState -- a
+   tab switch is not a page the back button should walk through. The token
+   and anything else in the query survive untouched. */
+  var TABS = { queue: 1, ledger: 1, errors: 1, events: 1 };
+  function tabFromUrl() {
+    try {
+      var v = new URLSearchParams(location.search).get("tab");
+      return v && TABS[v] ? v : null;
+    } catch (_) {
+      return null;
+    }
+  }
+  function tabToUrl(name) {
+    try {
+      var u = new URL(location.href);
+      u.searchParams.set("tab", name);
+      history.replaceState(null, "", u.toString());
+    } catch (_) {}
+  }
   function setTab(name) {
     tab = name;
+    tabToUrl(name);
     last.key = null;
     var tw = document.getElementById("tablewrap");
     if (tw && tw.classList.contains("collapsed") && tableFold) tableFold.click();
@@ -2343,6 +2451,11 @@
   document.getElementById("resetOrder").addEventListener("click", function () {
     api("/api/queue/order", { order: [] });
   });
+  /* Restore the tab the URL names before the first frame paints. */
+  (function () {
+    var t0 = tabFromUrl();
+    if (t0 && t0 !== tab) setTab(t0);
+  })();
 
   /* Seam blanking. Below 700px the title column pins while the rest scrolls,
    and a cell HALF hidden is worse than one fully hidden: sliced at the pane's
@@ -3366,6 +3479,8 @@
 
   var slowTimer = setTimeout(bootSlow, BOOT_SLOW_MS);
 
+  var PAGE_REV = (document.body && document.body.dataset.rev) || "";
+  var reloading = false;
   var es = new EventSource("/api/stream?t=" + encodeURIComponent(token));
   es.onopen = function () {
     conn("on", "live");
@@ -3398,6 +3513,15 @@
     try {
       var s = JSON.parse(ev.data);
     } catch (_) {
+      return;
+    }
+    /* A server that is serving a DIFFERENT page than the one this tab holds
+     (web/* is inlined at import; every restart after an edit is one) is a
+     tab showing stale controls behind a live feed. Reload once, the moment
+     the first frame says so -- never loop on it. */
+    if (s.page_rev && PAGE_REV && s.page_rev !== PAGE_REV && !reloading) {
+      reloading = true;
+      location.reload();
       return;
     }
     last.state = s;

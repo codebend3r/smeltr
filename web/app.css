@@ -729,6 +729,12 @@ body:not(.booted) #liveWrap .card {
   color: var(--bad);
   border-color: var(--bad-bd);
 }
+/* A hand-added title on the live card. Amber, not red: nothing is wrong, but
+   this encode ends without a sync and somebody has to move the file. */
+.chip.warn {
+  color: var(--warn);
+  border-color: var(--warn-bd);
+}
 /* The molten pour. The one deliberately loud thing on the page: a heat glow,
    a sheen flowing along the fill, a white-hot leading tip, and the exact
    percentage beside it. The fill node is persistent across SSE frames (see
@@ -805,7 +811,7 @@ body:not(.booted) #liveWrap .card {
 }
 /* Size projection -- the whole point of the job, in one strip. The scale is
    0-100% OF THE SOURCE, so further left is always better, and the shaded zone
-   is the 30-80% target band. It renders before a projection exists: an empty
+   is the 10-70% target band. It renders before a projection exists: an empty
    scale reads as "not known yet", where a missing component reads as "nothing
    to say". No overflow:hidden -- the marker overhangs the track deliberately
    so it stays visible at 0% and 100%. */
@@ -899,8 +905,9 @@ body:not(.booted) #liveWrap .card {
   position: absolute;
   top: -4px;
   bottom: -4px;
-  left: 30%;
-  width: 50%;
+  /* left = BAND_LO, width = BAND_HI - BAND_LO (10-70 since 2026-09-06). */
+  left: 10%;
+  width: 60%;
   border-left: 2px solid var(--band-bd);
   border-right: 2px solid var(--band-bd);
 }
@@ -1328,6 +1335,13 @@ tr.xrow .minibar {
   color: var(--ink-2);
   border-style: dashed;
 }
+/* SOLID, because it is a fact about how the file got onto the drive, not an
+   intent -- and amber, because the row's ending differs from every other
+   staged row: it encodes, then stops with the output left in place. */
+.mark.manual {
+  color: var(--warn);
+  border-color: var(--warn-bd);
+}
 /* SOLID and red on the Errors tab, beside a dashed "skipped": the two states
    sit in one column there and must not read as two shades of the same thing.
    A skip is a preference and changes nothing on disk (dashed, like every
@@ -1336,6 +1350,12 @@ tr.xrow .minibar {
 .mark.err {
   color: var(--bad);
   border-color: var(--bad-bd);
+}
+/* A FINISHED title kept in place under the no-delete policy. Green: this is
+   the job succeeding, one column from the red that means it did not. */
+.mark.done {
+  color: var(--good);
+  border-color: var(--good-bd);
 }
 /* A pending pull is INTENT, not arrival: dashed, like "skipped", because
    nothing about the title has changed on disk yet. Solid marks on this page

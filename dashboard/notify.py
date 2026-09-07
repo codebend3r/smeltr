@@ -227,9 +227,9 @@ def classify(e: dict, err=_err):
         up = nxt > core.CRF_DEFAULT
         cur = nxt - 2 if up else nxt + 2
         side = (
-            "ABOVE the 30–80% band (too big)"
+            f"ABOVE the {core.BAND_LO:.0f}–{core.BAND_HI:.0f}% band (too big)"
             if up
-            else "BELOW the 30–80% band (too small)"
+            else f"BELOW the {core.BAND_LO:.0f}–{core.BAND_HI:.0f}% band (too small)"
         )
         return dict(
             base,

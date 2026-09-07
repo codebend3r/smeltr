@@ -18,6 +18,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from dashboard import manual as manual_mod
 from pipeline import core
 
 GIB = core.GIB
@@ -366,6 +367,11 @@ def section_errors(aside) -> str:
             why = _trim_note(r.get("error_note"), r["title"])
             if r.get("skipped"):
                 state += " + skipped"
+        elif r.get("done"):
+            # Finished and kept in place under the no-delete policy -- the
+            # job succeeding, never an error.
+            state = c("DONE", "1;32")
+            why = _trim_note(r.get("done_note"), r["title"])
         else:
             state = "skipped"
             why = "skipped by hand — nothing wrong with it"
@@ -387,6 +393,7 @@ def section_errors(aside) -> str:
 
 def section_queue(q, limit) -> str:
     shown = q if limit in (None, 0) else q[:limit]
+    manual = manual_mod.titles()
     rows = []
     rank_n = 0
     for r in shown:
@@ -400,6 +407,11 @@ def section_queue(q, limit) -> str:
             status = "library"
         if r.get("pinned"):
             status = "pinned · " + status
+        # Hand-added titles have no library original to sync back to, so they
+        # encode and then stop with the output left in place. Saying so here
+        # keeps the terminal view from reading like every other staged row.
+        if r["title"].lower() in manual:
+            status = "manual · " + status
         rank_n += 1
         rank = rank_n
         rows.append(
@@ -458,7 +470,9 @@ def section_ledger(hist, limit) -> str:
                 "—" if r.get("audio") is None else f"{r['audio']}a/{r['subs']}s",
                 # Matches the dashboard's two-pill rendering: volume · bucket,
                 # one field, not a path claiming to be complete.
-                (r.get("dest") or "—").replace("/", " · "),
+                # A kept row never moved: say so, never a dash that reads as
+                # "unknown" beside a saving that was not reclaimed.
+                "kept on X9" if r.get("kept") else (r.get("dest") or "—").replace("/", " · "),
                 RECORD_LABEL.get(r.get("provenance"), r.get("provenance") or "—"),
                 (r.get("finished_at") or "—")[:10],
             ]
@@ -597,10 +611,12 @@ def main() -> int:
         # cannot sit inside it.
         if aside:
             n_err = sum(1 for r in aside if r.get("error"))
-            bits = ([f"{n_err} errored"] if n_err else []) + (
-                [f"{len(aside) - n_err} skipped by hand"]
-                if len(aside) - n_err
-                else []
+            n_done = sum(1 for r in aside if r.get("done") and not r.get("error"))
+            n_skip = len(aside) - n_err - n_done
+            bits = (
+                ([f"{n_err} errored"] if n_err else [])
+                + ([f"{n_done} done, kept in place"] if n_done else [])
+                + ([f"{n_skip} skipped by hand"] if n_skip else [])
             )
             print(f"  {c('SET ASIDE', '1;31' if n_err else '1')}  "
                   f"{c(' · '.join(bits) + ' — not encoding until you act', '2')}")

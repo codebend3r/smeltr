@@ -275,6 +275,7 @@ class NothingSecretIsTracked(unittest.TestCase):
         "queue_overrides.json",
         "pause",
         "notify.json",
+        "auth.json",
         "notify.cursor",
     )
 
@@ -969,6 +970,52 @@ class ThemeTokens(unittest.TestCase):
             self.assertIn(
                 name, light_names, f"{name} is a colour with no light-theme value"
             )
+
+
+class TargetBand(unittest.TestCase):
+    """The 10-70% target band is typed in FOUR places and they must agree.
+
+    core.BAND_LO/BAND_HI is the source of truth (the verdict's `no-saving`
+    edge). The watcher kills against its own BAND_LO/BAND_HI, web/app.js
+    words the projection strip from its own pair, and web/app.css positions
+    the band ticks with left/width percentages. None of them can import core,
+    so this test reads each literal and pins it -- a band moved in one place
+    is a page that says 30-80 over a ladder that kills at 70.
+    """
+
+    def test_watcher_kills_against_cores_band(self):
+        src = read("staging/watch-encode.sh")
+        lo = re.search(r"^BAND_LO=(\d+)$", src, re.M)
+        hi = re.search(r"^BAND_HI=(\d+)$", src, re.M)
+        self.assertIsNotNone(lo); self.assertIsNotNone(hi)
+        self.assertEqual((float(lo.group(1)), float(hi.group(1))),
+                         (core.BAND_LO, core.BAND_HI))
+
+    def test_page_words_the_band_cores_way(self):
+        src = read("web/app.js")
+        lo = re.search(r"var BAND_LO\s*=\s*(\d+);", src)
+        hi = re.search(r"var BAND_HI\s*=\s*(\d+);", src)
+        self.assertIsNotNone(lo); self.assertIsNotNone(hi)
+        self.assertEqual((float(lo.group(1)), float(hi.group(1))),
+                         (core.BAND_LO, core.BAND_HI))
+
+    def test_band_ticks_sit_on_cores_band(self):
+        src = read("web/app.css")
+        zone = src[src.index(".proj-zone {"):src.index(".proj-zone::after")]
+        left = re.search(r"left:\s*(\d+)%", zone)
+        width = re.search(r"width:\s*(\d+)%", zone)
+        self.assertIsNotNone(left); self.assertIsNotNone(width)
+        self.assertEqual(float(left.group(1)), core.BAND_LO)
+        self.assertEqual(float(left.group(1)) + float(width.group(1)), core.BAND_HI)
+
+    def test_no_stale_thirty_eighty_in_live_code(self):
+        for rel in ("pipeline/core.py", "web/app.js", "dashboard/notify.py",
+                    "staging/watch-encode.sh"):
+            for line in read(rel).splitlines():
+                if "30-80" in line or "30\u201380" in line:
+                    self.assertTrue(
+                        "was 30-80" in line or "old 80" in line or "(30-80" in line,
+                        f"{rel}: stale band literal: {line.strip()!r}")
 
 
 class CSPNonces(unittest.TestCase):
