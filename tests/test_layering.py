@@ -33,7 +33,8 @@ DASHBOARD_DIR = "dashboard"
 # ring buffer; notify.py posts to Slack and Gmail over the network -- none of
 # them belongs in a process that decides on a deletion.
 DASHBOARD_ONLY = frozenset(
-    {"server", "sysmon", "report", "events", "notify", "heartbeat"}
+    {"server", "sysmon", "report", "events", "notify", "heartbeat", "auth",
+     "manual"}
 )
 
 

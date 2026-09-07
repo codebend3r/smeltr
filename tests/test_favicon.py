@@ -243,9 +243,23 @@ class Gate(unittest.TestCase):
             self.assertEqual(got, body, route)
             self.assertEqual(headers["content-length"], str(len(body)))
 
-    def test_the_page_still_needs_the_token(self):
-        status, _, _ = get("/")
-        self.assertEqual(status, 403)
+    def test_the_page_still_needs_a_credential(self):
+        """No token, no session: never the dashboard.
+
+        Which REFUSAL depends on whether sign-in is configured -- a 403 with
+        auth off, the sign-in form with auth on -- so both are asserted, and
+        the assertion that matters in both branches is that the dashboard
+        itself did not come back. Pinning only one shape made this test pass
+        or fail on whether the machine running it happened to have an
+        auth.json beside its ledger.
+        """
+        status, _, body = get("/")
+        if server.AUTH_ON:
+            self.assertEqual(status, 200)
+            self.assertIn(b"Sign in", body)
+        else:
+            self.assertEqual(status, 403)
+        self.assertNotIn(b"monSpanLbl", body)
 
     def test_the_exemption_is_a_closed_list(self):
         """/favicon.png is a real file in web/ and NOT a route; it stays

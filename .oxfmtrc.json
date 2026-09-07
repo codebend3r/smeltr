@@ -4,6 +4,7 @@
   "ignorePatterns": [
     "**/*.md",
     "web/index.html",
+    "web/login.html",
     "staging/",
     "tests/fixtures/",
     ".claude/",

@@ -16,6 +16,9 @@ pause
 # notify.json holds the Slack webhook and the Gmail app password; notify.cursor
 # is the notifier's seen-set and pending sends.
 notify.json
+# auth.json holds the dashboard's password verifier AND its cookie-signing
+# secret; a committed secret is a forgeable session for anyone with the repo.
+auth.json
 notify.cursor
 notify.cursor.*
 
@@ -28,3 +31,7 @@ ledger.jsonl
 # second copy of the tree AND carries its own runtime `token` file, so staging
 # one would commit the live auth token the ignores above exist to keep out.
 .claude/worktrees/
+manual_adds.json
+no-delete
+encode_budget
+encode_done

@@ -17,7 +17,7 @@
 [ "${SMELTR_SKIP_HOOKS:-}" = "1" ] && exit 0
 cd "$(git rev-parse --show-toplevel)" || exit 1
 bad=$(git diff --cached --name-only --diff-filter=d \
-  | grep -Ex 'token|url|server\.pid|server\.log|sysmon\.ring|queue_overrides\.json|pause|notify\.json|notify\.cursor|notify\.cursor\..*|ledger\.jsonl|\.claude/worktrees/.*' || true)
+  | grep -Ex 'token|url|server\.pid|server\.log|sysmon\.ring|queue_overrides\.json|pause|notify\.json|auth\.json|notify\.cursor|notify\.cursor\..*|ledger\.jsonl|\.claude/worktrees/.*' || true)
 if [ -n "$bad" ]; then
   printf 'pre-commit: refused, runtime artifact staged:\n%s\nunstage with: git restore --staged <file>\n' "$bad"
   exit 1

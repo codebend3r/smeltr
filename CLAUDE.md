@@ -1630,6 +1630,82 @@ Network scope (`dashboard/server.py` config block, top of file):
 - `Handler.timeout = 15` keeps a slow/idle pre-auth peer from pinning a thread.
   The footer's `__SCOPE__` states the actual exposure (`html.escape`d).
 
+### Three doors, not one (Tailscale, 2026-09-06)
+
+The dashboard now answers on three kinds of listener, and **which listener a
+request arrived on is the security boundary**. Nothing a client sends can
+change it.
+
+| Door | Socket | Credential | Writes |
+|---|---|---|---|
+| LAN | `192.168.50.x:8787` | token **or** sign-in | `LAN_WRITE_ROUTES`; loopback/self writes all |
+| Tailnet | `100.x:8787` | token **or** sign-in | same as LAN |
+| Public | `127.0.0.1:8788` behind Funnel | **sign-in only** | `LAN_WRITE_ROUTES` only, always |
+
+**The tailnet address is bound DIRECTLY, and is opt-in.** `_lan_ips()` skips
+`utun*` so a VPN coming up can never widen the listener on its own;
+`SMELTR_TAILSCALE=1` (exported by `smeltr`) is the consent, and it APPENDS the
+address so the printed URL keeps naming the LAN. `_tailscale_self()` shells out
+once at import for the IPv4 and the MagicDNS name — the name is needed for the
+Host allowlist and the utun interface does not carry it. `LAN_EXPOSED` is now
+`any(a != "127.0.0.1" for a in BINDS)`, not `BINDS[0] != …`: with a loopback
+primary and the tailnet appended, the old expression left `REQUIRE_TOKEN` off
+on a socket reachable off-box.
+
+**`tailscale serve` was rejected for the tailnet, deliberately.** It proxies
+from `127.0.0.1`, and `_writes_ok()` grants a loopback peer EVERYTHING — skip,
+reorder, encode start/abort, stage pulls. Bound directly, a tailnet device's
+source address is its own `100.x`: neither loopback nor our own sockname, so it
+is held to pause/resume and driver-start exactly like a LAN phone.
+
+**The public door is a SEPARATE LISTENER for that same reason.** Funnel *must*
+proxy from loopback, so the fix cannot be "bind it and hope" — it is
+`PublicHandler`, a subclass whose only difference is `untrusted = True`, on its
+own loopback port. `_writes_ok()` tests that FIRST, before any local-peer
+reasoning can fire. A header test (`Tailscale-Funnel-Request`) would have put a
+~90 GB deletion one spoofed header away; a class attribute on the handler bound
+to a specific socket cannot be talked out of it. `SMELTR_LAN_WRITES=1` does not
+reach it either — that opt-in is about the LAN, not the internet.
+
+**The URL token does not open the public door.** It travels in the query string
+of every URL that has ever been bookmarked, screenshotted or pasted into a chat
+window. That is an acceptable credential for a device on the LAN and not for
+one on the internet, so `_authorized()` accepts only a session there.
+
+**Sign-in** is `dashboard/auth.py` (imported ONLY by `server.py`; in
+`DASHBOARD_ONLY`), ON only when `auth.json` sits beside the ledger — 0600,
+gitignored, refused if group/world readable, holding a PBKDF2-HMAC-SHA256
+verifier (600k iterations, per-record so raising it later does not invalidate
+the file) and the cookie-signing secret, never the password. Set it with
+`./smeltr set-password` (`tools/set_password.py`, `getpass`, never argv — an
+argv password is visible in `ps`). Rotating regenerates the secret, which is
+the log-everything-out. Sessions are stateless HMAC-signed cookies rather than
+a server-side table, because `./smeltr restart` happens on every UI edit and
+must not log the operator's iPad out; the expiry is inside the signed payload.
+Failed attempts back off per peer (5 free, then 5 s doubling to 15 min, table
+bounded at 4000). Both halves of the credential compare with `compare_digest`
+and neither returns early — a fast "no" on a wrong username is an oracle for
+the one part an attacker cannot read off the URL.
+
+`web/login.html` is inlined like the rest of `web/*` and carries **its own**
+token set, no dashboard markup, and a NEUTRAL footer — `_SCOPE` names this
+machine's LAN and tailnet addresses, and the sign-in page is the one page a
+stranger on the internet may see. It submits by `fetch`, not a native form
+POST, so CSP stays `form-action 'none'`; the CSRF header check moved ABOVE the
+credential check in `do_POST` so `/login` is covered by it too. It is excluded
+from oxfmt for the same reason `index.html` is: the HTML formatter rewrites the
+`__NONCE__` placeholders.
+
+`PUBLIC_ON` is `SMELTR_PUBLIC=1 AND auth.json`. Funnelling an unauthenticated
+dashboard is refused outright with a stderr line. `SMELTR_PUBLIC` defaults to
+**1** in the launcher, which is safe only because `auth.json` is gitignored: a
+fresh clone, a CI runner and any box without a password are LAN/tailnet-only by
+construction. Defaulting it off would instead mean every `./smeltr restart`
+silently 502s the operator's public URL.
+
+Turn the internet half off with `tailscale funnel --https=443 off`; the tailnet
+and LAN doors are unaffected. `tests/test_auth.py` pins all of it.
+
 Animation ground rules: the live card updates **in place** (`liveRefs`) —
 rebuilding it every SSE frame restarts every CSS animation and kills the bar's
 width transition, which is exactly the bug the old renderer had. Entrance

@@ -1,0 +1,217 @@
+<title>smeltr — sign in</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="icon" href="/favicon.ico" sizes="32x32" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<style nonce="__NONCE__">
+  /* Its own token set, not app.css: this page ships before the operator is
+     authenticated, so it must not carry the dashboard's markup or its data.
+     Same names and the same two themes as app.css, so the two doors match. */
+  :root {
+    --font: ui-sans-serif, -apple-system, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    color-scheme: dark;
+    --bg: #08090b;
+    --panel: #0f1116;
+    --line: #1e232c;
+    --ink: #e8ecf2;
+    --ink-2: #98a2b3;
+    --ink-3: #5f6a7d;
+    --hot: #ff7a2f;
+    --bad: #ff5c5c;
+    --bad-bd: #4a1f1f;
+    --field: #13161c;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #f5f7fa;
+    --panel: #ffffff;
+    --line: #dde2ea;
+    --ink: #141922;
+    --ink-2: #4d5768;
+    --ink-3: #646d7e;
+    --hot: #c2540f;
+    --bad: #c22f2d;
+    --bad-bd: #f0c2c1;
+    --field: #eef1f6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: var(--bg);
+    color: var(--ink);
+    font: 13px/1.5 var(--font);
+    -webkit-font-smoothing: antialiased;
+  }
+  .card {
+    width: 100%;
+    max-width: 360px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 26px 24px 22px;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 4px;
+  }
+  .brand img { width: 26px; height: 26px; }
+  h1 {
+    margin: 0;
+    font-size: 17px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+  }
+  .sub {
+    margin: 0 0 20px;
+    color: var(--ink-3);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  label {
+    display: block;
+    margin-bottom: 5px;
+    color: var(--ink-2);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+  }
+  input {
+    width: 100%;
+    margin-bottom: 14px;
+    padding: 10px 11px;
+    background: var(--field);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--ink);
+    font: 14px/1.2 var(--font);
+  }
+  input:focus-visible {
+    outline: 2px solid var(--hot);
+    outline-offset: 1px;
+  }
+  button {
+    width: 100%;
+    padding: 11px;
+    background: var(--hot);
+    border: 0;
+    border-radius: 8px;
+    color: #0b0c0f;
+    font: 650 13px/1 var(--font);
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  button[disabled] { opacity: 0.55; cursor: default; }
+  /* Never display:none -- a screen reader must reach the failure, and a
+     hidden-then-shown box shifts the button under a finger mid-tap. */
+  #err {
+    min-height: 34px;
+    margin-top: 12px;
+    padding: 8px 10px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: var(--bad);
+    font-size: 12px;
+  }
+  #err.on {
+    border-color: var(--bad-bd);
+    background: color-mix(in srgb, var(--bad) 9%, transparent);
+  }
+  .foot {
+    margin-top: 14px;
+    color: var(--ink-3);
+    font-size: 11px;
+    text-align: center;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+<div class="card">
+  <div class="brand">
+    <img src="/favicon.svg" alt="" />
+    <h1>smeltr</h1>
+  </div>
+  <p class="sub">Sign in</p>
+  <form id="f" autocomplete="on">
+    <label for="u">Username</label>
+    <input id="u" name="username" autocomplete="username" autocapitalize="off"
+      autocorrect="off" spellcheck="false" required />
+    <label for="p">Password</label>
+    <input id="p" name="password" type="password" autocomplete="current-password" required />
+    <button id="go" type="submit">Sign in</button>
+  </form>
+  <div id="err" role="alert" aria-live="polite"></div>
+  <p class="foot">__SCOPE__</p>
+</div>
+<script nonce="__NONCE__">
+  (function () {
+    // Theme before paint, same rule and same key as the dashboard.
+    try {
+      var t = localStorage.getItem("smeltr.theme");
+      if (t === "light" || t === "dark") {
+        document.documentElement.setAttribute("data-theme", t);
+      }
+    } catch (e) {}
+
+    var f = document.getElementById("f");
+    var go = document.getElementById("go");
+    var err = document.getElementById("err");
+
+    function fail(msg) {
+      err.textContent = msg;
+      err.className = "on";
+    }
+
+    f.addEventListener("submit", function (ev) {
+      // fetch, not a native form POST: CSP is form-action 'none' across the
+      // whole server and this page is not the place to punch a hole in it.
+      ev.preventDefault();
+      err.textContent = "";
+      err.className = "";
+      go.disabled = true;
+      go.textContent = "Signing in…";
+      fetch("/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Smeltr": "1" },
+        body: JSON.stringify({
+          username: document.getElementById("u").value,
+          password: document.getElementById("p").value,
+        }),
+      })
+        .then(function (r) {
+          return r.json().catch(function () {
+            return { ok: false, error: "server error" };
+          });
+        })
+        .then(function (d) {
+          if (d && d.ok) {
+            // Drop any ?t= token from the URL on the way in: the session
+            // cookie is the credential now, and a token left in the address
+            // bar is a token that gets pasted into a chat window.
+            window.location.replace("/");
+            return;
+          }
+          go.disabled = false;
+          go.textContent = "Sign in";
+          fail((d && d.error) || "sign in failed");
+          document.getElementById("p").value = "";
+          document.getElementById("p").focus();
+        })
+        .catch(function () {
+          go.disabled = false;
+          go.textContent = "Sign in";
+          fail("could not reach the server — try again");
+        });
+    });
+
+    document.getElementById("u").focus();
+  })();
+</script>

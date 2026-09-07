@@ -13,6 +13,22 @@ PY="${SMELTR_PYTHON:-python3}"
 # network can reach it; the server forces the URL token on whenever it is
 # bound off loopback. SMELTR_BIND=127.0.0.1 restores loopback-only.
 export SMELTR_BIND="${SMELTR_BIND:-lan}"
+# Also answer on the tailnet, so the dashboard reaches a phone off the LAN by
+# its MagicDNS name. Opt-in in server.py (_lan_ips deliberately skips utun*, so
+# a tunnel can never widen the listener on its own); this line is the consent.
+# No-op with tailscaled down. SMELTR_TAILSCALE=0 restores LAN-only.
+export SMELTR_TAILSCALE="${SMELTR_TAILSCALE:-1}"
+# Expose the dashboard on the PUBLIC internet through `tailscale funnel`. It
+# opens a SECOND, loopback-only listener (SMELTR_PUBLIC_PORT, default 8788)
+# whose requests are structurally untrusted: the URL token is not accepted
+# there, only a sign-in, and even a signed-in visitor gets pause/resume and
+# driver-start and nothing else. server.py refuses it outright with no
+# auth.json -- set one with `./smeltr set-password`.
+# Default ON, but it is a no-op without auth.json -- which is gitignored, so
+# a fresh clone, a CI runner and any box without a password are all
+# LAN/tailnet-only by construction. Defaulting it OFF would instead mean
+# every `./smeltr restart` silently 502s the operator's public URL.
+export SMELTR_PUBLIC="${SMELTR_PUBLIC:-1}"
 
 # Liveness has to survive a stale pidfile AND a server started outside this
 # launcher. Checking only the pidfile once left two servers bound to two ports,
@@ -120,10 +136,11 @@ case "${1:-report}" in
   # configures, so a webhook or app password is proven before the first real
   # event. Exit 1 with no config, or when any channel refuses.
   notify-test) shift; exec "$PY" "$DIR/dashboard/notify.py" --test "$@" ;;
+  set-password) shift; exec "$PY" "$DIR/tools/set_password.py" "$@" ;;
   # The hourly outside observer: exit 0 while HandBrake is running, exit 1
   # and flag every notify.json channel when it is not. An OPERATOR command,
   # so it is a bun script too -- but unlike the others it is also what the
   # com.smeltr.heartbeat LaunchAgent runs on the hour.
   heartbeat) shift; exec "$PY" "$DIR/dashboard/heartbeat.py" "$@" ;;
-  *)      echo "usage: smeltr {start|stop|restart|status|url|open|report [...]|record <folder> [...]|crf <title>|encoder <folder>|notify-test|heartbeat [--dry-run]}" >&2; exit 2 ;;
+  *)      echo "usage: smeltr {start|stop|restart|status|url|open|report [...]|record <folder> [...]|crf <title>|encoder <folder>|notify-test|set-password|heartbeat [--dry-run]}" >&2; exit 2 ;;
 esac
