@@ -159,10 +159,24 @@ class WriteGate(unittest.TestCase):
                 "/api/queue/crf",
                 "/api/encode/start",
                 "/api/encode/abort",
-                "/api/stage/start",
-                "/api/stage/cancel",
             ):
                 self.assertFalse(h._writes_ok(route), route)
+
+    def test_lan_peer_may_queue_a_stage_pull(self):
+        """Added 2026-09-07. The operator queues downloads from the iPad, and
+        every click was answered 403 and silently never queued -- the row
+        offered "stage" again and nothing arrived. A pull's worst case is
+        ~60 GB on the staging drive: nothing deleted, no encoder spawned,
+        the free-space gate still runs at dispatch. Cancel drops a PENDING
+        title only."""
+        with mock.patch.object(server, "LAN_WRITES", False):
+            h = handler(peer="192.168.1.50", local="192.168.1.9")
+            self.assertTrue(h._writes_ok("/api/stage/start"))
+            self.assertTrue(h._writes_ok("/api/stage/cancel"))
+        # ...but NOT the public door: PUBLIC_WRITE_ROUTES is strictly narrower,
+        # and test_auth pins each stage route refused there.
+        self.assertNotIn("/api/stage/start", server.PUBLIC_WRITE_ROUTES)
+        self.assertTrue(set(server.PUBLIC_WRITE_ROUTES) < set(server.LAN_WRITE_ROUTES))
 
     def test_the_crf_picker_is_NOT_lan_writable(self):
         """It looks like a preference and is not. A CRF chosen too high
@@ -201,7 +215,7 @@ class WriteGate(unittest.TestCase):
         )
         with open(src_path, encoding="utf-8") as fh:
             src = fh.read()
-        for route in ("/api/pause", "/api/driver/start"):
+        for route in ("/api/pause", "/api/driver/start", "/api/stage/start", "/api/stage/cancel"):
             self.assertIn(route, server.LAN_WRITE_ROUTES)
             self.assertIn('parsed.path == "%s"' % route, src)
         self.assertIn("self._writes_ok(parsed.path)", src)

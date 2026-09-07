@@ -247,7 +247,7 @@ class PublicListener(unittest.TestCase):
     def test_a_public_peer_may_still_pause_and_press_play(self):
         """Their worst case is the pipeline waiting, or running as designed."""
         h = _handler(server.PublicHandler)
-        for route in server.LAN_WRITE_ROUTES:
+        for route in server.PUBLIC_WRITE_ROUTES:
             with self.subTest(route=route):
                 self.assertTrue(h._writes_ok(route))
 

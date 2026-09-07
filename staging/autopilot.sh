@@ -295,26 +295,17 @@ midwrite_route() {
 #                   like a non-good one. The watcher's auto-kill ladder is OFF under this
 #                   policy too, so every encode finishes at exactly the
 #                   quality it started on ("encode 10 movies using VT CQ 70").
-# `encode_budget` : an integer. When `encode_done` (incremented here after
-#                   every judged encode) reaches it, the `pause` flag is
-#                   written and the loop does nothing further: no encode, no
-#                   replenish. The operator clears/raises it.
+# The BUDGET is not here (2026-09-07, operator's rule: "the budget has always
+# and only been for the number of files downloaded and ready to be encoded,
+# not the actual encoding"). `download_budget` / `downloads_done` beside the
+# ledger are read and written by .replenish-queue.sh, which stops PULLING at
+# the budget; this loop keeps encoding whatever is staged and simply runs out.
+# The old `encode_budget`/`encode_done` pair counted judged encodes here and
+# wrote the pause flag -- the wrong quantity, removed.
 SMELTR_HOME="$(dirname "$SMELTR")"
 PAUSE_FLAG="$SMELTR_HOME/pause"
 no_delete_policy() { [ -e "$SMELTR_HOME/no-delete" ]; }
 paused_flag()      { [ -e "$PAUSE_FLAG" ]; }
-budget_check() {  # call after every judged encode
-  local budget n_done
-  budget=$(tr -cd '0-9' < "$SMELTR_HOME/encode_budget" 2>/dev/null)
-  [ -z "$budget" ] && return 0
-  n_done=$(tr -cd '0-9' < "$SMELTR_HOME/encode_done" 2>/dev/null); n_done=${n_done:-0}
-  n_done=$((n_done + 1)); printf '%s\n' "$n_done" > "$SMELTR_HOME/encode_done"
-  log "BUDGET: $n_done of $budget encodes done"
-  if [ "$n_done" -ge "$budget" ]; then
-    : > "$PAUSE_FLAG"
-    log "BUDGET REACHED: $n_done encodes done - pausing; doing nothing further until the pause flag is cleared"
-  fi
-}
 
 replenish_running() { pgrep -f "replenish-queue.sh" >/dev/null 2>&1; }
 replenish_async() {
@@ -687,11 +678,6 @@ while true; do
         error_out "$done_folder" "cannot locate the library original (roots ARE reachable - zero or multiple matches)"
         judged=error
       fi
-      # Every judged encode counts toward the operator's budget, whatever the
-      # verdict: the job was "convert N movies", and a finished file is one.
-      # A record that will be retried is not counted yet, or the retry pass
-      # would count the same encode twice.
-      [ "$judged" != retry ] && budget_check
       if [ "$judged" = ok ]; then
         letter=$(echo "$done_folder" | cut -c1 | tr '[:lower:]' '[:upper:]')
         nas=$(echo "$srcpath" | cut -d/ -f3)

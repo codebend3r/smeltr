@@ -285,7 +285,17 @@ LAN_WRITES = os.environ.get("SMELTR_LAN_WRITES") == "1"
 # Start's worst case is the pipeline running exactly as designed -- the same
 # class as resume, which was already LAN-allowed -- and it deletes nothing the
 # normal verified pipeline would not.
-LAN_WRITE_ROUTES = ("/api/pause", "/api/driver/start")
+# Stage pulls joined the list on 2026-09-07: the operator queues downloads
+# from the iPad, and every one of those clicks was answered 403 and silently
+# never queued. A pull's worst case is ~60 GB landing on the staging drive --
+# it deletes nothing, spawns no encoder, and the free-space gate still runs at
+# dispatch. Cancel removes only a PENDING title. Skip/reorder/CRF/encode stay
+# off the LAN for the reasons above. The PUBLIC door does NOT get stage: it is
+# the open internet behind a password, and filling the staging drive from
+# there is not a control the operator asked for. Two tuples, public strictly
+# narrower than LAN, and _writes_ok() tests the public one first.
+PUBLIC_WRITE_ROUTES = ("/api/pause", "/api/driver/start")
+LAN_WRITE_ROUTES = PUBLIC_WRITE_ROUTES + ("/api/stage/start", "/api/stage/cancel")
 # Username + password, ON only when auth.json sits beside the ledger (write it
 # with `./smeltr set-password`). It does not REPLACE the token on the LAN or
 # the tailnet -- either credential opens those doors, so every existing
@@ -1415,6 +1425,31 @@ def _ensure_pump_locked() -> None:
         raise
 
 
+def _count_download() -> None:
+    """One more file downloaded and ready to encode, for the operator's budget.
+
+    `download_budget` / `downloads_done` beside the ledger are the
+    replenisher's (operator's rule, 2026-09-07: the budget counts DOWNLOADS,
+    never encodes). A dashboard stage pull is a download too, so it is
+    counted the same way, on the commit rename -- but it is never REFUSED by
+    the budget: a hand click is an explicit request. Best effort: a counting
+    failure must not undo a landed pull.
+    """
+    try:
+        if not os.path.exists(os.path.join(core.SMELTR_DIR, "download_budget")):
+            return
+        f = os.path.join(core.SMELTR_DIR, "downloads_done")
+        try:
+            with open(f, encoding="utf-8") as fh:
+                n = int(re.sub(r"\D", "", fh.read()) or 0)
+        except (OSError, ValueError):
+            n = 0
+        with open(f, "w", encoding="utf-8") as fh:
+            fh.write("%d\n" % (n + 1))
+    except OSError:
+        pass
+
+
 def _stage_worker(title: str, src: str, hidden: str) -> None:
     """Run the pull into the hidden folder, then move it into place.
 
@@ -1468,6 +1503,7 @@ def _stage_worker(title: str, src: str, hidden: str) -> None:
             try:
                 os.makedirs(core.stage_dir(), exist_ok=True)
                 os.rename(hidden, dest)
+                _count_download()
                 keep = True
                 _set_note(
                     "Staged %s — a copy. The library original is "
@@ -1528,6 +1564,7 @@ def _finish_orphan_locked(title: str, hidden: str) -> None:
                 raise OSError("a folder named %s already exists" % title)
             os.makedirs(core.stage_dir(), exist_ok=True)
             os.rename(hidden, dest)
+            _count_download()
             _set_note(
                 "Staged %s — finished a pull orphaned by a server "
                 "restart. The library original is untouched, and is "
@@ -1651,7 +1688,7 @@ class Handler(BaseHTTPRequestHandler):
         # worst case is the pipeline waiting or running as designed, never a
         # re-armed deletion.
         if self.untrusted:
-            return route in LAN_WRITE_ROUTES
+            return route in PUBLIC_WRITE_ROUTES
         # Loopback peers always; LAN peers only with the explicit opt-in, or
         # for the one route in LAN_WRITE_ROUTES.
         # A connection whose SOURCE address equals the listener's own local

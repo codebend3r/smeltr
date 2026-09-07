@@ -13,7 +13,7 @@ X9="/Volumes/Crucial X9/4K Movies"
 # drive is proven mounted, a missing live script is a FAIL, not a skip.
 [ -d "$X9" ] || { echo "SKIP: staging drive not mounted"; exit 0; }
 rc=0
-for name in autopilot.sh watch-encode.sh; do
+for name in autopilot.sh watch-encode.sh replenish-queue.sh; do
   LIVE="$X9/.$name"
   if [ ! -f "$LIVE" ]; then
     printf '\nFAIL no live copy at %s\n' "$LIVE"

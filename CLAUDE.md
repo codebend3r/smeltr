@@ -283,7 +283,13 @@ ledger.jsonl        the irreplaceable record, beside the launcher
    gates it all, so this is "any device you handed the URL to", not "anyone
    on the network". `tests/test_http_gates.py` pins each route on both sides.
    (Since 2026-08-31 `/api/driver/start` is the SECOND LAN-writable route —
-   see 5.)
+   see 5. Since 2026-09-07 `/api/stage/start` and `/api/stage/cancel` are
+   LAN-writable too: the operator queues downloads from the iPad, and every
+   click was answered 403 and never queued. A pull's worst case is ~60 GB on
+   the staging drive — nothing deleted, no encoder spawned, the free-space
+   gate still runs at dispatch. The PUBLIC door does NOT get them:
+   `PUBLIC_WRITE_ROUTES` is strictly narrower than `LAN_WRITE_ROUTES` and
+   `_writes_ok()` tests it first for an `untrusted` handler.)
 5. Driver start (2026-08-31): `POST /api/driver/start` LAUNCHES
    `.autopilot.sh` — the big play/pause toggle's "nothing is running" half,
    because a stopped driver previously had no dashboard control at all. It
@@ -469,6 +475,24 @@ why every reader keeps the root fallback. `.watch-encode.sh`,
 `.sync-to-library.sh` and `watchdog.sh`'s corpse triage carry the same
 `queue/`-then-root fallback; `complete/` is never triaged. `tests/test_layout.sh`
 (driver helpers) and `tests/test_layout.py` (core) pin it.
+
+### The budget counts DOWNLOADS, never encodes (2026-09-07, operator's rule)
+
+**"The budget has always and only been for the number of files downloaded and
+ready to be encoded, not the actual encoding."** `download_budget` beside the
+ledger is an integer; `downloads_done` counts every pull `.replenish-queue.sh`
+lands (on the `staged OK`, never the pick) and every dashboard stage pull
+that commits (`_count_download()` in `server.py`, after the rename). At the
+budget the replenisher **pulls nothing more** — `BUDGET REACHED: n of N
+downloads` — and caps a run's `NEED` at what is left. The driver is not
+involved: it keeps encoding whatever is staged and simply runs out. A
+dashboard click is counted but never refused. `echo 0 > downloads_done`
+starts a new batch; raise or delete `download_budget` to keep pulling.
+
+The old `encode_budget` / `encode_done` pair counted **judged encodes** in
+`.autopilot.sh` (`BUDGET: 9 of 10 encodes done`) and wrote the pause flag.
+That was the wrong quantity and `budget_check()` is gone. `staging/
+replenish-queue.sh` is now a tracked, drift-checked mirror like the other two.
 
 ### The replenisher is INDEPENDENT of the encoder (2026-09-07, operator's rule)
 
@@ -1921,7 +1945,7 @@ change it.
 |---|---|---|---|
 | LAN | `192.168.50.x:8787` | token **or** sign-in | `LAN_WRITE_ROUTES`; loopback/self writes all |
 | Tailnet | `100.x:8787` | token **or** sign-in | same as LAN |
-| Public | `127.0.0.1:8788` behind Funnel | **sign-in only** | `LAN_WRITE_ROUTES` only, always |
+| Public | `127.0.0.1:8788` behind Funnel | **sign-in only** | `PUBLIC_WRITE_ROUTES` only (pause + driver start), always |
 
 **The tailnet address is bound DIRECTLY, and is opt-in.** `_lan_ips()` skips
 `utun*` so a VPN coming up can never widen the listener on its own;
