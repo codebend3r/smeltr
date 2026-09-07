@@ -314,11 +314,11 @@ start_encode() {
   # proven default, x265_10bit at CRF_DEFAULT. A ladder retry passes $2 to override the
   # QUALITY only: the encoder choice always comes from the override file, so
   # a vt title ladders down the CQ scale and an x265 title up the CRF scale.
-  # Crash-safe fallback = the global default (VideoToolbox CQ 75 since
+  # Crash-safe fallback = the global default (VideoToolbox CQ 70 since
   # 2026-09-06, operator's call; was x265 CRF 14). core.DEFAULT_ENCODER /
   # DEFAULT_QUALITY are the source of truth; this literal only answers when
   # the checkout itself is broken.
-  read -r enc defq <<<"$("$SMELTR" encoder "$title" 2>/dev/null || echo "vt_h265_10bit 75")"
+  read -r enc defq <<<"$("$SMELTR" encoder "$title" 2>/dev/null || echo "vt_h265_10bit 70")"
   [ -z "$enc" ] && enc=vt_h265_10bit
   # A ladder rung is only meaningful on the ENCODER whose violation produced
   # it: CRF 18 handed to VideoToolbox is CQ 18, near the bottom of the

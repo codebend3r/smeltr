@@ -172,10 +172,10 @@ ENCODER_CHOICES: dict = {
 # CRF and the WORST VideoToolbox CQ -- the same expression means opposite
 # things on the two scales. x265 tracks CRF_DEFAULT so the pivot cannot
 # move under the ladder; VT's 70 is the pivot .watch-encode.sh leaves from
-# (moved 60 -> 70 on 2026-09-06 with the default below; the two MUST move
+# (60 -> 70 -> 75 -> back to 70 on 2026-09-06, operator's call; the two MUST move
 # together, exactly like CRF_DEFAULT and the x265 ladder).
-DEFAULT_QUALITIES: dict = {"x265_10bit": CRF_DEFAULT, "vt_h265_10bit": 75}
-# THE GLOBAL DEFAULT IS VIDEOTOOLBOX CQ 75 (operator's call, 2026-09-06 23:10; was
+DEFAULT_QUALITIES: dict = {"x265_10bit": CRF_DEFAULT, "vt_h265_10bit": 70}
+# THE GLOBAL DEFAULT IS VIDEOTOOLBOX CQ 70 (operator's call, 2026-09-06, restated 23:58; was
 # x265 CRF 14). Every title with no encoder override starts here. Known
 # consequence, accepted: with fewer than MIN_HISTORY VT rows in the ledger a
 # VT encode is `suspect` by construction, and `suspect` never records, so the

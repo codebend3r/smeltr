@@ -74,7 +74,7 @@
 # Set SMELTR_NO_AUTOKILL=1 to return to report-only behaviour.
 # (SMELTER_NO_AUTOKILL is still honoured -- the app was renamed 2026-08-21 and a
 #  watcher launched before the rename is still running against the old name.)
-SLUG="$1"; FOLDER="$2"; SRCNAME="$3"; OUTNAME="$4"; HBPID="$5"; Q="${6:-75}"; ENC="${7:-vt_h265_10bit}"
+SLUG="$1"; FOLDER="$2"; SRCNAME="$3"; OUTNAME="$4"; HBPID="$5"; Q="${6:-70}"; ENC="${7:-vt_h265_10bit}"
 
 # Next rung of the ladder for this encoder and this direction, or "none-too-*"
 # past the last one. Every rung except the pivot is one-directional: a
@@ -85,9 +85,9 @@ SLUG="$1"; FOLDER="$2"; SRCNAME="$3"; OUTNAME="$4"; HBPID="$5"; Q="${6:-75}"; EN
 next_rung() { # $1=encoder $2=quality $3=big|small
   if [ "$3" = big ]; then
     case "$1" in
-      # VT pivots on CQ 75 (the default since 2026-09-06 23:10; 60 -> 70 -> 75).
+      # VT pivots on CQ 70 (the default since 2026-09-06; 60 -> 70 -> 75 -> 70).
       # Too big steps DOWN the reversed scale all the way to 50.
-      vt_h265_10bit) case "$2" in 75) echo 70 ;; 70) echo 65 ;; 65) echo 60 ;; 60) echo 55 ;; 55) echo 50 ;; *) echo none-too-big ;; esac ;;
+      vt_h265_10bit) case "$2" in 70) echo 65 ;; 65) echo 60 ;; 60) echo 55 ;; 55) echo 50 ;; *) echo none-too-big ;; esac ;;
       *)             case "$2" in
                        14) echo 16 ;; 16) echo 18 ;; 18) echo 20 ;; 20) echo 22 ;;
                        *)  echo none-too-big ;;
@@ -95,10 +95,10 @@ next_rung() { # $1=encoder $2=quality $3=big|small
     esac
   else
     case "$1" in
-            # Too small steps UP the reversed scale from the pivot, 75 -> 80 -> ...
+            # Too small steps UP the reversed scale from the pivot, 70 -> 75 -> ...
       # -> 100 (the menu runs to CQ 100 since 2026-09-06). Below the pivot
       # every rung was reached by laddering DOWN, so too-small there exhausts.
-      vt_h265_10bit) case "$2" in 75) echo 80 ;; 80) echo 85 ;; 85) echo 90 ;; 90) echo 95 ;; 95) echo 100 ;; *) echo none-too-small ;; esac ;;
+      vt_h265_10bit) case "$2" in 70) echo 75 ;; 75) echo 80 ;; 80) echo 85 ;; 85) echo 90 ;; 90) echo 95 ;; 95) echo 100 ;; *) echo none-too-small ;; esac ;;
       *)             case "$2" in 14) echo 12 ;; 12) echo 10 ;; *) echo none-too-small ;; esac ;;
     esac
   fi
