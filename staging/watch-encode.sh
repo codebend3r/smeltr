@@ -53,55 +53,93 @@
 # AND IT IS ENCODER-AWARE (2026-08-25). Those numbers are x265 CRF, where LOWER
 # means a bigger file. VideoToolbox quality is CQ on Apple's reversed scale,
 # where HIGHER means a bigger file, so both arms invert: too big steps CQ DOWN
-# 60-55-50, too small steps CQ UP 60-65-70. Mapping a rung with the wrong scale
-# would re-run the blowup LARGER, so the mapping lives in one function keyed on
-# the encoder, and the KILLED line reports only the next NUMBER ("next: Q 55")
-# -- the driver passes it back as a quality override without knowing either
-# scale. It also names the encoder that produced the rung, so a driver holding
-# a rung from a DIFFERENT encoder can drop it rather than read 18 as a CQ.
-# The ladder PIVOTS on the default start rung, which moved 16 -> 14 on 2026-09-03.
-# Both arms have to move with it: leaving the pivot at 16 makes 14 a down-only rung,
-# so every default encode that came in too big would exhaust to none-too-big on its
-# first kill with no rung left to try -- and CRF 14 makes a BIGGER file than 16, so
-# too big is exactly the direction the default change makes more likely.
-# A violation in the OPPOSITE direction of a rung already laddered to (too small at
-# 16/18/20/22, too big at 12/10) is "none-*" immediately: a source whose projection
-# flips sides between adjacent rungs would otherwise oscillate forever. "none-*"
-# no longer kills anything — it means "finish this encode where it is". The
-# ERROR state still exists and is still reached, but by the VERDICT on the
-# finished file, never by the ladder throwing the encode away.
+# 70-65-60-55-50, too small steps CQ UP 70-75-...-100. Mapping a rung with the
+# wrong scale would re-run the blowup LARGER, so the mapping lives in one
+# function keyed on the encoder, and the KILLED line reports only the next
+# NUMBER ("next: Q 55") -- the driver passes it back as a quality override
+# without knowing either scale. It also names the encoder that produced the
+# rung, so a driver holding a rung from a DIFFERENT encoder can drop it rather
+# than read 18 as a CQ.
+#
+# THE STARTING QUALITY DOES NOT MATTER (operator's rule, 2026-09-07): every
+# rung steps in BOTH directions, all the way to its own menu's ends. There is
+# no pivot any more and no one-directional rung. See next_rung() for what that
+# replaced and why.
 #
 # Set SMELTR_NO_AUTOKILL=1 to return to report-only behaviour.
 # (SMELTER_NO_AUTOKILL is still honoured -- the app was renamed 2026-08-21 and a
 #  watcher launched before the rename is still running against the old name.)
 SLUG="$1"; FOLDER="$2"; SRCNAME="$3"; OUTNAME="$4"; HBPID="$5"; Q="${6:-70}"; ENC="${7:-vt_h265_10bit}"
 
-# Next rung of the ladder for this encoder and this direction, or "none-too-*"
-# past the last one. Every rung except the pivot is one-directional: a
-# violation OPPOSITE to the direction a rung was laddered to exhausts
-# immediately, because a projection that flips sides between adjacent rungs
-# would oscillate forever. An unknown encoder takes the x265 mapping -- the
-# proven direction.
+# The rung menus, ordered SMALLEST FILE FIRST. That ordering is what lets one
+# direction rule cover two opposite scales: "too big" steps one rung towards a
+# smaller file, "too small" one rung towards a bigger one. x265 quality is CRF,
+# where a HIGHER number is a smaller file; VideoToolbox quality is CQ on
+# Apple's reversed scale, where a LOWER number is a smaller file. A rung mapped
+# with the wrong scale re-runs the blowup LARGER, so the inversion is expressed
+# ONCE, here, as the order of each list -- never as hand-written per-encoder
+# arms that have to be kept mirrored by eye.
+rung_menu() { # $1=encoder -- smallest file first
+  case "$1" in
+    vt_h265_10bit) echo "50 55 60 65 70 75 80 85 90 95 100" ;;
+    *)             echo "22 20 18 16 14 12 10" ;;
+  esac
+}
+
+# Next rung for this encoder and direction, or "none-too-*" past the END OF THE
+# MENU -- and only there.
+#
+# THE STARTING QUALITY DOES NOT MATTER (operator's rule, 2026-09-07). Every
+# rung steps both ways. This replaced a one-directional rule that keyed
+# exhaustion on which side of the default a rung sat: a rung above the default
+# could only step further up, on the theory that it had been laddered up to and
+# stepping back would oscillate. That theory holds for a rung the ladder
+# reached on its own and is false for a hand-picked START rung -- which is what
+# `encoder_overrides.json` writes. The 2026-09-06 batch pinned every title at
+# CQ 75, so `next_rung vt_h265_10bit 75 big` answered none-too-big and Shazam
+# (2019) ran to 37% projecting 131% OF SOURCE with CQ 70/65/60/55/50 sitting
+# unused underneath it. The ladder had no way down from the rung the whole
+# batch started on.
+#
+# What that trade gives up: a projection that flips sides between adjacent
+# rungs can now walk back rather than exhausting. Two things bound it -- the
+# caller needs TWO consecutive agreeing ticks before it acts, and each menu is
+# finite, so any walk ends at CRF 22/10 or CQ 50/100. An unbounded oscillation
+# was the reason for the old rule; a blowup that cannot be stepped away from is
+# worse, and it is the one that actually happened.
+#
+# An OFF-MENU quality snaps to the nearest rung on the requested side instead
+# of exhausting. It is only reachable by hand-editing the override file --
+# core.encoder_for() can return a menu entry and nothing else -- but refusing
+# to ladder a number somebody typed is how a blowup runs unopposed, which is
+# exactly the failure above. An unknown ENCODER takes the x265 menu, the proven
+# path; a CRF number handed to the VT arm (or the reverse) is off that menu
+# entirely and snaps to its nearest end rather than being read on the wrong
+# scale.
 next_rung() { # $1=encoder $2=quality $3=big|small
-  if [ "$3" = big ]; then
-    case "$1" in
-      # VT pivots on CQ 70 (the default since 2026-09-06; 60 -> 70 -> 75 -> 70).
-      # Too big steps DOWN the reversed scale all the way to 50.
-      vt_h265_10bit) case "$2" in 70) echo 65 ;; 65) echo 60 ;; 60) echo 55 ;; 55) echo 50 ;; *) echo none-too-big ;; esac ;;
-      *)             case "$2" in
-                       14) echo 16 ;; 16) echo 18 ;; 18) echo 20 ;; 20) echo 22 ;;
-                       *)  echo none-too-big ;;
-                     esac ;;
-    esac
-  else
-    case "$1" in
-            # Too small steps UP the reversed scale from the pivot, 70 -> 75 -> ...
-      # -> 100 (the menu runs to CQ 100 since 2026-09-06). Below the pivot
-      # every rung was reached by laddering DOWN, so too-small there exhausts.
-      vt_h265_10bit) case "$2" in 70) echo 75 ;; 75) echo 80 ;; 80) echo 85 ;; 85) echo 90 ;; 90) echo 95 ;; 95) echo 100 ;; *) echo none-too-small ;; esac ;;
-      *)             case "$2" in 14) echo 12 ;; 12) echo 10 ;; *) echo none-too-small ;; esac ;;
-    esac
-  fi
+  awk -v cur="$2" -v dir="$3" -v menu="$(rung_menu "$1")" 'BEGIN{
+    n = split(menu, r, " ")
+    # The VT menu ascends (50..100) and the CRF menu descends (22..10); both
+    # are smallest-file-first, so this is how "smaller file" reads numerically.
+    asc = (r[1] + 0 < r[n] + 0)
+    best = ""
+    if (dir == "big") {
+      # Towards a smaller file. Keeping the LAST match walking up the list
+      # yields the closest such rung, so an on-menu quality moves exactly one.
+      for (i = 1; i <= n; i++) {
+        smaller = asc ? (r[i] + 0 < cur + 0) : (r[i] + 0 > cur + 0)
+        if (smaller) best = r[i]
+      }
+      if (best == "") { print "none-too-big"; exit }
+    } else {
+      for (i = n; i >= 1; i--) {
+        bigger = asc ? (r[i] + 0 > cur + 0) : (r[i] + 0 < cur + 0)
+        if (bigger) best = r[i]
+      }
+      if (best == "") { print "none-too-small"; exit }
+    }
+    print best
+  }'
 }
 
 # The scale a quality number is on. CRF (x265, LOWER = bigger file) and CQ

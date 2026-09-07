@@ -470,9 +470,18 @@ start_encode() {
   fi
   log "  tracks OK ${oa}a/${os}s"
 
-  local nokill=0; no_delete_policy && nokill=1
-  [ "$nokill" = 1 ] && log "  no-delete policy: auto-kill ladder OFF, this encode finishes at Q$q"
-  SMELTR_NO_AUTOKILL="$nokill" nohup "$X9/.watch-encode.sh" "$slug" "$title" "$(basename "$src")" "$(basename "$out")" "$pid" "$q" "$enc" \
+  # The band ladder stays ARMED under the no-delete policy (2026-09-07). The
+  # auto-kill deletes the PARTIAL OUTPUT on the staging drive -- a worthless
+  # half-encode the driver would otherwise match as finished by disk scan --
+  # and it never touches a library original, which is the only thing the
+  # no-delete policy is about. Wiring the two together removed the sole
+  # ceiling on an out-of-band encode: `no_delete_policy && nokill=1` switched
+  # the whole band check off, and Shazam (2019) reached 37% projecting 131%
+  # OF SOURCE with the watcher silent, no strikes and no FINAL line. Deletion
+  # safety is unchanged -- only a `good` verdict still reaches sync_async.
+  # SMELTR_NO_AUTOKILL=1 in the environment stays as the manual report-only
+  # escape hatch, and is the only thing that can disarm the ladder now.
+  SMELTR_NO_AUTOKILL="${SMELTR_NO_AUTOKILL:-0}" nohup "$X9/.watch-encode.sh" "$slug" "$title" "$(basename "$src")" "$(basename "$out")" "$pid" "$q" "$enc" \
     >> "$X9/.watch-${slug}.log" 2>&1 &
   log "  watcher pid $! (detached)"
 }

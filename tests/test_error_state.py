@@ -213,39 +213,88 @@ class DriverContract(unittest.TestCase):
         body = src.split("finished_folder() {", 1)[1].split("\n}\n", 1)[0]
         self.assertIn('[ -e "$X9/.error-$b" ] && continue', body)
 
-    def test_watcher_ladders_both_ways_from_the_default_rung(self):
-        """The ladder PIVOTS on core.CRF_DEFAULT, and both arms leave from it.
+    def test_every_rung_ladders_both_ways(self):
+        """The starting quality does not matter (operator's rule, 2026-09-07).
 
-        Every other rung is one-directional, so the pivot is the only rung
-        with a step in each direction. Move CRF_DEFAULT without re-anchoring
-        .watch-encode.sh and the new default becomes a one-way rung: the
-        first kill in the unsupported direction exhausts to none-* with
-        nothing left to try. That is silent -- it shows up hours later as a
-        title gone red on its first auto-kill -- so it is pinned here.
+        Every rung of every menu steps in BOTH directions, and "none-too-*"
+        means the END OF THE MENU and nothing else. This replaced a
+        one-directional rule keyed on which side of the default a rung sat:
+        a rung above the default could only step further up, on the theory
+        that it had been laddered up to. That is true of a rung the ladder
+        reached itself and false of a hand-picked START rung, which is what
+        `encoder_overrides.json` writes -- the 2026-09-06 batch pinned every
+        title at CQ 75, so `next_rung vt_h265_10bit 75 big` answered
+        none-too-big and Shazam (2019) ran to 37% projecting 131% of source
+        with CQ 70/65/60/55/50 unused underneath it.
+
+        Pinned against the REPO copy, so it has to pass before a deploy.
         """
+        for enc, menu in core.ENCODER_CHOICES.items():
+            # Smallest file first: CRF descends (22 is the smallest file), CQ
+            # ascends. That ordering is what "too big" steps towards.
+            rungs = sorted(menu, reverse=(enc != "vt_h265_10bit"))
+            self.assertGreater(len(rungs), 2, enc)
+            # a is the smaller-file rung of each adjacent pair, b the bigger.
+            for a, b in zip(rungs, rungs[1:]):
+                self.assertEqual(
+                    _next_rung(enc, b, "big"), str(a),
+                    "%s: too big at %s must step to %s" % (enc, b, a))
+                self.assertEqual(
+                    _next_rung(enc, a, "small"), str(b),
+                    "%s: too small at %s must step to %s" % (enc, a, b))
+            # Only the two ends of a menu exhaust.
+            self.assertEqual(_next_rung(enc, rungs[0], "big"), "none-too-big")
+            self.assertEqual(_next_rung(enc, rungs[-1], "small"), "none-too-small")
+
+    def test_a_hand_picked_start_rung_can_step_down(self):
+        """The exact case that shipped a 131%-of-source encode.
+
+        CQ 75 is above the VT default, so under the old rule it was treated
+        as a rung the ladder had climbed to and a too-big projection there
+        exhausted with five real rungs beneath it. A start rung is not a
+        laddered rung, and the watcher cannot tell them apart -- so neither
+        may be one-directional.
+        """
+        self.assertEqual(_next_rung("vt_h265_10bit", 75, "big"), "70")
+        self.assertEqual(_next_rung("x265_10bit", 12, "big"), "14")
+        self.assertEqual(_next_rung("x265_10bit", 20, "small"), "18")
+        self.assertEqual(_next_rung("vt_h265_10bit", 60, "small"), "65")
+
+    def test_an_off_menu_rung_snaps_instead_of_exhausting(self):
+        """A hand-edited quality still ladders.
+
+        core.encoder_for() can only answer a menu entry, so this is reachable
+        only by editing the override file by hand -- but refusing to ladder a
+        number somebody typed is how a blowup runs unopposed, which is the
+        failure this whole change is about. A number off the OTHER encoder's
+        scale is off this menu entirely and exhausts rather than being read
+        as a rung it is not.
+        """
+        self.assertEqual(_next_rung("vt_h265_10bit", 72, "big"), "70")
+        self.assertEqual(_next_rung("vt_h265_10bit", 72, "small"), "75")
+        self.assertEqual(_next_rung("vt_h265_10bit", 18, "big"), "none-too-big")
+        self.assertEqual(_next_rung("x265_10bit", 60, "big"), "none-too-big")
+
+    def test_the_no_delete_policy_does_not_disarm_the_ladder(self):
+        """no-delete is about the LIBRARY ORIGINAL, not the staging partial.
+
+        The auto-kill deletes a worthless half-encode on the X9 that the
+        driver would otherwise match as finished by disk scan. Wiring it to
+        `no_delete_policy` switched the entire band check off, which is why
+        Shazam (2019) had no ceiling at all: the watcher took
+        SMELTR_NO_AUTOKILL=1 and never counted a strike.
+        """
+        src = _read_repo_file("staging", "autopilot.sh")
+        self.assertNotIn("local nokill=", src)
+        self.assertNotIn('SMELTR_NO_AUTOKILL="$nokill"', src)
+        self.assertIn(
+            'SMELTR_NO_AUTOKILL="${SMELTR_NO_AUTOKILL:-0}" nohup "$X9/.watch-encode.sh"',
+            src,
+        )
+
+    def test_the_watcher_defaults_to_the_default_encoder_and_quality(self):
+        """A caller that omits [quality]/[encoder] lands on the real default."""
         src = _read_repo_file("staging", "watch-encode.sh")
-        ladder = sorted(core.CRF_CHOICES)
-        pivot = ladder.index(core.CRF_DEFAULT)
-        up = ladder[pivot:]  # too big  -> coarser, starting at the pivot
-        down = ladder[: pivot + 1][::-1]  # too small -> finer, starting at the pivot
-        self.assertGreater(len(up), 1, "the pivot has nowhere to go when too big")
-        self.assertGreater(len(down), 1, "the pivot has nowhere to go when too small")
-        # Ask the real function rather than matching its source: the mapping is
-        # keyed on the encoder now, so a string match would pass on a table
-        # that answers correctly for VideoToolbox and wrongly for x265.
-        for arm, direction in ((up, "big"), (down, "small")):
-            for a, b in zip(arm, arm[1:]):
-                self.assertEqual(_next_rung("x265_10bit", a, direction), str(b))
-            # The far end exhausts rather than wrapping.
-            self.assertEqual(
-                _next_rung("x265_10bit", arm[-1], direction), "none-too-" + direction
-            )
-        # A violation opposite to a rung's own direction exhausts immediately.
-        self.assertEqual(_next_rung("x265_10bit", up[-1], "small"), "none-too-small")
-        self.assertEqual(_next_rung("x265_10bit", down[-1], "big"), "none-too-big")
-        # The watcher's own default arguments are the DEFAULT encoder and its
-        # pivot (VideoToolbox CQ 70 since 2026-09-06): a caller that omits
-        # [quality]/[encoder] must not land on a rung the ladder cannot leave.
         self.assertIn('Q="${6:-%d}"' % core.DEFAULT_QUALITY, src)
         self.assertIn('ENC="${7:-%s}"' % core.DEFAULT_ENCODER, src)
         # And the VT ladder pivots on that default too, both arms, on the

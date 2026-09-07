@@ -43,18 +43,20 @@ out 1
 sleep 600 & HB=$!
 # Off the job table, or bash prints "Terminated: 15" when the watcher kills it.
 disown "$HB" 2>/dev/null || true
-"$TMP/we.sh" sandbox "$FOLDER" src.mkv out.mkv "$HB" 16 x265_10bit > "$TMP/log.txt" 2>&1 &
+"$TMP/we.sh" sandbox "$FOLDER" src.mkv out.mkv "$HB" 10 x265_10bit > "$TMP/log.txt" 2>&1 &
 W=$!
 
 # --- 1. a direction with no rung left finishes instead of killing ---------
-# CRF 16 is an UP-rung: it was reached because the encode was too big, so a
-# too-SMALL violation there has nowhere to step (stepping down would
-# oscillate). The old behaviour killed the encode and exhausted the title
-# into the ERROR state.
+# CRF 10 is the END of the too-small arm -- the biggest-file rung the x265
+# menu has -- so a too-SMALL violation there has nowhere to step. Since
+# 2026-09-07 that is the ONLY thing that exhausts a direction: the ladder no
+# longer treats a rung as one-directional because of which side of the
+# default it sits on. The old behaviour killed the encode here and exhausted
+# the title into the ERROR state.
 if waitfor '^FINAL|'; then
-  ck "a too-small projection at CRF 16 reports FINAL" 0 0
+  ck "a too-small projection at CRF 10 reports FINAL" 0 0
 else
-  ck "a too-small projection at CRF 16 reports FINAL" 1 0
+  ck "a too-small projection at CRF 10 reports FINAL" 1 0
 fi
 line=$(grep '^FINAL|' "$TMP/log.txt" | head -1)
 kill -0 "$HB" 2>/dev/null && alive=yes || alive=no
@@ -62,15 +64,16 @@ ck "the encode is NOT killed"           "$alive" yes
 ck "the partial is NOT deleted"         "$([ -f "$TMP/sb/$FOLDER/out.mkv" ] && echo yes || echo no)" yes
 ck "the line carries its own timestamp" \
    "$(printf '%s' "$line" | cut -d'|' -f3 | grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8}$')" 1
-ck "the rung names its scale"           "$(printf '%s' "$line" | grep -c 'CRF 16')" 1
+ck "the rung names its scale"           "$(printf '%s' "$line" | grep -c 'CRF 10')" 1
 ck "it does not claim an arm it is not on" \
    "$(printf '%s' "$line" | grep -c 'last rung on the')" 0
 ck "it names the direction that ran out" \
    "$(printf '%s' "$line" | grep -c 'too-small')" 1
 
 # --- 2. THE OTHER DIRECTION KEEPS ITS KILL AUTHORITY ----------------------
-# This is the whole point. CRF 16 still has a real up-rung (18), and the
-# encode that reaches it is the one that was too big in the first place.
+# This is the whole point. CRF 10 has run out of too-small rungs but still
+# has a real up-rung (12), and a blowup is exactly what the too-big arm is
+# there to stop. A single "the ladder is done" flag disarmed both.
 out 60
 if waitfor '^KILLED|'; then
   ck "a blowup after a FINAL is still killed" 0 0
@@ -78,7 +81,7 @@ else
   ck "a blowup after a FINAL is still killed" 1 0
 fi
 kline=$(grep '^KILLED|' "$TMP/log.txt" | head -1)
-ck "it ladders to the next rung"  "$(printf '%s' "$kline" | grep -c 'next: Q 18')" 1
+ck "it ladders to the next rung"  "$(printf '%s' "$kline" | grep -c 'next: Q 12')" 1
 n=0; while kill -0 "$HB" 2>/dev/null && [ "$n" -lt 40 ]; do n=$((n+1)); sleep 0.5; done
 ck "the encode is killed"         "$(kill -0 "$HB" 2>/dev/null && echo yes || echo no)" no
 ck "the partial is deleted"       "$([ -f "$TMP/sb/$FOLDER/out.mkv" ] && echo yes || echo no)" no

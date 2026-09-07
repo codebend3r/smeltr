@@ -304,11 +304,14 @@ ledger.jsonl        the irreplaceable record, beside the launcher
    and never retried — a dead end wearing the costume of a choice. Now that
    core owns it, a value the page offers is one the driver will accept.
 
-   **Consequence the operator gets, accepted:** the watcher cannot tell
-   "started at 20 by hand" from "laddered up to 20", so the
-   opposite-direction rule still applies — a hand-picked 20 that projects
-   TOO SMALL exhausts straight to `none-too-small` (the ERROR state) instead
-   of stepping back down. Picking a rung narrows the ladder to one direction.
+   **A hand-picked rung no longer narrows the ladder (fixed 2026-09-07).**
+   It used to: the watcher cannot tell "started at 20 by hand" from
+   "laddered up to 20", and the old one-directional rule read every rung
+   above the default as the latter, so a hand-picked 20 that projected TOO
+   SMALL exhausted straight to `none-too-small` instead of stepping back
+   down. That was written up here as an accepted cost and it was not one —
+   see *The starting quality does not matter* below for the encode it
+   eventually shipped. Every rung now steps both ways.
 
    The ladder still OUTRANKS the plan: a `KILLED|` line in the watch log wins,
    because a retry after a measured, rejected projection is not something a
@@ -361,9 +364,10 @@ How it works:
   and it inverts wholesale for VT. x265 quality is CRF, where LOWER means a
   bigger file: too big steps UP 14→16→18→20→22, too small steps DOWN
   14→12→10. VT quality is CQ, where HIGHER means a bigger file, so both
-  arms flip: too big steps DOWN 60→55→50, too small steps UP 60→65→70. A
-  rung mapped with the wrong scale re-runs the blowup LARGER. Each ladder
-  still pivots on its encoder's own default; past its last rung
+  arms flip: too big steps DOWN 100→…→55→50, too small steps UP 50→55→…→100.
+  A rung mapped with the wrong scale re-runs the blowup LARGER. Every rung
+  steps in BOTH directions since 2026-09-07 — there is no pivot and no
+  one-directional rung; past its last rung
   (`none-too-big`/`none-too-small`) the encode FINISHES there rather than
   being killed (2026-09-06) — CQ 50 and CQ 70 are VT's terminal rungs, the
   mirror of CRF 22 and CRF 10. The KILLED
@@ -548,10 +552,68 @@ encode over a momentary unreadable stat deletes hours of work), and TWO
 consecutive ticks must agree on the same violation before the kill fires.
 
 On a kill the partial is deleted and the driver retries at the next rung —
-**up 14→16→18→20→22 when too big, down 14→12→10 when too small**. A
-violation OPPOSITE to the rung's own direction (too small at 16/18/20/22, too
-big at 12/10) exhausts immediately — a projection that flips sides
-between adjacent rungs would oscillate forever.
+**CRF up 10→12→14→16→18→20→22 when too big, down 22→…→12→10 when too
+small**, and the mirrored CQ walk on VideoToolbox. **Every rung steps both
+ways** (2026-09-07); `none-too-*` means the END OF THE MENU and nothing
+else. See *The starting quality does not matter* below.
+
+### The starting quality does not matter (2026-09-07, operator's rule)
+
+**"The starting quality should not matter, it should always scale up or
+down."** Every rung of every menu now steps in BOTH directions, and
+`none-too-*` means the END OF THAT MENU and nothing else — CRF 22/10,
+CQ 50/100.
+
+Two independent defects let a VideoToolbox encode of Shazam (2019) reach 37%
+progress **projecting 131% of source** — a file bigger than the original it
+was meant to replace — with the watcher completely silent. Both had to be
+fixed; either one alone still produced that encode.
+
+1. **The no-delete policy disarmed the whole band ladder.**
+   `start_encode()` did `local nokill=0; no_delete_policy && nokill=1` and
+   passed it as `SMELTR_NO_AUTOKILL`, which skips the entire band check. But
+   the auto-kill deletes the **partial output on the staging drive** — a
+   worthless half-encode the driver would otherwise match as finished by disk
+   scan — and never a library original, which is the only thing the no-delete
+   policy is about. Conflating them removed the sole ceiling on an
+   out-of-band encode. The ladder is now always armed;
+   `SMELTR_NO_AUTOKILL=1` in the environment stays as the manual report-only
+   escape hatch and is the only thing that can disarm it. Deletion safety is
+   untouched — only a `good` verdict still reaches `sync_async`.
+
+2. **A hand-picked start rung had no way down.** The old `next_rung()` keyed
+   exhaustion on which side of the encoder's default a rung sat: a rung above
+   the default could only step further up, on the theory that it had been
+   laddered up to and stepping back would oscillate. That is true of a rung
+   the ladder reached itself and **false of a start rung** — and
+   `encoder_overrides.json` writes start rungs. The 2026-09-06 batch pinned
+   every title at CQ 75, so `next_rung vt_h265_10bit 75 big` answered
+   `none-too-big` with CQ 70/65/60/55/50 sitting unused underneath it. The
+   ladder had no way down from the rung the entire batch started on.
+
+**The menus are now ordered lists, smallest file first** — `50 55 … 100` for
+VT, `22 20 … 10` for x265 — and one direction rule covers both scales: too
+big steps one rung towards a smaller file, too small one rung towards a
+bigger one. The inversion is expressed ONCE, as the order of each list,
+rather than as per-encoder arms that had to be kept mirrored by eye. An
+off-menu quality snaps to the nearest rung on the requested side instead of
+exhausting (only reachable by hand-editing the override file, but refusing to
+ladder a typed number is exactly how a blowup runs unopposed); a number off
+the OTHER encoder's scale is off this menu entirely and still exhausts rather
+than being read on the wrong scale.
+
+**What this gives up:** a projection that flips sides between adjacent rungs
+can now walk back the way it came instead of exhausting. Two things bound it
+— the watcher needs TWO consecutive agreeing ticks before it acts, and each
+menu is finite, so any walk terminates. An unbounded oscillation was the
+reason for the old rule; a blowup that cannot be stepped away from is worse,
+and it is the one that actually happened.
+
+`tests/test_watch_ladder.sh` pins every rung in both directions,
+`tests/test_error_state.py` pins the rule against `core.ENCODER_CHOICES` and
+that the no-delete policy no longer touches the ladder, and
+`tests/test_watch_finish.sh` drives the real loop at a genuine terminal rung
+(CRF 10) to prove per-direction finality still holds.
 
 **Past the LAST rung the encode is no longer killed — it finishes
 (2026-09-06, operator's rule).** There is no better rung to retry at, so the
@@ -559,10 +621,10 @@ run in flight IS the answer: the watcher logs `FINAL|` instead of `KILLED|`,
 stops band-checking for the rest of the run, and the encode completes at its
 terminal rung — **x265 CRF 22 (too big) / CRF 10 (too small), VideoToolbox
 CQ 50 (too big) / CQ 70 (too small)**, the same rule on the mirrored scale.
-The one-directional rungs go the same way: a violation a rung cannot step
-towards finishes there too, because the alternative was never a better rung,
-only an oscillation. Killing at the end produced no output at all and burned
-hours; an out-of-band file is something a human can look at.
+Since 2026-09-07 those four rungs are the ONLY ones that reach this branch:
+there are no one-directional rungs left to exhaust early. Killing at the end
+produced no output at all and burned hours; an out-of-band file is something
+a human can look at.
 
 **The two arms do NOT end the same way, and "nothing is deleted" is false on
 one of them.** The ladder stops deciding; the verdict still does — and the
@@ -621,15 +683,13 @@ watcher launched before this deploy still writes `next: Q none-*`, and it
 already killed its encode.
 `tests/test_error_state.py::LastRungFinishes` pins it.
 
-**The ladder pivots on `core.CRF_DEFAULT` and the two must move together**
-(the pivot went 16 → 14 on 2026-09-03). The pivot is the one rung both arms
-leave from; every other rung is one-directional. Moving the constant alone
-would make the default a DOWN-ONLY rung, so the first too-big kill of a
-default encode would exhaust to `none-too-big` with no rung left to try —
-and a lower CRF makes a BIGGER file, so too-big is exactly the direction
-the move to 14 makes more likely. Moving the pivot also means a hand-picked
-16 that comes in too small now exhausts rather than stepping to 14, which is
-the same "picking a rung narrows the ladder" rule applied one rung up. Exhaustion (`none-too-big` /
+**There is no pivot any more (2026-09-07), so `core.CRF_DEFAULT` can move
+on its own.** The ladder used to leave from the default and treat every
+other rung as one-directional, which meant moving the constant without
+re-anchoring `.watch-encode.sh` turned the new default into a one-way rung.
+`next_rung()` now walks the menu from wherever it is, so the two are
+independent — the menus in `core.ENCODER_CHOICES` are what must not drift.
+Exhaustion (`none-too-big` /
 `none-too-small`) reaching the DRIVER — only possible from a pre-2026-09-06
 watcher now — is the **ERROR state**: `.autopilot.sh` writes
 `$X9/.error-<title>` and MOVES ON — never a halt, never a skip, never a
