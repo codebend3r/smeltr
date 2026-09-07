@@ -381,5 +381,27 @@ sect("a running encode gets no picker");
   );
 }
 
+sect("paint() hands the picker the defaults it names");
+{
+  /* crfPicker reads encoder_default/quality_default off the object paint()
+     builds for renderQueue -- NOT the raw state. On 2026-09-07 that object
+     carried crf_default and neither of the other two, so every auto row on
+     the live page read "CRF 14 (auto)" while the driver started VT CQ 70.
+     The unit tests above passed because they hand crfPicker a full state. */
+  const at = src.indexOf("? renderQueue(");
+  const call = src.slice(at, src.indexOf("s.live,", at));
+  check(
+    "renderQueue's state carries encoder_default",
+    /encoder_default:\s*s\.encoder_default/.test(call),
+    call,
+  );
+  check(
+    "renderQueue's state carries quality_default",
+    /quality_default:\s*s\.quality_default/.test(call),
+    call,
+  );
+  check("and still crf_default", /crf_default:\s*s\.crf_default/.test(call), call);
+}
+
 console.log(failed ? "\ncrf picker: " + failed + " FAILED" : "\ncrf picker: all passed");
 process.exit(failed ? 1 : 0);

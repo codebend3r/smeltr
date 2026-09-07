@@ -2325,6 +2325,11 @@
                 crf_choices: s.crf_choices,
                 encoder_choices: s.encoder_choices,
                 crf_default: s.crf_default,
+                /* The picker's "(auto)" names what an untouched row starts on.
+                Omitting these two made every auto row read "CRF 14" while the
+                driver started VT CQ 70 -- seen live 2026-09-07 00:06. */
+                encoder_default: s.encoder_default,
+                quality_default: s.quality_default,
                 /* A busy wire changes the button's PROMISE from "pull now" to
                 "wait in line"; saying "stage" while five titles queue ahead
                 would misstate what the click does. */
