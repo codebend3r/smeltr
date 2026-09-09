@@ -114,51 +114,46 @@ ledger.jsonl        the irreplaceable record, beside the launcher
    in `.replenish-queue.sh` — same free-space gate (source + in-flight pulls
    + 10 GiB margin), same delete-the-folder cleanup on failure — with ONE
    deliberate deviation: **the pull lands in a hidden `.pull-<title>` folder
-   and is renamed into place only when the byte count checks out.** The
-   replenisher used to be safe pulling into a visible folder ONLY because the
-   driver called it synchronously — it structurally could not be at the
-   `next_title` step while its own pull was in flight. Since 2026-09-06 the
-   driver backgrounds it too (`replenish_async`, from the wait and stop paths
-   as well as after a sync), so `next_title.py`'s exit-3 pass-over of a
-   visible folder holding only a `.partial` is what guards it now — a
-   pre-2026-08-23 checkout and the new driver would halt. A dashboard pull is asynchronous, and a
-   visible folder holding no source `.mkv` is picked by `next_title.py` and
-   HALTS the driver (`no source file`, exit 2 — confirmed in a sandbox).
-   Hidden means invisible to `next_title.py`, `core.staged_folders()`, and
-   the replenisher's `find`; a leftover from a crashed server can only ever
-   render as a stalled arrival, never as an encodable folder — and since
-   2026-09-01 the next server start adopts it (see *Orphan adoption*
-   below). One pull at a
-   time (in-process flag AND `pgrep ssh-xfer.sh pull`, so the guard survives
-   a server restart); held while the replenisher is mid-run (its lock +
-   pgrep — a lock with no live process is reported as STALE, with the rmdir
-   to run, since it silently starves the replenisher too). `_arrivals()`
-   tracks growth like `_transfers()`: >120 s without growth renders
-   `stalled`, never a bar. Failures report through `encode_note` (a `bad`
-   note resists `ok` overwrites for 15 min — it is often the only record);
-   log in `.pull-<slug>.log`. A completed pull is NEVER deleted over a
-   rename failure — the note says where the file is. (Since 2026-08-23
-   `next_title.py` also passes over a visible folder with no source `.mkv`
-   and exits 3 — a wait, not a halt — so the hidden folder is now
-   defence-in-depth rather than the only thing preventing that halt.)
+   and is renamed into place only when the byte count checks out.** Hidden
+   means invisible to `next_title.py`, `core.staged_folders()` and the
+   replenisher's `find`, because a VISIBLE folder holding no source `.mkv` is
+   picked by `next_title.py` and HALTS the driver (`no source file`, exit 2 —
+   confirmed in a sandbox). The replenisher used to be safe pulling into a
+   visible folder only because the driver called it synchronously; since
+   2026-09-06 the driver backgrounds it too (`replenish_async`, from the wait
+   and stop paths as well as after a sync), so `next_title.py`'s exit-3
+   pass-over of a folder holding only a `.partial` (2026-08-23) is what guards
+   it now — the hidden folder is defence-in-depth rather than the only thing
+   preventing that halt, and a pre-2026-08-23 checkout with the new driver
+   would halt. A leftover from a crashed server can only ever render as a
+   stalled arrival, never as an encodable folder, and since 2026-09-01 the
+   next server start adopts it (below). One pull at a time (in-process flag
+   AND `pgrep ssh-xfer.sh pull`, so the guard survives a server restart);
+   held while the replenisher is mid-run (its lock + pgrep — a lock with no
+   live process is reported as STALE, with the rmdir to run, since it
+   silently starves the replenisher too). `_arrivals()` tracks growth like
+   `_transfers()`: >120 s without growth renders `stalled`, never a bar.
+   Failures report through `encode_note` (a `bad` note resists `ok`
+   overwrites for 15 min — it is often the only record); log in
+   `.pull-<slug>.log`. A completed pull is NEVER deleted over a rename
+   failure — the note says where the file is.
 
    **Orphan adoption (2026-09-01).** The pull child is `start_new_session`'d,
    so it survives a server restart — but the `_stage_worker` thread that
    waits on it and does the commit rename dies with the old process. On
    2026-08-31 that stranded a complete, verified 61 GB pull of Addams
-   Family 2 as a stalled arrival until a human renamed it. `main()` now
-   calls `_adopt_orphan_pulls()`: if any `.pull-<title>` folder exists, a
-   daemon thread ticks `_sweep_orphans_once()` every 20 s until done. The
-   commit evidence is the folder's CONTENTS, not a return code — a final
-   `.mkv` with no `.partial` beside it IS the completed pull, because
-   `.ssh-xfer.sh` renames the `.partial` only on a byte-count match — so a
-   complete orphan is renamed into place; a `.partial`/empty/junk-only
-   folder is a dead half-pull and gets the worker's delete-the-folder
-   cleanup. The sweep defers (returns "come back later") while ANY
+   Family 2 as a stalled arrival until a human renamed it. `main()` now calls
+   `_adopt_orphan_pulls()`: if any `.pull-<title>` folder exists, a daemon
+   thread ticks `_sweep_orphans_once()` every 20 s until done. The commit
+   evidence is the folder's CONTENTS, not a return code — a final `.mkv` with
+   no `.partial` beside it IS the completed pull, because `.ssh-xfer.sh`
+   renames the `.partial` only on a byte-count match — so a complete orphan is
+   renamed into place; a `.partial`/empty/junk-only folder is a dead half-pull
+   and gets the worker's delete-the-folder cleanup. The sweep defers while ANY
    `ssh-xfer.sh pull` is alive or `_stage_active` is set, so it can never
-   touch a folder something is still writing; a rename failure (including
-   a destination that already exists) keeps the pull and says "move it by
-   hand" — never deleted. Pinned in `test_stage_queue.py::OrphanPulls`.
+   touch a folder something is still writing; a rename failure (including a
+   destination that already exists) keeps the pull and says "move it by hand"
+   — never deleted. Pinned in `test_stage_queue.py::OrphanPulls`.
 
    **The pull QUEUE (2026-08-23).** `POST /api/stage/start` no longer refuses
    a busy wire — it ENQUEUES. `_stage_queue` is an in-memory FIFO of titles;
@@ -188,30 +183,31 @@ ledger.jsonl        the irreplaceable record, beside the launcher
    **The hold reason NAMES the transfer (2026-09-07).** "waiting — another
    pull owns the wire" named nothing a person could go and check, and on
    2026-09-07 the only pull on the machine was a *replenish* pull of a
-   hand-skipped title — whose row, and whose arrival bar, had lifted to the
-   Errors tab under the 2026-09-06 split. So the Queue tab reported a
-   blocking transfer that appeared nowhere on it, which reads as the UI
-   inventing one. `_wire_title()` reads the staging DESTINATION (the last
-   `Name (YYYY)` in the command line) through the SAME `procs._title_of` the
-   Processes tab uses, so the two surfaces can never name a transfer
-   differently. A title is stable for the length of a transfer — shape, not a
-   live number — so it cannot thrash the repaint key the way the free-space
-   figure below would. **`_pgrep_cmds()` reads `ps -axo pid=,command=`, never
-   `pgrep -a`**: BSD's `-a` is not GNU's "print the command line" and the
-   divergence is silent — the first cut returned bare pids here, so a live
-   replenisher read as a STALE lock. An unreadable process list answers
-   busy-and-unnamed, never idle: a hold we cannot phrase is still a hold, and
-   answering idle starts a SECOND transfer on a busy wire.
+   hand-skipped title, whose row and arrival bar had lifted to the Errors tab
+   under the 2026-09-06 split — so the Queue tab reported a blocking transfer
+   that appeared nowhere on it, which reads as the UI inventing one.
+   `_wire_title()` reads the staging DESTINATION (the last `Name (YYYY)` in
+   the command line) through the SAME `procs._title_of` the Processes tab
+   uses, so the two surfaces can never name a transfer differently. A title is
+   stable for the length of a transfer — shape, not a live number — so it
+   cannot thrash the repaint key. **`_pgrep_cmds()` reads
+   `ps -axo pid=,command=`, never `pgrep -a`**: BSD's `-a` is not GNU's "print
+   the command line" and the divergence is silent — the first cut returned
+   bare pids here, so a live replenisher read as a STALE lock. An unreadable
+   process list answers busy-and-unnamed, never idle: a hold we cannot phrase
+   is still a hold, and answering idle starts a SECOND transfer on a busy
+   wire.
 
-   `_stage_wait["why"]` renders on the head row only. It deliberately carries
+   `_stage_wait["why"]` renders on the head row only, and deliberately carries
    **no volatile number** — free space moves every second as the encode
    writes, and a reason string that changed every frame would put the row's
-   shape back in `paint()`'s repaint key and rebuild the table twice a
-   second. The measured figure goes to `encode_note` once per transition.
-   Lock order is `_stage_lock` → `_state_lock`; `_pump_once_locked()` takes a
-   queue snapshot built OUTSIDE the lock because `build_state()` takes
+   shape back in `paint()`'s repaint key and rebuild the table twice a second.
+   The measured figure goes to `encode_note` once per transition. Lock order
+   is `_stage_lock` → `_state_lock`; `_pump_once_locked()` takes a queue
+   snapshot built OUTSIDE the lock because `build_state()` takes
    `_stage_lock` itself, and building it inside would deadlock the pump
    against every open page. `tests/test_stage_queue.py` pins all of it.
+
 4. Pause-after-current (2026-08-23): `POST /api/pause` writes/removes a
    `pause` flag file beside the ledger (gitignored). While it exists
    `next_title.py` answers exit **3** — the driver's existing
@@ -227,38 +223,35 @@ ledger.jsonl        the irreplaceable record, beside the launcher
    louder facts first (`x9_online` false, then no driver process).
 
    **The switch must never refuse a click (fixed 2026-08-30).** It used to
-   set `disabled` for the whole POST round-trip — and that round-trip is not
-   short, because `/api/pause` answers with a freshly built state payload
-   that stats the NAS roots over SMB (0.5–1.0 s). A click inside that window
-   hit a disabled button, so it never reached `api()` and never even raised
-   the "another action is still in flight" notice, which is the ONE outcome
-   that notice exists to prevent: driving the real page, **six of ten rapid
-   clicks vanished with no feedback of any kind**. Pause/resume is the
-   control a person hammers, so that read as a broken toggle. The switch now
-   never disables: `pauseState()` draws the user's UNSETTLED intent over the
-   server's committed value so the flip lands on the click, and the LAST
-   click wins — a click during a write is recorded and the in-flight call
-   drains it when it lands, so two round-trips still never race but nothing
-   is silently dropped (a round trip back to the starting value sends
-   nothing at all). Intent is released the moment a write settles, so a
-   denied LAN write snaps the switch back to the truth rather than leaving
-   the optimistic flip standing. The queue tab's "next after resume" mark
-   deliberately stays on the server's value: an unconfirmed intent may draw
-   the control under the finger, never a claim about what the driver will
-   do.
+   set `disabled` for the whole POST round-trip, and that round-trip is not
+   short — `/api/pause` answers with a freshly built state payload that stats
+   the NAS roots over SMB (0.5–1.0 s). A click inside that window hit a
+   disabled button, so it never reached `api()` and never even raised the
+   "another action is still in flight" notice: on the real page **six of ten
+   rapid clicks vanished with no feedback of any kind**, which on the control
+   a person hammers reads as a broken toggle. The switch now never disables.
+   `pauseState()` draws the user's UNSETTLED intent over the server's
+   committed value so the flip lands on the click, and the LAST click wins — a
+   click during a write is recorded and the in-flight call drains it when it
+   lands, so two round-trips still never race but nothing is silently dropped
+   (a round trip back to the starting value sends nothing at all). Intent is
+   released the moment a write settles, so a denied LAN write snaps the switch
+   back to the truth rather than leaving the optimistic flip standing. The
+   queue tab's "next after resume" mark deliberately stays on the server's
+   value: an unconfirmed intent may draw the control under the finger, never a
+   claim about what the driver will do.
 
    **The control is ONE native `<button>` — pill and sentence inside it.**
-   Two separate failures put it there. First, only the 36×20 pill was
-   clickable: the label beside it is a SENTENCE ("will pause after this
-   encode — *title* still finishes, syncs, and replaces its 90.35 GiB library
-   original") and a person reads it and aims at it, but it was inert.
-   Second, moving the handler onto a wrapping `<div>` fixed the mouse and NOT
-   the iPad — **which is where this is actually watched**. iOS Safari only
-   synthesises a click from a tap on natively interactive elements (or ones
-   carrying `cursor:pointer`), so a listener on a plain div is a coin-toss
-   across platforms. A `<button>` takes the event from a mouse, a finger, a
-   pen and the keyboard everywhere, with no touch shims and no double-fire,
-   and it is the accessible control for free (`role="switch"` +
+   Two failures put it there: only the 36×20 pill was clickable, while the
+   label beside it is a SENTENCE a person reads and aims at ("will pause after
+   this encode — *title* still finishes, syncs, and replaces its 90.35 GiB
+   library original"); and moving the handler onto a wrapping `<div>` fixed
+   the mouse and NOT the iPad, **which is where this is actually watched** —
+   iOS Safari only synthesises a click from a tap on natively interactive
+   elements (or ones carrying `cursor:pointer`), so a listener on a plain div
+   is a coin-toss across platforms. A `<button>` takes the event from a mouse,
+   a finger, a pen and the keyboard everywhere, with no touch shims and no
+   double-fire, and it is the accessible control for free (`role="switch"` +
    `aria-checked`, the sentence as its name; the pill is `aria-hidden`
    decoration, never a second focus stop). `.pauserow` carries the button
    reset and is `inline-flex` so it hugs pill+sentence instead of making the
@@ -267,37 +260,38 @@ ledger.jsonl        the irreplaceable record, beside the launcher
    target.
 
    **A synthetic `element.click()` cannot catch either of those** and two
-   successive "fixes" shipped believing it had. `.click()` skips hit testing
-   AND skips the platform's tap→click synthesis, so it passes on a control
-   nothing can actually reach with a real input. Verify pointer-driven UI
-   with `Input.dispatchMouseEvent` at real coordinates, `Input.dispatchTouchEvent`
+   successive "fixes" shipped believing it had: `.click()` skips hit testing
+   AND the platform's tap→click synthesis, so it passes on a control nothing
+   can actually reach with a real input. Verify pointer-driven UI with
+   `Input.dispatchMouseEvent` at real coordinates, `Input.dispatchTouchEvent`
    under `Emulation.setTouchEmulationEnabled`, and `document.elementFromPoint`
-   — the way `tests/visual/shoot.mjs` already drives Chrome.
-   `tests/test_pause_toggle.js` pins the structure (it IS a button, one
+   — the way `tests/visual/shoot.mts` already drives Chrome.
+   `tests/test_pause_toggle.ts` pins the structure (it IS a button, one
    handler, the CSS target rules); the pointer/touch runs are manual.
 
    **Pause/resume is the ONE write a network peer may make (2026-08-30).**
    The reason the toggle looked dead on the iPad was neither of the bugs
-   above: `_writes_ok()` refused every POST from a network peer, so the
-   switch flipped optimistically, took a 403 and snapped back. That gate is
-   right for skip/reorder, encode start/abort and stage pulls — un-skipping
-   re-arms a ~90 GB deletion and encode control spawns and kills HandBrake —
-   but pause's worst case is the pipeline WAITING, which is the direction
-   `core.paused()` already fails towards. `LAN_WRITE_ROUTES` is checked per
-   request; `_writes_ok()` takes the route and its default
-   `""` is deliberately NOT in the tuple, so a caller that forgets the route
-   gets the STRICT answer and a new endpoint stays refused off-box until it
-   is listed. `SMELTR_LAN_WRITES=1` still opens everything. The token still
-   gates it all, so this is "any device you handed the URL to", not "anyone
-   on the network". `tests/test_http_gates.py` pins each route on both sides.
-   (Since 2026-08-31 `/api/driver/start` is the SECOND LAN-writable route —
-   see 5. Since 2026-09-07 `/api/stage/start` and `/api/stage/cancel` are
-   LAN-writable too: the operator queues downloads from the iPad, and every
-   click was answered 403 and never queued. A pull's worst case is ~60 GB on
-   the staging drive — nothing deleted, no encoder spawned, the free-space
-   gate still runs at dispatch. The PUBLIC door does NOT get them:
-   `PUBLIC_WRITE_ROUTES` is strictly narrower than `LAN_WRITE_ROUTES` and
-   `_writes_ok()` tests it first for an `untrusted` handler.)
+   above: `_writes_ok()` refused every POST from a network peer, so the switch
+   flipped optimistically, took a 403 and snapped back. That gate is right for
+   skip/reorder, encode start/abort and stage pulls — un-skipping re-arms a
+   ~90 GB deletion and encode control spawns and kills HandBrake — but pause's
+   worst case is the pipeline WAITING, the direction `core.paused()` already
+   fails towards. `LAN_WRITE_ROUTES` is checked per request; `_writes_ok()`
+   takes the route and its default `""` is deliberately NOT in the tuple, so a
+   caller that forgets the route gets the STRICT answer and a new endpoint
+   stays refused off-box until it is listed. `SMELTR_LAN_WRITES=1` still opens
+   everything. The token still gates it all, so this is "any device you handed
+   the URL to", not "anyone on the network". `tests/test_http_gates.py` pins
+   each route on both sides. (Since 2026-08-31 `/api/driver/start` is the
+   SECOND LAN-writable route — see 5. Since 2026-09-07 `/api/stage/start` and
+   `/api/stage/cancel` are LAN-writable too: the operator queues downloads
+   from the iPad, and every click was answered 403 and never queued. A pull's
+   worst case is ~60 GB on the staging drive — nothing deleted, no encoder
+   spawned, the free-space gate still runs at dispatch. The PUBLIC door does
+   NOT get them: `PUBLIC_WRITE_ROUTES` is strictly narrower than
+   `LAN_WRITE_ROUTES` and `_writes_ok()` tests it first for an `untrusted`
+   handler.)
+
 5. Driver start (2026-08-31): `POST /api/driver/start` LAUNCHES
    `.autopilot.sh` — the big play/pause toggle's "nothing is running" half,
    because a stopped driver previously had no dashboard control at all. It
@@ -370,7 +364,7 @@ ledger.jsonl        the irreplaceable record, beside the launcher
    high produces an encode the verdict legitimately calls `good`, which syncs
    and replaces a ~90 GB original with a worse picture — the same class of
    consequence as un-skipping, not the same class as pausing.
-   `tests/test_planned_crf.py` and `tests/test_crf_picker.js` pin it.
+   `tests/test_planned_crf.py` and `tests/test_crf_picker.ts` pin it.
 
 ### The hybrid encoder (2026-08-25; deployed and the DEFAULT since 2026-09-06)
 
@@ -747,77 +741,60 @@ else. See *The starting quality does not matter* below.
 ### The starting quality does not matter (2026-09-07, operator's rule)
 
 **"The starting quality should not matter, it should always scale up or
-down."** Every rung of every menu now steps in BOTH directions, and
-`none-too-*` means the END OF THAT MENU and nothing else — CRF 22/10,
-CQ 50/100.
+down."** Every rung of every menu steps in BOTH directions, and `none-too-*`
+means the END OF THAT MENU and nothing else — CRF 22/10, CQ 50/100.
 
 Two independent defects let a VideoToolbox encode of Shazam (2019) reach 37%
-progress **projecting 131% of source** — a file bigger than the original it
-was meant to replace — with the watcher completely silent. Both had to be
-fixed; either one alone still produced that encode.
+progress **projecting 131% of source** with the watcher completely silent.
+Either one alone still produced that encode:
 
-1. **The no-delete policy disarmed the whole band ladder.**
-   `start_encode()` did `local nokill=0; no_delete_policy && nokill=1` and
-   passed it as `SMELTR_NO_AUTOKILL`, which skips the entire band check. But
-   the auto-kill deletes the **partial output on the staging drive** — a
-   worthless half-encode the driver would otherwise match as finished by disk
-   scan — and never a library original, which is the only thing the no-delete
-   policy is about. Conflating them removed the sole ceiling on an
-   out-of-band encode. The ladder is now always armed;
+1. **The no-delete policy disarmed the whole band ladder.** `start_encode()`
+   passed `SMELTR_NO_AUTOKILL` whenever the policy was on, which skips the
+   band check entirely. But the auto-kill deletes the **partial output on the
+   staging drive** — a worthless half-encode the driver would otherwise match
+   as finished by disk scan — and never a library original, which is the only
+   thing the policy is about. The ladder is now always armed;
    `SMELTR_NO_AUTOKILL=1` in the environment stays as the manual report-only
    escape hatch and is the only thing that can disarm it. Deletion safety is
    untouched — only a `good` verdict still reaches `sync_async`.
-
 2. **A hand-picked start rung had no way down.** The old `next_rung()` keyed
-   exhaustion on which side of the encoder's default a rung sat: a rung above
-   the default could only step further up, on the theory that it had been
-   laddered up to and stepping back would oscillate. That is true of a rung
-   the ladder reached itself and **false of a start rung** — and
-   `encoder_overrides.json` writes start rungs. The 2026-09-06 batch pinned
-   every title at CQ 75, so `next_rung vt_h265_10bit 75 big` answered
-   `none-too-big` with CQ 70/65/60/55/50 sitting unused underneath it. The
-   ladder had no way down from the rung the entire batch started on.
+   exhaustion on which side of the encoder's default a rung sat, so a rung
+   above the default could only step further up — true of a rung the ladder
+   reached itself, false of a start rung, and `encoder_overrides.json` writes
+   start rungs. The 2026-09-06 batch pinned every title at CQ 75, so
+   `next_rung vt_h265_10bit 75 big` answered `none-too-big` with CQ
+   70/65/60/55/50 sitting unused underneath it.
 
-**The menus are now ordered lists, smallest file first** — `50 55 … 100` for
-VT, `22 20 … 10` for x265 — and one direction rule covers both scales: too
-big steps one rung towards a smaller file, too small one rung towards a
-bigger one. The inversion is expressed ONCE, as the order of each list,
-rather than as per-encoder arms that had to be kept mirrored by eye. An
-off-menu quality snaps to the nearest rung on the requested side instead of
-exhausting (only reachable by hand-editing the override file, but refusing to
-ladder a typed number is exactly how a blowup runs unopposed); a number off
-the OTHER encoder's scale is off this menu entirely and still exhausts rather
-than being read on the wrong scale.
-
-**What this gives up:** a projection that flips sides between adjacent rungs
-can now walk back the way it came instead of exhausting. Two things bound it
-— the watcher needs TWO consecutive agreeing ticks before it acts, and each
-menu is finite, so any walk terminates. An unbounded oscillation was the
-reason for the old rule; a blowup that cannot be stepped away from is worse,
-and it is the one that actually happened.
-
-`tests/test_watch_ladder.sh` pins every rung in both directions,
-`tests/test_error_state.py` pins the rule against `core.ENCODER_CHOICES` and
-that the no-delete policy no longer touches the ladder, and
-`tests/test_watch_finish.sh` drives the real loop at a genuine terminal rung
-(CRF 10) to prove per-direction finality still holds.
+**The menus are ordered lists, smallest file first** — `50 55 … 100` for VT,
+`22 20 … 10` for x265 — and one rule covers both scales: too big steps one
+rung towards a smaller file, too small one rung towards a bigger one. The
+inversion is expressed ONCE, as the order of each list, rather than as
+per-encoder arms that had to be kept mirrored by eye. An off-menu quality
+snaps to the nearest rung on the requested side instead of exhausting (only
+reachable by hand-editing the override file, but refusing to ladder a typed
+number is exactly how a blowup runs unopposed); a number off the OTHER
+encoder's scale is off this menu entirely and still exhausts rather than being
+read on the wrong scale. **What this gives up:** a projection that flips sides
+between adjacent rungs can walk back the way it came instead of exhausting.
+Two things bound it — the watcher needs TWO consecutive agreeing ticks before
+it acts, and each menu is finite — and a blowup that cannot be stepped away
+from is worse, and is the one that actually happened.
 
 **Past the LAST rung the encode is no longer killed — it finishes
 (2026-09-06, operator's rule).** There is no better rung to retry at, so the
 run in flight IS the answer: the watcher logs `FINAL|` instead of `KILLED|`,
 stops band-checking for the rest of the run, and the encode completes at its
 terminal rung — **x265 CRF 22 (too big) / CRF 10 (too small), VideoToolbox
-CQ 50 (too big) / CQ 70 (too small)**, the same rule on the mirrored scale.
-Since 2026-09-07 those four rungs are the ONLY ones that reach this branch:
-there are no one-directional rungs left to exhaust early. Killing at the end
-produced no output at all and burned hours; an out-of-band file is something
-a human can look at.
+CQ 50 (too big) / CQ 70 (too small)**. Since 2026-09-07 those four rungs are
+the ONLY ones that reach this branch: there are no one-directional rungs left
+to exhaust early. Killing at the end produced no output at all and burned
+hours; an out-of-band file is something a human can look at.
 
 **The two arms do NOT end the same way, and "nothing is deleted" is false on
-one of them.** The ladder stops deciding; the verdict still does — and the
-verdict reads the band as a TARGET, not a defect threshold (figures below
-are the 30–80 band this was written against; the edges moved to 10–70 on
-2026-09-06 and `thin` is now the ten points under `BAND_HI`, 60–70%):
+one of them.** The ladder stops deciding; the verdict still does — and it
+reads the band as a TARGET, not a defect threshold (figures below are the
+30–80 band this was written against; the edges moved to 10–70 on 2026-09-06
+and `thin` is now the ten points under `BAND_HI`, 60–70%):
 
 - **too big** → the finished file is >80% of source → `no-saving` → recorded
   kept and moved to `complete/` (since 2026-09-07; it was the ERROR state),
@@ -825,10 +802,8 @@ are the 30–80 band this was written against; the edges moved to 10–70 on
 - **too small** → anything from the 15.0 floor to the 30% band edge is a
   **`good` verdict**, which syncs and **deletes the ~90 GB library original
   unattended**. That is exactly where a too-small terminal rung lands — Kubo
-  23.7% and Minions 17.2% are the documented examples. Under the old
-  kill-at-the-end behaviour that encode never existed to be judged, so this
-  change moves those titles from "red row, original kept" to "synced, original
-  deleted". Below 15.0 the absolute floor still catches it (`suspect`).
+  23.7% and Minions 17.2% are the documented examples. Below 15.0 the absolute
+  floor still catches it (`suspect`).
 
 Verified against the live 33-row baseline: 14.9% → `suspect`, 15.1% → `good`,
 29.9% → `good`, 80.5% → `no-saving`. Every surface reporting a `FINAL` names
@@ -841,56 +816,55 @@ directions, so one noisy low sample at 6% progress on a rung reached by
 laddering UP disarmed the too-big guard for the rest of a multi-hour run — a
 1000%-of-source blowup then ran unopposed with the watcher silent (reproduced
 in a sandbox, 2026-09-06). `FINAL_DIRS` records the directions that have run
-out; the OTHER direction keeps full strike-and-kill authority, so a
-mid-ladder rung that reported `FINAL` downwards still ladders UP normally.
-`tests/test_watch_finish.sh` drives the real loop against a temp sandbox
-(fake HandBrake, `/dev/zero` "video", nothing touches the X9) and asserts
-both halves — the string-matching tests could not see this one.
+out; the OTHER direction keeps full strike-and-kill authority, so a mid-ladder
+rung that reported `FINAL` downwards still ladders UP normally. At a GENUINE
+terminal rung both directions are exhausted, so nothing kills that encode
+whatever it does — that is the rule as asked for ("finish regardless of
+size"), and it means **there is no size ceiling left on a terminal-rung run**:
+an encode that blows past 100% of source will write until it finishes or the
+drive fills. Nothing else guards it (`.autopilot.sh` has no `df` check, and
+`verdict.py` only sees the finished file).
 
-At a GENUINE terminal rung (CRF 22 / CRF 10, CQ 50 / CQ 70) both directions
-are exhausted, so nothing kills that encode whatever it does. That is the
-rule as asked for — "finish regardless of size" — and it means **there is no
-size ceiling left on a terminal-rung run**: an encode that blows past 100% of
-source will write until it finishes or the drive fills. Nothing else guards
-it (`.autopilot.sh` has no `df` check, and `verdict.py` only sees the
-finished file).
+Because the driver is never told (there is no KILLED line), the `FINAL` line
+is the ONLY record — it reaches the Events tab as kind `lastrung` and the
+notifier as `last-rung`, and both had to be taught it. It is a **`bad` chip,
+not `warn`**: its predecessor `exhausted` was red and ended with the original
+safe, this ends with the original at risk, so the colour may not fall. The
+line carries its own `date` stamp like `COMPLETE` (it does NOT exit, so
+`QUARTER` lines follow it and an mtime stamp would decay to "—" within the
+hour), and it labels quality `CRF` or `VT CQ` — a bare `Q10` beside a `Q70`
+for the same situation is unreadable on two mirrored scales. Its wording is
+"no rung left for a too-X projection from CRF n": of the eight cases that
+reach it four are a genuine terminal rung and four are the oscillation guard,
+and calling a too-small projection at CRF 16 "the last rung of the small arm"
+names a rung that is not on that arm.
 
-Because the driver is never told (there is no KILLED line), the `FINAL` line is
-the ONLY record — it reaches the Events tab as kind `lastrung` and the notifier
-as `last-rung`, and both had to be taught it. It is a **`bad` chip, not
-`warn`**: its predecessor `exhausted` was red and ended with the original safe,
-this ends with the original at risk, so the colour may not fall. The line
-carries its own `date` stamp like `COMPLETE` (it does NOT exit, so `QUARTER`
-lines follow it and an mtime stamp would decay to "—" within the hour), and it
-labels quality `CRF` or `VT CQ` — a bare `Q10` beside a `Q70` for the same
-situation is unreadable on two mirrored scales. Its wording is "no rung left
-for a too-X projection from CRF n": of the eight cases that reach it four are a
-genuine terminal rung and four are the oscillation guard, and calling a
-too-small projection at CRF 16 "the last rung of the small arm" names a rung
-that is not on that arm. The driver's `none*` branch stays as a LEGACY path: a
-watcher launched before this deploy still writes `next: Q none-*`, and it
-already killed its encode.
-`tests/test_error_state.py::LastRungFinishes` pins it.
+**There is no pivot any more (2026-09-07), so `core.CRF_DEFAULT` can move on
+its own.** The ladder used to leave from the default and treat every other
+rung as one-directional, which meant moving the constant without re-anchoring
+`.watch-encode.sh` turned the new default into a one-way rung. `next_rung()`
+now walks the menu from wherever it is, so the two are independent — the menus
+in `core.ENCODER_CHOICES` are what must not drift. Exhaustion
+(`none-too-big`/`none-too-small`) reaching the DRIVER — only possible from a
+pre-2026-09-06 watcher, which the driver's `none*` branch stays as a LEGACY
+path for — is the **ERROR state**: `.autopilot.sh` writes `$X9/.error-<title>`
+and MOVES ON, never a halt, never a skip, never a deletion.
+`core.error_marker()` puts `error`/`error_note` on the queue row; `pick_next`
+passes it over (wait reason `errored`); the queue tab renders the title red
+with a ❗ (hover for the note). The state ends when a human deletes the marker
+file. Known consequence the operator accepted: clean digital/animated sources
+that legitimately land under 30% (Kubo 23.7%, Minions 17.2%) ladder DOWN and
+**finish** at CRF 10. The verdict still judges that file, so an implausibly
+small one can still end red; it just ends red WITH an encode beside it.
 
-**There is no pivot any more (2026-09-07), so `core.CRF_DEFAULT` can move
-on its own.** The ladder used to leave from the default and treat every
-other rung as one-directional, which meant moving the constant without
-re-anchoring `.watch-encode.sh` turned the new default into a one-way rung.
-`next_rung()` now walks the menu from wherever it is, so the two are
-independent — the menus in `core.ENCODER_CHOICES` are what must not drift.
-Exhaustion (`none-too-big` /
-`none-too-small`) reaching the DRIVER — only possible from a pre-2026-09-06
-watcher now — is the **ERROR state**: `.autopilot.sh` writes
-`$X9/.error-<title>` and MOVES ON — never a halt, never a skip, never a
-deletion. `core.error_marker()` puts `error`/`error_note` on the queue row;
-`pick_next` passes it over (wait reason `errored`); the queue tab renders
-the title red with a ❗ (hover for the note). The state ends when a human
-deletes the marker file. Known consequence the operator accepted: clean
-digital/animated sources that legitimately land under 30% (Kubo 23.7%,
-Minions 17.2%) will now ladder DOWN and **finish** at CRF 10 — since
-2026-09-06 they are no longer killed there. The verdict still judges that
-file, so an implausibly small one can still end red; it just ends red WITH an
-encode beside it. `tests/test_error_state.py` pins the mechanics.
+`tests/test_watch_ladder.sh` pins every rung in both directions;
+`tests/test_error_state.py` (with `::LastRungFinishes`) pins the rule against
+`core.ENCODER_CHOICES`, that the no-delete policy no longer touches the
+ladder, and the error-state mechanics; `tests/test_watch_finish.sh` drives the
+real loop at a genuine terminal rung (CRF 10) against a temp sandbox (fake
+HandBrake, `/dev/zero` "video", nothing touches the X9) and asserts both
+halves of per-direction finality — the string-matching tests could not see
+that one.
 
 ### An unfinished output is not an error (2026-09-07, operator's rule)
 
@@ -1180,7 +1154,7 @@ Two suites landed 2026-09-01 with the per-title CRF picker:
   `test_a_skip_does_not_drop_the_crf_map`: a two-argument `save_overrides`
   erasing every hand-picked CRF is silent and only shows up hours later as
   an encode at the wrong rung.
-- `test_crf_picker.js` — drives the real `crfPicker`/`rowActions` out of
+- `test_crf_picker.ts` — drives the real `crfPicker`/`rowActions` out of
   `web/app.js`: the menu is the ladder and nothing else, `auto` sends
   `crf: null` rather than pinning the default, the encoding row gets no
   control, and there is exactly ONE CRF control per row.
@@ -1216,7 +1190,7 @@ passed every arithmetic test and still shipped a chart that was 92% empty
 wash, and the fix for THAT shipped a 15 min window whose line rendered
 dotted. Neither was visible in a number.
 
-- **`tests/test_sysmon_render.js`** (in `bun run test` and CI) hands the real
+- **`tests/test_sysmon_render.ts`** (in `bun run test` and CI) hands the real
   `drawMon()` a RECORDING 2D context and asserts the ops it emits: every one
   of the twelve stops draws a line across the full plot width, the wash
   appears if and only if the window overhangs the ring and is that overhang
@@ -1224,7 +1198,7 @@ dotted. Neither was visible in a number.
   inside the history still breaks the path, gridlines stay at 3–16 per
   window, and no two tick labels collide. No browser, no dependency, no
   golden images — it runs wherever the other bun suites do.
-- **`bun tests/visual/shoot.mjs`** (`bun run visual`) is the eyeball half
+- **`bun tests/visual/shoot.mts`** (`bun run visual`) is the eyeball half
   and is NOT wired into CI. It seeds a synthetic 7 d ring
   (`tests/visual/seed_ring.py`) into a temp `SMELTR_DIR`, starts a
   THROWAWAY dashboard against it — the live ring beside the ledger is never
@@ -1301,99 +1275,89 @@ and nothing else does.
 ### Linting and formatting
 
 `bun run lint` is the whole gate — `bun run verify` and CI's `lint` job run
-exactly it, and the pre-commit hook runs the SAME checks over the staged
-files only (`bun run lint:staged`, see *Git hooks*). It is
-`bun run --sequential` (built into bun — no `npm-run-all`) over these scripts
-in order, stopping at the first failure: `lint:js` (oxlint) · `lint:js:syntax`
-(`bun build --no-bundle`, which parses and fails on a syntax error) ·
-`lint:ts` (`tsc --noEmit`) · `lint:py` (`uvx ruff@<pinned>`) · `lint:py:syntax` (compileall) · `lint:sh`
-(shellcheck) · `lint:sh:staging` (blocks at `-S error`, advisory above it) ·
-`lint:ci` (actionlint over `.github/workflows/`) · `format:js:check`
-(oxfmt) · `lint:page` (`tests/check_page.py`). Each is runnable alone. Output
-is label-prefixed tool output only; there is no wrapper script and no
-summary line. There is still no build step: `ruff` is reached through `uvx`,
-`shellcheck` and `actionlint` are system tools (`brew install shellcheck
-actionlint`; CI `go install`s the same actionlint version), `bun` is the
-runtime, oxlint/oxfmt/tsc come from `bun install`. A missing tool now FAILS the
-script rather than skipping — the old
-`tests/lint.sh` skipped loudly, and that was replaced 2026-09-04 because a
-gate with an optional half is a gate nobody can compare across machines.
-Config is `ruff.toml`, `.oxlintrc.json`, `.oxfmtrc.json` + `.editorconfig`.
+exactly it, and the pre-commit hook runs the SAME checks over the staged files
+only (`bun run lint:staged`, see *Git hooks*). It is `bun run --sequential`
+(built into bun — no `npm-run-all`) over these scripts in order, stopping at
+the first failure: `lint:js` (oxlint) · `lint:js:syntax` (`bun build
+--no-bundle`) · `lint:ts` (`tsc --noEmit`) · `lint:py` (`uvx ruff@<pinned>`) ·
+`lint:py:syntax` (compileall) · `lint:sh` (shellcheck) · `lint:sh:staging` ·
+`lint:ci` (actionlint) · `format:js:check` (oxfmt) · `lint:page`
+(`tests/check_page.py`). Each is runnable alone; output is label-prefixed tool
+output only, with no wrapper script and no summary line. There is still no
+build step: `ruff` is reached through `uvx`, `shellcheck` and `actionlint` are
+system tools (`brew install shellcheck actionlint`; CI `go install`s the same
+actionlint version), `bun` is the runtime, oxlint/oxfmt/tsc come from `bun
+install`. A missing tool FAILS the script rather than skipping — the old
+`tests/lint.sh` skipped loudly, replaced 2026-09-04 because a gate with an
+optional half is a gate nobody can compare across machines. Config is
+`ruff.toml`, `.oxlintrc.json`, `.oxfmtrc.json` + `.editorconfig`.
 
-- **ruff** runs a deliberately TIGHT set — `F, E9, B, PLE`. The wide default
-  flags 123 mostly-stylistic issues across the decision path, and a gate that
-  is red on day one is a gate that gets ignored (which is exactly what
-  happened to the staging-drift test). Widen it only in a commit that also
-  fixes what it surfaces.
+- **ruff** and **tsc** both run a deliberately TIGHT set, for one reason: a
+  gate that is red on day one is a gate that gets ignored (which is exactly
+  what happened to the staging-drift test). ruff is `F, E9, B, PLE` — the wide
+  default flags 123 mostly-stylistic issues across the decision path. tsc is
+  everything that was already green: `alwaysStrict`, `noImplicitThis`,
+  `useUnknownInCatchVariables`, `strictFunctionTypes`, `strictBindCallApply`,
+  `noImplicitReturns`, `noFallthroughCasesInSwitch`, `allowUnreachableCode:
+  false`, `allowUnusedLabels: false` — full `strict` reports 612 findings
+  across `web/` and `tests/` (`noImplicitAny` alone 563, `strictNullChecks`
+  alone 160). Widen either only in a commit that also fixes what it surfaces.
+  `noUnusedLocals`/`noUnusedParameters` stay OFF though green: oxlint's
+  `no-unused-vars` already owns that with an `^_` ignore pattern tsc has no
+  equivalent for, and two renditions of one gate drift the moment one is
+  edited alone.
 - **`target-version = "py39"`** is the floor, not a taste: `smeltr` resolves
-  `${SMELTR_PYTHON:-python3}`, which on an unprepared Mac is stock 3.9, and the
-  CI matrix runs it. `report.py` once put backslash escapes inside an f-string
-  replacement field (PEP 701) and was a `SyntaxError` there; it was fixed, not
-  declared away. Nothing may assume newer syntax or newer stdlib signatures —
-  `zip(strict=)` is 3.10+ and is spelled as a bare `zip()` in `sysmon.py`.
+  `${SMELTR_PYTHON:-python3}`, which on an unprepared Mac is stock 3.9, and
+  the CI matrix runs it. `report.py` once put backslash escapes inside an
+  f-string replacement field (PEP 701) and was a `SyntaxError` there; it was
+  fixed, not declared away. Nothing may assume newer syntax or newer stdlib
+  signatures — `zip(strict=)` is 3.10+ and is spelled as a bare `zip()` in
+  `sysmon.py`.
 - **shellcheck** gates `smeltr`, every hook in `.husky/`, and every `.sh`
   `git ls-files -co` can see outside `staging/` — tracked OR untracked, so a
   new script is linted before it is ever added, and a script in a new
   directory cannot be linted by CI and missed here (2026-09-05; the list used
   to be four hand-written globs). `-S warning`. `staging/*.sh` **blocks at
-  `-S error` and is advisory above that** (the same line CI draws) — those
-  are byte-for-byte mirrors of the live X9 scripts, so a finding must be
-  fixed on the drive during a pause window and copied back. Editing the
-  mirror alone manufactures the drift `test_staging_in_sync.sh` exists to
-  catch.
+  `-S error` and is advisory above that** (the same line CI draws) — those are
+  byte-for-byte mirrors of the live X9 scripts, so a finding must be fixed on
+  the drive during a pause window and copied back. Editing the mirror alone
+  manufactures the drift `test_staging_in_sync.sh` exists to catch.
 - **actionlint** (`bun run lint:ci`) checks `.github/workflows/*.yml` — the
-  expression syntax, the `runs-on` labels, the action inputs, and (through
-  its shellcheck integration) every `run:` block as the shell it declares.
-  It was CI-only until 2026-09-05, which meant a workflow edit was checked
-  only by the workflow it broke.
-- **`bun build --no-bundle web/*.js`** (`lint:js:syntax`) — the dashboard's
-  JS had never been syntax-checked at all before 2026-09-04. bun has no
-  `--check` flag; a no-bundle build parses every file and exits 1 on a
-  syntax error, writing nothing (`--outfile /dev/null`). `lint:page` (`tests/check_page.py`)
-  asserts the page assembles with no `__PLACEHOLDER__` left, because a
-  missing asset would otherwise render as a blank screen behind a working
-  HTTP 200.
-- **tsc** (`bun run lint:ts`, `tsc --noEmit -p tsconfig.json`) is the type
-  gate. Same TIGHT-set reasoning as ruff, and the numbers made the case: full
-  `strict` reports 612 findings across `web/` and `tests/`, `noImplicitAny`
-  alone 563 and `strictNullChecks` alone 160, and a gate that is red on day
-  one is a gate that gets ignored. What is ON is everything that was already
-  green: `alwaysStrict`, `noImplicitThis`, `useUnknownInCatchVariables`,
-  `strictFunctionTypes`, `strictBindCallApply`, `noImplicitReturns`,
-  `noFallthroughCasesInSwitch`, `allowUnreachableCode: false`,
-  `allowUnusedLabels: false`. Widen it only in a commit that also fixes what
-  it surfaces. `noUnusedLocals`/`noUnusedParameters` are deliberately OFF
-  even though they are green — oxlint's `no-unused-vars` already owns that,
-  with an `^_` ignore pattern tsc has no equivalent for, and two renditions
-  of one gate drift the moment one is edited alone.
+  expression syntax, the `runs-on` labels, the action inputs, and (through its
+  shellcheck integration) every `run:` block as the shell it declares. It was
+  CI-only until 2026-09-05, which meant a workflow edit was checked only by
+  the workflow it broke.
+- **`bun build --no-bundle web/*.js`** (`lint:js:syntax`) — bun has no
+  `--check` flag; a no-bundle build parses every file and exits 1 on a syntax
+  error, writing nothing (`--outfile /dev/null`). The dashboard's JS had never
+  been syntax-checked at all before 2026-09-04. `lint:page`
+  (`tests/check_page.py`) asserts the page assembles with no
+  `__PLACEHOLDER__` left, because a missing asset would otherwise render as a
+  blank screen behind a working HTTP 200.
 - **oxlint** (`bun run lint:js`, `oxlint --deny-warnings`) lints every
-  `.js`/`.mjs`/`.ts`/`.mts` at its default `correctness` category — the same TIGHT-set
-  reasoning as ruff. `.oxlintrc.json` allows unused `catch (e)` bindings and
+  `.js`/`.mjs`/`.ts`/`.mts` at its default `correctness` category.
+  `.oxlintrc.json` allows unused `catch (e)` bindings and
   ternaries-as-statements, both of which `web/app.js` uses on purpose.
-- **oxfmt** (`bun run format:js`, checked by `bun run format:js:check`) formats
-  JS, CSS, JSON and YAML — 2026-09-04 was the "format the world" commit for
-  those. `web/index.html` is EXCLUDED: it is a template, and the HTML
-  formatter rewrote `<script nonce>__THEME_JS__</script>` with a stray `;`.
-  Markdown, `staging/` and `tests/fixtures/` are excluded too. **The UI
-  suites pull code out of `web/app.js` and `web/app.css` by string match**,
-  so every anchor there is whitespace-tolerant (`var NAME\s*=`, the
-  `DENSE` view in the Python suites); a new anchor must be too.
-- **The Python formatter is configured but NOT adopted** (`bun run format:py`,
-  checked by `bun run format:py:check`). `ruff format` rewrites 862
-  lines across all 14 Python files, including every decision-path module, and
-  it expands the compact dict literals this codebase deliberately keeps dense
-  (`verdict.py`'s `json.dumps` goes 9 lines → 12). Adopting it is a single
-  "format the world" commit that lands during a pause window, never mixed
-  into a behaviour change. CI gates on `lint`, never on `format --check`.
-- **`bun run format` / `bun run format:check` are the umbrellas** — each runs
-  the JS half then the Python half (`format:js` + `format:py`, `format:js:check`
-  + `format:py:check`). Because the Python half is not adopted, `format:check`
-  is RED today; every gate (`lint`, `system-check`, the hooks, CI) runs
-  `format:js:check` alone until the Python "format the world" commit lands,
-  at which point they can widen to `format:check`.
+- **oxfmt** (`bun run format:js`, checked by `format:js:check`) formats JS,
+  CSS, JSON and YAML — 2026-09-04 was the "format the world" commit for those.
+  `web/index.html` is EXCLUDED: it is a template, and the HTML formatter
+  rewrote `<script nonce>__THEME_JS__</script>` with a stray `;`. Markdown,
+  `staging/` and `tests/fixtures/` are excluded too. **The UI suites pull code
+  out of `web/app.js` and `web/app.css` by string match**, so every anchor
+  there is whitespace-tolerant (`var NAME\s*=`, the `DENSE` view in the Python
+  suites); a new anchor must be too.
+- **The Python formatter is configured but NOT adopted** (`bun run format:py`
+  / `format:py:check`). `ruff format` rewrites 862 lines across all 14 Python
+  files, including every decision-path module, and expands the compact dict
+  literals this codebase deliberately keeps dense (`verdict.py`'s `json.dumps`
+  goes 9 lines → 12). Adopting it is a single "format the world" commit that
+  lands during a pause window, never mixed into a behaviour change. So
+  `bun run format:check` (the JS half then the Python half) is RED today, and
+  every gate — `lint`, `system-check`, the hooks, CI — runs `format:js:check`
+  alone until that commit lands, at which point they can widen.
 
-`bun run release` now runs the **full suite** as its `preversion` gate, not
-just `compileall`. A release therefore cannot be cut while the repo's
+`bun run release` runs the **full suite** as its `preversion` gate, not just
+`compileall`. A release therefore cannot be cut while the repo's
 `staging/autopilot.sh` differs from what the X9 is actually running.
 
 ### Git hooks
@@ -1408,66 +1372,66 @@ command allowed to fail carries `|| true`. All four are shellchecked by
 
 - **pre-commit (~5 s)** refuses a staged runtime artifact (`token`, `url`,
   `server.log`, `ledger.jsonl`, …), refuses trailing whitespace or a conflict
-  marker in a staged hunk (`git diff --cached --check` — Python and shell
-  have no formatter, so this is the only thing enforcing `.editorconfig` on
-  them; `staging/` and `tests/fixtures/` opt out in `.gitattributes` because
-  they are byte-for-byte copies of something else), and then runs `bun run
+  marker in a staged hunk (`git diff --cached --check` — Python and shell have
+  no formatter, so this is the only thing enforcing `.editorconfig` on them;
+  `staging/` and `tests/fixtures/` opt out in `.gitattributes` because they
+  are byte-for-byte copies of something else), then runs `bun run
   lint:staged`. The artifact check duplicates
-  `test_repo_invariants.py::RuntimeArtifacts` on purpose: that test reads
-  `git ls-files`, so a `git add -f token` only trips it once the commit
-  already exists — this reads the INDEX and refuses first. Its diff filter
-  is `d` (everything but a deletion): a rename or copy onto `token` shows as
-  `R`/`C` and slipped past the old `AM`. The lint is **lint-staged**
-  (`bun run lint:staged` = `lint-staged --no-stash
-  --no-hide-partially-staged --relative`, config in `package.json` under
-  `lint-staged`): the same tools and flags as the `lint:*` scripts, run
-  only over the files in the commit, so a one-file commit is not held for
-  a whole-tree shellcheck+actionlint+page-assembly pass. **Both flags are
-  the point, not options.** lint-staged's default stashes unstaged work to
-  lint the exact index content, and that stash round-trip is how a hook
-  loses somebody's edits — so the checks read the **working-tree copy of
-  each staged file**. `--no-stash` ALONE is not enough: it still checks
-  out the index copy of every partially staged file and, when a task
-  FAILS, does not put the unstaged half back — confirmed 2026-09-05, when
-  one failing run wiped the unstaged edits on seven files and the
-  `.git/lint-staged_unstaged.patch` it left behind was the only copy
-  (`git apply --unidiff-zero` on it is the recovery). The per-glob commands are
-  check-only (`oxfmt --check`, never `oxfmt`): the hook never writes and
-  nothing is silently re-added. `web/*` and `dashboard/server.py` trigger
-  the page-assembly check; a staged `web/*.js`, `tests/*.ts`,
-  `tests/visual/*.mts` or `tsconfig.json` triggers the whole-program
-  `tsc --noEmit`, because a type check has no per-file form — the program is
-  the unit, the same way page assembly is;
-  `.github/workflows/*.yml` triggers actionlint;
-  `staging/*.sh` blocks at `-S error` and everything else at `-S warning`,
-  the same line `lint:sh`/`lint:sh:staging` draw.
-  `test_repo_invariants.py::LintStagedMirrorsLint` pins the parity — the
-  ruff pin, `--deny-warnings`, the shellcheck levels, `--no-stash` — because
-  two renditions of one gate drift the moment one is edited alone. The
-  whole-tree `bun run lint` still runs at pre-push and in CI.
-- **commit-msg (instant)** holds the subject to the `commit-format`
-  rules — `SMLTR: ` + Capitalized verb, ≤72 chars, no trailing period, no
+  `test_repo_invariants.py::RuntimeArtifacts` on purpose: that test reads `git
+  ls-files`, so a `git add -f token` only trips it once the commit already
+  exists — this reads the INDEX and refuses first. Its diff filter is `d`
+  (everything but a deletion): a rename or copy onto `token` shows as `R`/`C`
+  and slipped past the old `AM`.
+
+  The lint is **lint-staged** (`lint-staged --no-stash
+  --no-hide-partially-staged --relative`, config in `package.json`): the same
+  tools and flags as the `lint:*` scripts, run only over the files in the
+  commit, so a one-file commit is not held for a whole-tree
+  shellcheck+actionlint+page-assembly pass. **Both flags are the point, not
+  options.** lint-staged's default stashes unstaged work to lint the exact
+  index content, and that stash round-trip is how a hook loses somebody's
+  edits — so the checks read the **working-tree copy of each staged file**.
+  `--no-stash` ALONE is not enough: it still checks out the index copy of
+  every partially staged file and, when a task FAILS, does not put the
+  unstaged half back — confirmed 2026-09-05, when one failing run wiped the
+  unstaged edits on seven files and the `.git/lint-staged_unstaged.patch` it
+  left behind was the only copy (`git apply --unidiff-zero` on it is the
+  recovery). The per-glob commands are check-only (`oxfmt --check`, never
+  `oxfmt`): the hook never writes and nothing is silently re-added. `web/*`
+  and `dashboard/server.py` trigger the page-assembly check; a staged
+  `web/*.js`, `tests/*.ts`, `tests/visual/*.mts` or `tsconfig.json` triggers
+  the whole-program `tsc --noEmit`, because a type check has no per-file form
+  — the program is the unit, the same way page assembly is;
+  `.github/workflows/*.yml` triggers actionlint; `staging/*.sh` blocks at
+  `-S error` and everything else at `-S warning`, the same line
+  `lint:sh`/`lint:sh:staging` draw.
+  `test_repo_invariants.py::LintStagedMirrorsLint` pins the parity — the ruff
+  pin, `--deny-warnings`, the shellcheck levels, `--no-stash` — because two
+  renditions of one gate drift the moment one is edited alone. The whole-tree
+  `bun run lint` still runs at pre-push and in CI.
+- **commit-msg (instant)** holds the subject to the `commit-format` rules —
+  `SMLTR: ` + Capitalized verb, ≤72 chars, no trailing period, no
   conventional-commits prefix behind it, no AI-authorship trailer, `-`
   bullets. The rules are the `commits` job of
   `.github/workflows/pull-request-format-checker.yml` transcribed into POSIX
-  sh, and they exist locally because that job only
-  ever sees a pull request: `bun run release` and a plain `git push` land on
-  `main` with no PR, so a direct-to-main commit was checked nowhere.
-  `fixup!`/`squash!` subjects pass here (git writes them for `--fixup` and
-  autosquash consumes them) and are refused by pre-push, so one can never
-  reach a remote. Merge subjects are exempt, as in the PR format checker.
-  Comment lines and everything below git's scissors line are ignored, so a `commit -v` diff is
-  never read as body text. `test_repo_invariants.py::CommitRules` runs the
-  real function against a dozen messages.
+  sh, and they exist locally because that job only ever sees a pull request:
+  `bun run release` and a plain `git push` land on `main` with no PR, so a
+  direct-to-main commit was checked nowhere. `fixup!`/`squash!` subjects pass
+  here (git writes them for `--fixup` and autosquash consumes them) and are
+  refused by pre-push, so one can never reach a remote. Merge subjects are
+  exempt, as in the PR format checker. Comment lines and everything below
+  git's scissors line are ignored, so a `commit -v` diff is never read as body
+  text. `test_repo_invariants.py::CommitRules` runs the real function against
+  a dozen messages.
 - **pre-push (~20 s)** first re-checks every commit not yet on ANY remote
   against the same rules (`--amend` on an old commit, a rebase and
   `--no-verify` all bypass commit-msg), then runs `bun run verify` (lint →
-  every suite → build) — the same gate `bun run release` uses as
-  `preversion`, so a push and a release are held to one standard. `bun run
-  system-check` is `format:js:check` → `lint` → `test`, the check-only
-  sequence with no build step and no write. A push that only DELETES refs
-  skips both (an all-zero local sha on stdin): there is no tree to test, and
-  running the suite there would only be a way to refuse a branch cleanup.
+  every suite → build) — the same gate `bun run release` uses as `preversion`,
+  so a push and a release are held to one standard. (`bun run system-check` is
+  `format:js:check` → `lint` → `test`: the check-only sequence, no build step
+  and no write.) A push that only DELETES refs skips both (an all-zero local
+  sha on stdin): there is no tree to test, and running the suite there would
+  only be a way to refuse a branch cleanup.
 
 None of them WRITES to the NAS, the staging drive, or the running driver.
 pre-push does READ both: `build` calls `build_state()`, which stats the
@@ -1491,7 +1455,7 @@ behind one required `ci` check:
 **Every check is `bun run <script>` — nothing is called directly (2026-09-05).**
 A step that ran `shellcheck …` or `python -m unittest …` by hand was a second
 rendition of the gate the hooks run, and two renditions drift the moment one
-is edited alone (`test_crf_picker.js` was in the local runner for four days
+is edited alone (`test_crf_picker.ts` was in the local runner for four days
 before CI ran it). The lint job is `bun run lint`'s sequence unrolled one
 member per step, in the same order, so the Actions UI names the tool that
 went red; the test jobs unroll `bun run test` the same way. The only commands
@@ -1693,64 +1657,65 @@ second request.
 - **The resource monitor (2026-08-25)** is a "This Mac" card between the live
   card and the tabs: three canvas charts (Utilization %, Network MiB/s, Disk
   I/O · all volumes MiB/s), 1 Hz samples, **7 d of history**, and a zoom
-  slider that **snaps to twelve named stops** — 15 min · 30 min · 1 h · 2 h
-  · 4 h · 6 h · 12 h · 24 h · 2 d · 3 d · 5 d · 7 d (widened 2026-08-29 from
-  a continuous log curve over 1 h–24 h; a continuous curve handed out
-  windows like "3.4 h" that two readings of the chart could not be compared
-  across). `dashboard/sysmon.py` (imported ONLY by `server.py` — the
-  decision path never loads it) samples on a daemon thread and persists to
-  `sysmon.ring` beside the ledger: 16-byte magic header + 604800 slots of
-  `<I7f` keyed `ts % 604800`, so a restart costs seconds of gap, not the
-  chart. **Widening SLOTS re-keys every slot index**, so `MAGIC` went to
-  `SMLTRMON2` and the old 24 h file is recreated empty on first launch — a
-  one-time loss, never a misread. History reaches the page as raw ring
-  records (`GET /api/sysmon/history`, DataView-parsed), **sized to the
-  visible window**: the whole ring is ~19 MB and the default stop draws a
-  day, so the page sends `&span=<seconds>` and re-fetches only when a wider
-  stop asks for more than it holds — and says "loading history…" rather
-  than "history since" while that is in flight, because an unfetched window
-  is not a claim about the sampler. `history_bytes()` emits contiguous
-  RUNS, not one slice per slot (per-slot slicing built 604800 short-lived
-  objects per request). Live samples arrive as 1 s
-  `event: mon` SSE frames interleaved with the 2 s state frames on the same
-  connection — `build_state()` still runs at 2 s, never 1 Hz. The charts
-  live entirely OUTSIDE `paint()` and its repaint keys; the redraw clock is
-  a client interval, so the window keeps sliding and the legend goes to em
+  slider that **snaps to twelve named stops** — 15 min · 30 min · 1 h · 2 h ·
+  4 h · 6 h · 12 h · 24 h · 2 d · 3 d · 5 d · 7 d (widened 2026-08-29 from a
+  continuous log curve over 1 h–24 h, which handed out windows like "3.4 h"
+  that two readings of the chart could not be compared across).
+  `dashboard/sysmon.py` (imported ONLY by `server.py` — the decision path
+  never loads it) samples on a daemon thread and persists to `sysmon.ring`
+  beside the ledger: 16-byte magic header + 604800 slots of `<I7f` keyed
+  `ts % 604800`, so a restart costs seconds of gap, not the chart. **Widening
+  SLOTS re-keys every slot index**, so `MAGIC` went to `SMLTRMON2` and the old
+  24 h file is recreated empty on first launch — a one-time loss, never a
+  misread. History reaches the page as raw ring records (`GET
+  /api/sysmon/history`, DataView-parsed), **sized to the visible window**: the
+  whole ring is ~19 MB and the default stop draws a day, so the page sends
+  `&span=<seconds>` and re-fetches only when a wider stop asks for more than
+  it holds — saying "loading history…" rather than "history since" while that
+  is in flight, because an unfetched window is not a claim about the sampler.
+  `history_bytes()` emits contiguous RUNS, not one slice per slot (per-slot
+  slicing built 604800 short-lived objects per request). Live samples arrive
+  as 1 s `event: mon` SSE frames interleaved with the 2 s state frames on the
+  same connection — `build_state()` still runs at 2 s, never 1 Hz. The charts
+  live entirely OUTSIDE `paint()` and its repaint keys; the redraw clock is a
+  client interval, so the window keeps sliding and the legend goes to em
   dashes when the sampler dies (the server never re-sends an unadvanced
-  sample). Honesty rules, pinned in `tests/test_sysmon.py` +
-  `tests/test_sysmon_ui.js`: a missing second is a line GAP, never an
-  interpolation; unreadable metrics are NaN → absent line and `—`, never 0;
-  decimation is min/max band + mean line so a 1 s spike survives a 7 d
-  window (the header says "shade = min–max · line = mean (smoothed at wide
-  zooms)"); the mean line is lightly smoothed (2026-09-01) ONLY where a
-  bucket aggregates 4+ samples — at the narrow stops the band collapses to
-  ~1 px of 16% alpha, the line is the only evidence on screen, and smoothing
-  it redrew a measured 98 MiB/s burst at 33; the smoothing window is
-  symmetric and stops at a gap or the edge, so the line's tip and the points
-  beside a gap are always the raw bucket mean; the window
-  before the oldest held sample rides a flat 0 baseline UNDER a `--nodata`
-  wash, a `--nodata-bd` rule at the boundary and an inline "no samples
-  before HH:MM" — **the zeros and the disclosure ship together or neither
-  is honest**. The line is drawn so a window wider than the ring reads as
-  one chart rather than a stub hanging off the right edge; the wash, rule
-  and words are what stop those zeros reading as an idle machine. It is NOT
-  `--skel`: the boot skeleton is deliberately near-invisible against
-  `--panel`, and reusing it left the dark theme showing a flat 0 line with
-  no visible disclaimer at all. A gap INSIDE the history still breaks the
-  path — that is a fact about the machine, where the baseline is a fact
-  about how long we have been recording;
-  past 24 h the axis ticks and both stamps carry a weekday, because a bare
-  "06:00" names three different mornings at the 7 d stop; there are never
-  MORE buckets than the window has seconds (a 15 min window on a 1200 px
-  canvas has 900 samples for 1156 columns, and one-bucket-per-column drew a
-  fully-sampled 1 Hz series as a DOTTED line — the samples were not
-  missing, the screen simply had more resolution than the data);
-  throughput axes have a hard 1 MiB/s floor (background chatter must not
-  autoscale into a mountain range) and sub-MiB values print as KiB/s so a
-  live trickle never rounds to 0. Chart series colours are the `--ch-*`
-  tokens (both themes, CVD-validated); the canvas resolves them at draw
-  time via getComputedStyle.
+  sample). Chart series colours are the `--ch-*` tokens (both themes,
+  CVD-validated), resolved at draw time via getComputedStyle.
 
+  Honesty rules, pinned in `tests/test_sysmon.py` + `tests/test_sysmon_ui.ts`:
+  - A missing second is a line GAP, never an interpolation; unreadable metrics
+    are NaN → absent line and `—`, never 0.
+  - Decimation is min/max band + mean line so a 1 s spike survives a 7 d
+    window (the header says "shade = min–max · line = mean (smoothed at wide
+    zooms)"). The mean is lightly smoothed (2026-09-01) ONLY where a bucket
+    aggregates 4+ samples: at the narrow stops the band collapses to ~1 px of
+    16% alpha, the line is the only evidence on screen, and smoothing it
+    redrew a measured 98 MiB/s burst at 33. The smoothing window is symmetric
+    and stops at a gap or the edge, so the line's tip and the points beside a
+    gap are always the raw bucket mean.
+  - The window before the oldest held sample rides a flat 0 baseline UNDER a
+    `--nodata` wash, a `--nodata-bd` rule at the boundary and an inline "no
+    samples before HH:MM" — **the zeros and the disclosure ship together or
+    neither is honest.** Drawing the line that way keeps a window wider than
+    the ring reading as one chart rather than a stub hanging off the right
+    edge; the wash, rule and words are what stop those zeros reading as an
+    idle machine. It is NOT `--skel`: the boot skeleton is deliberately
+    near-invisible against `--panel`, and reusing it left the dark theme
+    showing a flat 0 line with no visible disclaimer at all.
+  - A gap INSIDE the history still breaks the path — that is a fact about the
+    machine, where the baseline is a fact about how long we have been
+    recording.
+  - Past 24 h the axis ticks and both stamps carry a weekday, because a bare
+    "06:00" names three different mornings at the 7 d stop.
+  - There are never MORE buckets than the window has seconds: a 15 min window
+    on a 1200 px canvas has 900 samples for 1156 columns, and
+    one-bucket-per-column drew a fully-sampled 1 Hz series as a DOTTED line —
+    the samples were not missing, the screen simply had more resolution than
+    the data.
+  - Throughput axes have a hard 1 MiB/s floor (background chatter must not
+    autoscale into a mountain range) and sub-MiB values print as KiB/s, so a
+    live trickle never rounds to 0.
 - `core.live_encodes()` keys HandBrake logs and staging lookups by
   **basename** — the autopilot passes full `-i`/`-o` paths, and raw paths once
   nulled the live sizes and `folder`, hiding the encoding badge and defeating
@@ -1850,68 +1815,27 @@ second request.
   reads it for the 09:00 morning brief's email channel, and `./smeltr
   notify-test` still proves both channels by hand through
   `send_slack`/`send_email`. The parsing, classification, burst-cap and
-  delivery machinery below is kept whole and still fully tested, so turning
-  it back on cannot land on untested code — that is `EVENT_NOTIFICATIONS =
-  True` plus a channel in `DEFAULT_CHANNELS`, and it is the OPERATOR'S call,
-  never an incidental edit. `test_notify.py::Switch` pins the off state; the
-  rest of the suite opts both channels back in for the duration of a test.
+  delivery machinery is kept whole and still fully tested, so turning it back
+  on cannot land on untested code — that is `EVENT_NOTIFICATIONS = True` plus
+  a channel in `DEFAULT_CHANNELS`, and it is the OPERATOR'S call, never an
+  incidental edit. `test_notify.py::Switch` pins the off state; the rest of
+  the suite opts both channels back in for the duration of a test.
 
-  What the machinery does when it is on, kept for that day:
-  `dashboard/notify.py`, imported ONLY by `server.py`, started from `main()`
-  when `notify.json` sits beside the ledger (gitignored, holds the Slack
-  webhook and the Gmail app password). Email via stdlib
-  `smtplib` + STARTTLS, Slack via `urllib` to an incoming webhook — no
-  dependency, no decision-path import (`test_layering.py` lists it in
-  `DASHBOARD_ONLY`). It is an OBSERVER of `events.events()`, the same parser
-  the Events tab reads, so a message can never disagree with the tab. One
-  daemon thread ticks when `events.rev()` moves (5 s poll), diffs the
-  snapshot against a persisted seen-set (`notify.cursor`), classifies what
-  is new, and delivers: `complete` → "Encode done · verdict pending"
-  (COMPLETE is HandBrake exiting, not a result — Little Mermaid's only
-  message would otherwise have been a green tick on a halt-decoder-errors
-  verdict), `failed` → failed, driver `LADDER` → Ladder UP/DOWN, driver
-  `ERROR` (and an old-log `HALTED:`) → error state, `CYCLE COMPLETE` →
-  "Original deleted". **The ladder anchors on the driver's stamped `LADDER`
-  line, not the watcher's `KILLED` line**: the driver truncates the watch
-  log within 30 s of a kill, so a 5 s poll could miss it, whereas the
-  LADDER line is permanent. Both rungs and the direction follow from the
-  target rung alone (one rung per retry; every rung above `CRF_DEFAULT` is
-  an up-rung); the kill's projection is added only when the watcher line
-  is still there. Watcher `killed`/`exhausted` are therefore silent on
-  their own — but `lastrung` is NOT, because no driver line follows it at
-  all: past the last rung the watcher lets the encode run and never tells the
-  driver, so this notification is the only record; the kill's projection is REMEMBERED from the earlier tick
-  that saw it and added to the ladder message when known. The deletion
-  message is built from the LEDGER row (`record` writes it before the
-  sync; subject carries the original's GiB), never from the folded shell
-  output under the SYNC line — syncs are backgrounded and unstamped, so
-  that text can be ANOTHER title's size guard, and it carried the ssh
-  user@host and, once, an unrelated "autopilot already running" line
-  inside a deletion notice; with no ledger row it says so. Also notified:
-  `SYNC FAILED`/`SYNC ABORTED` (the deletion path's failures were silent
-  while its successes were loud) and `STOP CONDITION`. The seen-set is a
-  UNION bounded at 4000 keys, never a replacement — events.py degrades per
-  source, so one unreadable watch log leaves a non-empty snapshot and a
-  replaced set would re-send every deletion notice a tick later. A landed
-  channel is persisted BEFORE the next channel is tried (`smeltr restart`
-  SIGKILLs inside a 15 s SMTP handshake), a failed channel backs off
-  60 s → 1 h, and `notify.json` must be 0600 or it is refused — it holds
-  the app password. `start()` never raises: it runs in `main()` above the
-  socket bind. A watcher stamp that
-  the Events tab draws as `~` (mtime-derived) renders as `~` here too, and
-  every clock carries a weekday and date because a retried message can be
-  a day late. A burst keeps the most severe ten (deleted > error > failed
-  > ladder > done) and the summary names what it dropped. Rules pinned in
-  `tests/test_notify.py`: the FIRST snapshot is a baseline, never a backlog;
-  an EMPTY snapshot (X9 unmounted) is neither a baseline nor a diff, or the
-  whole tail would arrive as "new" on mount; identity omits `ts` for
-  watcher lines because the KILLED line's mtime stamp flips to None once
-  the log is re-used; a failed send stays pending (persisted, so a restart
-  cannot lose the deletion notice), each channel is ticked off separately
-  so the half that landed is never resent, and pending older than 24 h is
-  dropped with a `server.log` line; a burst above 10 sends 10 plus one
-  summary. Never in `LAN_WRITE_ROUTES` territory: there is no endpoint, the
-  config is a file only this Mac can write.
+  **Its rules live in `dashboard/notify.py`'s module docstring** — the
+  baseline-not-backlog
+  first snapshot, the empty-snapshot case, the seen-set union, the identity
+  tuple, the LADDER-not-KILLED anchor, the ledger-built deletion notice, the
+  per-channel pending/backoff, and the burst cap — with `tests/test_notify.py`
+  pinning each one. Do not restate them here; read them there before touching
+  it. The shape in one line: `notify.py` is imported ONLY by `server.py`
+  (`DASHBOARD_ONLY` in `test_layering.py`), started from `main()` when
+  `notify.json` sits beside the ledger (0600 or refused — it holds the Slack
+  webhook and the Gmail app password), delivering over stdlib `smtplib` +
+  STARTTLS and `urllib` to an incoming webhook. It OBSERVES `events.events()`,
+  the same parser the Events tab reads, so a message can never disagree with
+  the tab. There is no endpoint anywhere, so it is never in `LAN_WRITE_ROUTES`
+  territory — the config is a file only this Mac can write — and `start()`
+  never raises, because it runs in `main()` above the socket bind.
 - **The morning brief (2026-09-08, operator's request)** — `dashboard/brief.py`,
   run by `com.smeltr.brief` at **09:00 by calendar** (`smeltr brief`,
   `bun run brief`; `bun run brief:check` prints it and sends nothing). ONE
@@ -1961,7 +1885,7 @@ second request.
   drop an empty `progSlot()`; `progWrite()` fills it, rebuilding the slot's
   children only when the shape changes, so the fill keeps its width
   transition. Same in-place discipline as the live card, for the same reason.
-  `tests/test_repaint_key.js` pins both edges: growing bytes must NOT move
+  `tests/test_repaint_key.ts` pins both edges: growing bytes must NOT move
   the key, shape changes MUST.
 
 ## Editing the look and feel
@@ -2010,41 +1934,45 @@ which is still a valid PNG of the right size).
 page with no stylesheet — a blank screen behind HTTP 200 is the failure the
 boot skeleton exists to prevent.
 
-### Verdict thresholds — recalibrated 2026-08-22
+### Verdict thresholds
 
-Only `good` syncs and deletes (`verdict.py`: `good` → 0; everything else → 2 or
-3, and the driver marks the ERROR state on both). So every threshold below is
-the line between an unattended deletion and a human being asked to look —
+Only `good` syncs and deletes (`verdict.py`: `good` → 0; everything else → 2
+or 3, and the driver marks the ERROR state on both). So every threshold here
+is the line between an unattended deletion and a human being asked to look —
 except while the `no-delete` flag exists (see *The no-delete batch policy*),
 when a `good` verdict is recorded `--kept` and nothing is synced or deleted.
 
-| | Before | After | Why |
-|---|---|---|---|
-| plausibility floor | `OUTLIER_FLOOR_RAW = 12.0`, tested on the **raw** ratio | `OUTLIER_FLOOR_NORM = 6.0`, tested on the **normalised** ratio | see below |
-| the same floor, **raised 2026-08-30** | `OUTLIER_FLOOR_NORM = 6.0` — a plausibility question | `15.0` — a policy question | Flight was judged too small to keep; see *The floor is a policy line now* |
-| relative outlier | `OUTLIER_FACTOR = 0.45` → 15.8% | `0.40` → 14.0% | keeps the human check on the thinnest encodes |
-| not worth doing | `no-saving` at 85% | `no-saving` at 80% (at `BAND_HI`, 70%, since 2026-09-06) | matches the band the dashboard draws |
+The current constants, and what each replaced in the 2026-08-22
+recalibration:
 
-**The floor was applied to the wrong ratio.** It fired exactly once, on Flight
-(2012) at 9.4% — wrongly. That ledger row carries `VERIFIED by SSIM against the
-cropped original: 0.9931 @45:00 and 0.9945 @10:00`. Flight auto-crops
-3840x2160 → 3840x1600 and so discards 26% of its rows; per pixel *actually
-encoded* it keeps 12.6%, not 9.4%. A plausibility floor asks a question about
-the pixels that were encoded, so it belongs on the normalised ratio — which is
-what the relative check beside it already compares. 12% also sat above what
-this library legitimately produces: Flight is the thinnest output ever made
-here, 8.35 Mb/s for 4K from a 2K DI upscale with no true 4K detail to spend
-bits on. 6.0 normalised is a little under half of that.
+- **`OUTLIER_FLOOR_NORM = 15.0`**, tested on the **normalised** ratio. It was
+  `OUTLIER_FLOOR_RAW = 12.0` on the raw ratio, became 6.0 normalised in the
+  recalibration, and was raised to 15.0 on 2026-08-30 — which also changed its
+  meaning from a plausibility question to a policy one. See *The floor is a
+  policy line now*.
+- **`OUTLIER_FACTOR = 0.40`** (→ 14.0%), was 0.45 (→ 15.8%): keeps the human
+  check on the thinnest encodes.
+- **`no-saving` at `BAND_HI`** (70% since 2026-09-06; 85% before the
+  recalibration, then 80%) — it matches the band the dashboard draws.
+
+**The floor belongs on the normalised ratio.** The raw floor fired exactly
+once, on Flight (2012) at 9.4% — wrongly. That ledger row carries `VERIFIED by
+SSIM against the cropped original: 0.9931 @45:00 and 0.9945 @10:00`. Flight
+auto-crops 3840x2160 → 3840x1600 and so discards 26% of its rows; per pixel
+*actually encoded* it keeps 12.6%, not 9.4%. A plausibility floor asks a
+question about the pixels that were encoded, so it belongs on the ratio the
+relative check beside it already compares.
 
 **Flight-class encodes still halt, deliberately.** 12.6% normalised is under
 the 14.0% relative line. That was a decision, not an oversight — it is the
-smallest output this job has ever produced, against a ~92 GB original, and the
-SSIM check that cleared it was worth having. Lowering `OUTLIER_FACTOR` to 0.30
-would auto-sync it.
+smallest output this job has ever produced (8.35 Mb/s for 4K from a 2K DI
+upscale with no true 4K detail to spend bits on), against a ~92 GB original,
+and the SSIM check that cleared it was worth having. Lowering `OUTLIER_FACTOR`
+to 0.30 would auto-sync it.
 
-**Replaying all 12 measured ledger rows through the new rules changes no
-verdict** — `tests/test_verdict_calibration.py` pins that, plus every boundary
-and the fact that `OUTLIER_FLOOR_RAW` no longer exists.
+`tests/test_verdict_calibration.py` pins every boundary, that replaying the
+measured ledger rows through the rules changes no verdict, and that
+`OUTLIER_FLOOR_RAW` no longer exists.
 
 ### The floor is a policy line now — raised to 15.0 on 2026-08-30
 
