@@ -44,6 +44,11 @@ _STAMP = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
 # label on the page; an unlisted word is "info", never an error.
 _KINDS = {
     "HALTED:": "halted",
+    # The driver's one-per-episode staging-drive floor line ("LOW SPACE: low
+    # space on the staging drive: 87.3 GiB free, encodes resume at 100 GiB").
+    # Keyed on the first word, so it is "LOW" here and the second word is
+    # checked below: a title could begin with "LOW" too.
+    "LOW": "lowspace",
     "START": "start",
     "JUDGE": "judge",
     "RECORD": "record",
@@ -92,10 +97,13 @@ def _driver_events():
         m = _TS.match(line)
         if m and not m.group(2):
             word = m.group(3).split(" ", 1)[0]
+            kind = _KINDS.get(word, "info")
+            if kind == "lowspace" and not m.group(3).startswith("LOW SPACE: "):
+                kind = "info"
             out.append(
                 {
                     "ts": m.group(1),
-                    "kind": _KINDS.get(word, "info"),
+                    "kind": kind,
                     "text": m.group(3),
                     "detail": None,
                     "src": "driver",

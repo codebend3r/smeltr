@@ -231,6 +231,39 @@ def paused() -> bool:
         return True
 
 
+# THE STAGING-DRIVE FLOOR (operator's rule, 2026-09-08): a new encode may
+# start only while the X9 has at least this much free. "100GB" read as GiB --
+# the stricter of the two readings by 7 GiB, and every other figure on the
+# page is GiB. Under it next_title.py answers exit 3 (a WAIT, never the stop
+# condition) so the running encode still finishes and the next one starts by
+# itself once space is freed; the driver logs ONE stamped `LOW SPACE:` line
+# per episode, which is what emails the operator. The replenisher is not
+# gated here: its own ENCODE_RESERVE (150 GiB on top of the source) already
+# holds above this floor.
+LOW_SPACE_FLOOR_BYTES = 100 * 1024**3
+
+
+def x9_free_bytes() -> Optional[int]:
+    """Free bytes on the staging drive, or None when it cannot be stat'd.
+
+    None, never 0: an unmounted or unreadable X9 is a different fact from a
+    full one, and 0 would trip the floor and send the operator freeing space
+    on a drive that is simply absent. The offline/no-source paths own that
+    failure."""
+    try:
+        st = os.statvfs(X9)
+    except OSError:
+        return None
+    return st.f_bavail * st.f_frsize
+
+
+def low_space() -> tuple[bool, Optional[int]]:
+    """(blocked, free_bytes). Blocked iff the drive is readable AND under
+    LOW_SPACE_FLOOR_BYTES."""
+    free = x9_free_bytes()
+    return (free is not None and free < LOW_SPACE_FLOOR_BYTES), free
+
+
 def set_paused(on: bool) -> None:
     if on:
         with open(PAUSE_FLAG, "a", encoding="utf-8"):
@@ -1599,6 +1632,7 @@ def summary(
         if shrink is not None
         else None
     )
+    low, free = low_space()
     return {
         "completed": len(hist),
         "completed_measured": len(paired),
@@ -1649,6 +1683,12 @@ def summary(
         # overrides_corrupt -- every view says it, or the state is invisible
         # from exactly the terminal a 1am SSH session uses).
         "paused": paused(),
+        # The staging-drive floor, same one-carrier rule as `paused`: the
+        # live card, the big toggle, the ready row and `smeltr report` all
+        # read these three, so no view can disagree with the driver's wait.
+        "low_space": low,
+        "x9_free_bytes": free,
+        "low_space_floor_bytes": LOW_SPACE_FLOOR_BYTES,
         "stop_mbps": STOP_MBPS,
         "band_lo": BAND_LO,
         "band_hi": BAND_HI,

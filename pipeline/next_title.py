@@ -9,8 +9,9 @@ the driver would have concluded the job was finished and exited cleanly with 110
 titles still queued. Structured data, not table scraping.
 
 Exit codes: 0 a title was printed | 1 stop condition | 2 library incomplete
-            3 wait, don't exit: paused from the dashboard, staged candidates
-              hand-skipped, or a replenish pull still landing
+            3 wait, don't exit: paused from the dashboard, under the 100 GiB
+              staging-drive floor, staged candidates hand-skipped, or a
+              replenish pull still landing
 """
 
 from __future__ import annotations
@@ -36,6 +37,29 @@ def main() -> int:
     # is a sensor state the dashboard banners regardless).
     if core.paused():
         msg = "paused from the dashboard; waiting"
+        if offline:
+            msg += (
+                " (and library incomplete: "
+                f"{', '.join(core.volume_name(r) for r in offline)}"
+                " not mounted)"
+            )
+        print(msg, file=sys.stderr)
+        return 3
+
+    # The staging-drive floor (operator's rule, 2026-09-08): under 100 GiB
+    # free no new encode starts. Exit 3, the same wait path as pause, so the
+    # running encode finishes and the next starts by itself once space is
+    # freed -- no flag to clear. Checked AFTER pause (the operator's own
+    # choice is reported first) and BEFORE the pick (a perfectly pickable
+    # staged title must not outrank it). The driver turns the first
+    # "low space" reason of an episode into a stamped LOW SPACE line.
+    blocked, free = core.low_space()
+    if blocked:
+        msg = (
+            f"low space on the staging drive: {free / 1024**3:.1f} GiB free, "
+            f"encodes resume at {core.LOW_SPACE_FLOOR_BYTES // 1024**3} GiB"
+            " -- free up space; waiting"
+        )
         if offline:
             msg += (
                 " (and library incomplete: "

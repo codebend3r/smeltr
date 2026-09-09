@@ -337,6 +337,28 @@ class Classify(unittest.TestCase):
         )
         self.assertTrue(n["approx"])
 
+    def test_low_space_is_email_only(self):
+        # The operator asked for an email when the floor blocks a start --
+        # and nothing else: no Slack, no repeat (the driver writes the line
+        # once per episode). The note names the free figure and the floor so
+        # the reader knows how much to clear.
+        n = notify.classify(
+            {
+                "kind": "lowspace",
+                "text": "LOW SPACE: low space on the staging drive: 87.3 GiB free, "
+                "encodes resume at 100 GiB -- free up space; waiting",
+                "ts": "2026-09-01 16:00:00",
+                "approx": False,
+            }
+        )
+        self.assertEqual(n["what"], "low-space")
+        self.assertEqual(n["channels"], ("email",))
+        self.assertIn("87.3 GiB free", n["text"])
+        self.assertIn("100 GiB", n["text"])
+        m = notify.email_message(n)
+        self.assertIn("LOW SPACE", m["subject"])
+        self.assertIn("free up", m["subject"].lower())
+
     def test_noise_is_none(self):
         for kind, text in (
             ("start", "START X at CRF 14"),
@@ -605,6 +627,24 @@ class NewEvents(_Base):
         texts = " ".join(m["text"] for m in self.slack.sent)
         self.assertIn(f"Title {notify.BURST_CAP + 2:02d} (2000)", texts)
         self.assertNotIn("Title 00 (2000)", texts)
+
+
+class EmailOnly(_Base):
+    def test_a_channel_restricted_note_skips_slack_and_still_completes(self):
+        _write(self.driver_log, "2026-09-01 15:00:00  START Movie (2000)\n")
+        n = self.notifier()
+        n.tick()  # baseline
+        with open(self.driver_log, "a") as f:
+            f.write(
+                "2026-09-01 16:00:00  LOW SPACE: low space on the staging drive: "
+                "87.3 GiB free, encodes resume at 100 GiB -- free up space; waiting\n"
+            )
+        n.tick()
+        self.assertEqual(len(self.email.sent), 1)
+        self.assertEqual(self.slack.sent, [])
+        # Landed on its only channel, so it must not sit in pending forever
+        # waiting for a Slack send that will never be attempted.
+        self.assertEqual(n.pending, [])
 
 
 class Delivery(_Base):

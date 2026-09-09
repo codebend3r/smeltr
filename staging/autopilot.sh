@@ -341,6 +341,28 @@ PAUSE_FLAG="$SMELTR_HOME/pause"
 no_delete_policy() { [ -e "$SMELTR_HOME/no-delete" ]; }
 paused_flag()      { [ -e "$PAUSE_FLAG" ]; }
 
+# THE STAGING-DRIVE FLOOR (operator's rule, 2026-09-08). `smeltr next` answers
+# exit 3 with a reason starting "low space" while the X9 has under 100 GiB
+# free (core.LOW_SPACE_FLOOR_BYTES), and the loop logs that wait every 60 s.
+# This turns the FIRST such wait of an episode into ONE stamped `LOW SPACE:`
+# line -- the line the Events tab chips and the notifier emails -- and stays
+# silent until a wait for any other reason, or a pick, closes the episode.
+# One line per episode BY CONSTRUCTION: a repeated line is a repeated email.
+# The marker lives beside the ledger like the pause flag, never on the X9:
+# the one moment it is written is the moment the X9 may have no room for it,
+# and a marker that failed to land would re-send the email every minute.
+LOWSPACE_MARK="$SMELTR_HOME/lowspace"
+low_space_note() {
+  case "$1" in
+    "low space"*)
+      if [ ! -e "$LOWSPACE_MARK" ]; then
+        log "LOW SPACE: $1"
+        : > "$LOWSPACE_MARK"
+      fi ;;
+    *) rm -f "$LOWSPACE_MARK" ;;
+  esac
+}
+
 replenish_running() { pgrep -f "replenish-queue.sh" >/dev/null 2>&1; }
 replenish_async() {
   paused_flag && { log "  paused - not replenishing (do nothing at all)"; return 0; }
@@ -403,8 +425,9 @@ sync_async() {
 # Structured command, never a scrape of the rendered table -- the first version
 # parsed column 2 (RANK, not Mb/s) and would have declared the job finished.
 # Exit 1 = stop condition, 2 = library not fully mounted (never treat as done),
-# 3 = wait, don't exit: paused from the dashboard, every staged title
-#     hand-skipped, or a replenish pull still landing.
+# 3 = wait, don't exit: paused from the dashboard, under the 100 GiB
+#     staging-drive floor, every staged title hand-skipped, or a replenish
+#     pull still landing.
 # stderr lands in a FILE, never the $(...) that captures the title (the
 # sync_in_flight lesson) -- and the reason logged on a wait comes from the
 # SAME invocation as the exit code. A second call re-ran the whole queue
@@ -785,6 +808,9 @@ while true; do
       # a pull still landing, and a wrong hard-coded message sent the
       # operator debugging overrides that were fine.
       log "waiting: $(next_reason)"
+      # One LOW SPACE line per episode (see low_space_note): this is what
+      # emails the operator to free up the X9.
+      low_space_note "$(next_reason)"
       # AN IDLE ENCODER MUST GO AND FETCH WORK (operator's standing rule, and
       # the reason this call is here as well as in sync_async). Replenishment
       # used to run ONLY after a successful sync, so a run of ERRORED titles
@@ -831,6 +857,9 @@ while true; do
       replenish_async
       sleep 60; continue
     fi
+    # A pick closes any low-space episode: the next time the floor blocks a
+    # start is a NEW episode and gets its own LOW SPACE line (and email).
+    low_space_note ""
 
     # The quality ladder. .watch-encode.sh deletes the partial when it
     # auto-kills an out-of-band projection (30-80% of source, both directions

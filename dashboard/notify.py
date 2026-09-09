@@ -100,10 +100,15 @@ WHATS = {
     # corresponds to it -- which is exactly why it exists, because the outages
     # worth catching are the ones the driver never wrote a line about.
     "idle": ("❗", "NOTHING IS ENCODING"),
+    # The staging-drive floor (2026-09-08): the driver's one-per-episode
+    # LOW SPACE line. Email only (see classify): the operator asked for an
+    # email to free up space, and nothing else.
+    "low-space": ("💾", "LOW SPACE — free up the X9"),
 }
 # Which survive a burst cap, most important first.
 PRIORITY = (
     "idle",
+    "low-space",
     "deleted",
     "sync-failed",
     "error",
@@ -293,6 +298,21 @@ def classify(e: dict, err=_err):
             what="stopped",
             title="queue empty",
             text=text[len("STOP CONDITION:") :].strip(),
+        )
+    if kind == "lowspace":
+        # "LOW SPACE: low space on the staging drive: 87.3 GiB free, encodes
+        # resume at 100 GiB -- free up space; waiting". The driver writes it
+        # ONCE per episode (low_space_note), so one note here is one email;
+        # `channels` restricts delivery to email -- the operator's ask.
+        body = text[len("LOW SPACE:") :].strip()
+        body = body.split(" -- ", 1)[0]
+        return dict(
+            base,
+            what="low-space",
+            title="staging drive",
+            text=f"{body} · the running encode finishes; nothing new starts "
+            "until space is freed, then encoding resumes by itself",
+            channels=("email",),
         )
     if kind == "halted":
         body = text[len("HALTED:") :].strip() if text.startswith("HALTED:") else text
@@ -670,9 +690,20 @@ class Notifier:
                 )
                 changed = True
                 continue
+            # A note may name the channels it wants (low-space is email
+            # only). Restricted to what is configured, so a note that asks
+            # for an unconfigured channel completes instead of pending
+            # forever. A list after the JSON round trip, a tuple before it.
+            want = item["note"].get("channels")
+            targets = (
+                {c for c in want if c in self.channels}
+                if want
+                else set(self.channels)
+            )
             for name, (send, fmt) in self.channels.items():
                 if (
-                    name in item["sent"]
+                    name not in targets
+                    or name in item["sent"]
                     or name in tried
                     or not self._channel_open(name)
                 ):
@@ -692,7 +723,7 @@ class Notifier:
                 # Persist the landed half NOW: a SIGKILL inside the next
                 # channel's 15 s handshake must not resend this one.
                 self._save()
-            if set(item["sent"]) >= set(self.channels):
+            if set(item["sent"]) >= targets:
                 done += 1
                 changed = True
             else:

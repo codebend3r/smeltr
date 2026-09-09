@@ -81,6 +81,19 @@ class Timeline(unittest.TestCase):
         for k in ("halted", "judge", "start", "up", "killed", "complete"):
             self.assertIn(k, kinds)
 
+    def test_low_space_is_its_own_kind(self):
+        # The driver writes ONE stamped LOW SPACE line per episode (the 60 s
+        # "waiting: low space" lines are noise). It is the line that emails
+        # the operator, so the tab must chip it, never fold it into info.
+        with open(os.path.join(self.tmp.name, ".autopilot.log"), "a") as f:
+            f.write(
+                "2026-09-01 16:00:00  LOW SPACE: low space on the staging drive: "
+                "87.3 GiB free, encodes resume at 100 GiB -- free up space; waiting\n"
+            )
+        evs = self._evs()
+        self.assertEqual(evs[0]["kind"], "lowspace")
+        self.assertTrue(evs[0]["text"].startswith("LOW SPACE: "))
+
     def test_indented_and_unstamped_lines_are_detail_not_events(self):
         evs = self._evs()
         start = [e for e in evs if e["kind"] == "start"][0]

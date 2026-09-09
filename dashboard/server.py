@@ -679,7 +679,7 @@ def build_state() -> dict:
         # banners -- and it feeds _mark_ready so "ready" and the paused banner
         # can never come from two reads that disagree within one snapshot.
         summary = core.summary(hist=hist, q=q, live=live)
-        _mark_ready(q, live, summary["paused"])
+        _mark_ready(q, live, summary["paused"], summary["low_space"])
         # Pending dashboard pulls, annotated onto the rows they belong to. The
         # rows are already private copies (see above), so this is safe.
         with _stage_lock:
@@ -833,7 +833,7 @@ def _set_note(msg, kind="warn") -> None:
         _state_cache["payload"] = None
 
 
-def _mark_ready(rows: list, live: list, paused: bool) -> None:
+def _mark_ready(rows: list, live: list, paused: bool, low_space: bool = False) -> None:
     """Flag the ONE row the pipeline would actually encode next.
 
     The pick IS core.pick_next -- the same call next_title.py makes -- so the
@@ -850,6 +850,9 @@ def _mark_ready(rows: list, live: list, paused: bool) -> None:
     pipeline is not paused: it carries the green row and the start button,
     and must never promise an encode that cannot start. Gated HERE, not in
     the page -- ready is server-computed, whole, or the invariant leaks.
+    `low_space` (the 100 GiB staging-drive floor, 2026-09-08) gates ready
+    the same way: the driver's next_title waits under it, so the button may
+    not offer what the driver would refuse.
     """
     for r in rows:
         r["ready"] = False
@@ -862,7 +865,7 @@ def _mark_ready(rows: list, live: list, paused: bool) -> None:
     pick, _ = core.pick_next([r for r in rows if r.get("arriving_bytes") is None])
     if pick is not None:
         pick["next_up"] = True
-        if not live and not paused:
+        if not live and not paused and not low_space:
             pick["ready"] = True
 
 
@@ -2113,6 +2116,16 @@ class Handler(BaseHTTPRequestHandler):
             )
         if not os.path.isdir(core.X9):
             return "the staging drive is not mounted"
+        # The staging-drive floor (2026-09-08): the same gate next_title.py
+        # applies to the driver. A hand start under it would write a 30-60 GB
+        # output onto a drive the pipeline has just declared too full.
+        blocked, free = core.low_space()
+        if blocked:
+            return (
+                f"the staging drive has {free / 1024**3:.1f} GiB free; encodes "
+                f"resume at {core.LOW_SPACE_FLOOR_BYTES // 1024**3} GiB -- "
+                "free up space first"
+            )
         with _encode_lock:
             # Refuse rather than race. The driver checks hb_running, then asks
             # next_title.py, then spawns -- seconds during which it cannot see

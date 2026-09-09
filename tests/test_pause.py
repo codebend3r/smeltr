@@ -66,10 +66,23 @@ class DriverContract(unittest.TestCase):
     """next_title's exit code IS the API the driver consumes."""
 
     def setUp(self):
-        self._saved = (core.offline_roots, core.paused, core.queue_cached)
+        self._saved = (
+            core.offline_roots,
+            core.paused,
+            core.queue_cached,
+            core.low_space,
+        )
+        # The staging-drive floor is its own suite (test_low_space.py); here
+        # it must never read the live X9 and flip a pause test to "waiting".
+        core.low_space = lambda: (False, None)
 
     def tearDown(self):
-        core.offline_roots, core.paused, core.queue_cached = self._saved
+        (
+            core.offline_roots,
+            core.paused,
+            core.queue_cached,
+            core.low_space,
+        ) = self._saved
 
     def _main(self):
         # main() reads sys.argv for the threshold; under unittest argv[1]

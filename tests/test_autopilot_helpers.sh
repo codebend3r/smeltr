@@ -102,5 +102,35 @@ ck "unresolved+offline defers"            "$(grep -c 'DEFER \$done_folder: libra
 ck "the remaining halt asserts roots up"  "$(grep -c 'roots ARE reachable' "$AP")" "1"
 ck "stop condition waits on a deferred folder" "$(grep -c 'syncs_in_flight || \[ -n "\$done_folder" \]' "$AP")" "1"
 
+# The staging-drive floor (operator's rule, 2026-09-08). next_title answers
+# exit 3 with a reason starting "low space" while the X9 has under 100 GiB
+# free; the driver logs that wait every 60 s. low_space_note() turns the FIRST
+# such wait of an episode into ONE stamped `LOW SPACE:` line -- the line that
+# emails the operator -- and stays silent until a wait for any other reason
+# (or a start) closes the episode. A repeated line would be a repeated email.
+LOWSPACE_LOG="$TMP/lowspace.log"
+# shellcheck disable=SC2034  # read by low_space_note, sourced above
+SMELTR_HOME="$TMP/home"; mkdir -p "$SMELTR_HOME"
+LOWSPACE_MARK="$SMELTR_HOME/lowspace"
+log() { printf '%s\n' "$*" >> "$LOWSPACE_LOG"; }
+: > "$LOWSPACE_LOG"
+low_space_note "low space on the staging drive: 87.3 GiB free, encodes resume at 100 GiB -- free up space; waiting"
+ck "first low-space wait logs LOW SPACE"  "$(grep -c '^LOW SPACE: low space on the staging drive: 87.3 GiB free' "$LOWSPACE_LOG")" "1"
+ck "and leaves the episode marker"        "$([ -e "$LOWSPACE_MARK" ] && echo yes || echo no)" "yes"
+low_space_note "low space on the staging drive: 86.9 GiB free, encodes resume at 100 GiB -- free up space; waiting"
+low_space_note "low space on the staging drive: 86.5 GiB free, encodes resume at 100 GiB -- free up space; waiting"
+ck "repeated low-space waits log nothing" "$(grep -c '^LOW SPACE' "$LOWSPACE_LOG")" "1"
+low_space_note "paused from the dashboard; waiting"
+ck "another wait reason closes the episode" "$([ -e "$LOWSPACE_MARK" ] && echo yes || echo no)" "no"
+ck "and logs no LOW SPACE line itself"    "$(grep -c '^LOW SPACE' "$LOWSPACE_LOG")" "1"
+low_space_note "low space on the staging drive: 12.0 GiB free, encodes resume at 100 GiB -- free up space; waiting"
+ck "a new episode logs again"             "$(grep -c '^LOW SPACE' "$LOWSPACE_LOG")" "2"
+low_space_note ""
+ck "an empty reason (a start) closes it"  "$([ -e "$LOWSPACE_MARK" ] && echo yes || echo no)" "no"
+log() { :; }
+# The loop must feed it: the exit-3 wait passes its reason, and a pick clears.
+ck "exit-3 branch notes the reason"       "$(grep -c 'low_space_note "\$(next_reason)"' "$AP")" "1"
+ck "a pick closes the episode"            "$(grep -c 'low_space_note ""' "$AP")" "1"
+
 echo; echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

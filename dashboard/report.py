@@ -579,6 +579,16 @@ def main() -> int:
         print(
             f"  {c('PAUSED — the current encode (if any) still finishes and syncs; nothing new starts. Resume from the dashboard.', '1;33')}"
         )
+    # The staging-drive floor: the driver is WAITING, not stopped, and the
+    # fix is on the human -- say how much room there is and where the line is.
+    if s.get("low_space"):
+        free = (s.get("x9_free_bytes") or 0) / 1024**3
+        floor = (s.get("low_space_floor_bytes") or 0) // 1024**3
+        line = (
+            f"LOW SPACE — {free:.1f} GiB free on the staging drive; nothing new "
+            f"starts until {floor} GiB is free. Free up space; the driver resumes by itself."
+        )
+        print(f"  {c(line, '1;33')}")
     if not s.get("library_complete", True):
         missing = ", ".join(s.get("roots_offline") or ["unknown"])
         print(f"  {c('!! LIBRARY INCOMPLETE: ' + missing + ' not mounted.', '1;31')}")

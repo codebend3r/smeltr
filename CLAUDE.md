@@ -435,6 +435,63 @@ fewer than `MIN_HISTORY` VT rows in the ledger is `suspect` by
 construction — the first hardware encodes halt for a human, never
 auto-delete on a baseline borrowed from x265's curve.
 
+### The staging-drive FLOOR — 100 GiB before a new encode (2026-09-08, operator's rule)
+
+"There must be at least 100GB left in order for the new encode to begin; if
+there is less, the encoding will pause and I will be sent an email that I
+need to free up space."
+
+- **`core.LOW_SPACE_FLOOR_BYTES` = 100 GiB** (read as GiB: the stricter of
+  the two readings by 7 GiB, and every other figure on the page is GiB).
+  `core.low_space()` → `(blocked, free_bytes)` from a `statvfs` of the X9.
+  An UNREADABLE drive answers `(False, None)`, never `(True, 0)`: an absent
+  drive is a different fact from a full one, and the offline/no-source
+  paths already own it — a fake floor verdict would send the operator
+  freeing space on a drive that is simply unmounted.
+- **It is a WAIT, not the pause flag.** `next_title.py` checks it right after
+  `paused()` and BEFORE the pick: exit **3** with a reason starting
+  `low space on the staging drive: 87.3 GiB free, encodes resume at 100
+  GiB`. Precedence is paused → low space → pick → offline → waits → stop. The
+  running encode still finishes, records and moves to `complete/`; only the
+  next start is withheld, and the driver's 60 s wait pass starts it by
+  itself once space is freed — nothing to flip, no email on recovery
+  (operator's choice: one email on trip only).
+- **The driver writes ONE stamped `LOW SPACE:` line per episode.**
+  `low_space_note()` in `.autopilot.sh`: the exit-3 branch passes it
+  `$(next_reason)`; the first `low space` reason with no `lowspace` marker
+  beside the ledger logs the line and touches the marker; any other wait
+  reason, or a pick (`low_space_note ""`), removes it. The marker is beside
+  the ledger like the pause flag, never on the X9 — the one moment it is
+  written is the moment the X9 may have no room for it, and a marker that
+  failed to land would re-send the email every minute. The 60 s
+  `waiting: low space …` lines stay `info`.
+- **The email.** `events.py` maps the line to kind `lowspace` (first word
+  `LOW`, second word checked); `notify.classify` → `what="low-space"`,
+  subject `smeltr: LOW SPACE — free up the X9 — staging drive`, body naming
+  the free figure and the floor. Notes may now carry `channels`; this one is
+  `("email",)` — **no Slack**, and `_deliver()` completes a note once its
+  configured targets are ticked, so an email-only note never pends waiting
+  for a Slack send that is never attempted.
+- **Every surface reads the ONE carrier**, `summary()`: `low_space`,
+  `x9_free_bytes`, `low_space_floor_bytes`. The alert stack draws a loud
+  card with both figures (no `100 GiB` literal on the page — the server owns
+  the floor), the idle live card says "Waiting — low space", the big
+  toggle's sub-line says why, the queue's next pill reads "next once space
+  is freed", `_mark_ready()` never marks a row ready, `POST
+  /api/encode/start` refuses with the figures (the hand start is the OTHER
+  thing that spawns HandBrake), `smeltr report` banners it, and the morning
+  brief flags it in body and subject as distinct from the 1% `FULL` flag.
+  The live card's rebuild signature carries the flag (shape), never the
+  free-bytes figure.
+- **The replenisher was NOT changed**: its `ENCODE_RESERVE_KB` (150 GiB on
+  top of the source) already holds above this floor.
+
+`tests/test_low_space.py` (core, next_title precedence, summary carrier,
+`_mark_ready`, the 409), `tests/test_autopilot_helpers.sh` (one line per
+episode, the two call sites), `tests/test_events.py`, `tests/test_notify.py`
+(email-only completion), `tests/test_brief.py` and `tests/test_low_space_ui.ts`
+pin it.
+
 ### The staging LAYOUT — `queue/` and `complete/` (2026-09-07, operator's rule)
 
 Movie folders live in two subfolders of the X9, never at its root:
