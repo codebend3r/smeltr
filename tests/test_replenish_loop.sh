@@ -28,6 +28,17 @@ FAKE
 chmod +x "$X9/.ssh-xfer.sh"
 # `ssh` on PATH answers the pre-pull size check.
 printf '#!/bin/bash\necho 1000\n' > "$TMP/bin/ssh"; chmod +x "$TMP/bin/ssh"
+# `df` answers from a file this test writes, so the free-space gate is a fact
+# the sandbox STATES rather than whatever disk the runner happens to have.
+# ENCODE_RESERVE_KB is 150 GiB; a CI box with 14 GiB free skipped every pull
+# and all six landing assertions read as "nothing lands" (2026-09-09).
+FREE_KB="$TMP/free_kb"; echo 838860800 > "$FREE_KB"   # 800 GiB
+cat > "$TMP/bin/df" <<FAKEDF
+#!/bin/bash
+echo "Filesystem 1024-blocks Used Avail Capacity Mounted on"
+echo "sandbox 0 0 \$(cat "$FREE_KB") 1% /"
+FAKEDF
+chmod +x "$TMP/bin/df"
 export PATH="$TMP/bin:$PATH"
 # Three library titles above the threshold.
 python3 - "$X9/.bitrates-4k-combined.json" <<'PY'
@@ -58,5 +69,17 @@ ck "the run says the budget is reached"           "$(grep -c 'BUDGET REACHED' "$
 rc=$(run)
 ck "at the budget the next run pulls nothing"     "$(grep -c 'staged OK' "$TMP/out.txt")" 0
 ck "and says so"                                  "$(grep -c 'BUDGET REACHED' "$TMP/out.txt")" 1
+
+# --- 3. the free-space gate: no room, no pull, and it says why -------------
+# Pinned here because it is what silently emptied this suite on CI: an
+# unstubbed gate reads the runner's own disk, and every assertion above
+# passes vacuously the day it trips.
+rm -f "$SMELTR_DIR/download_budget" "$SMELTR_DIR/downloads_done"
+echo 1024 > "$FREE_KB"                       # 1 MiB, under the 150 GiB reserve
+rc=$(run)
+ck "no room: nothing is pulled"                   "$(grep -c 'staged OK' "$TMP/out.txt")" 0
+ck "no room: nothing landed in queue/"            "$(ls "$X9/queue" | wc -l | tr -d ' ')" 0
+ck "no room: every pick says why"                 "$(grep -c 'SKIPPING' "$TMP/out.txt")" 3
+echo 838860800 > "$FREE_KB"
 
 echo "$pass passed, $fail failed"; [ "$fail" -eq 0 ]
