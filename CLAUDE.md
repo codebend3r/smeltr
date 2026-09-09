@@ -817,6 +817,48 @@ three answers (a string match cannot tell them apart);
 `test_error_state.py::UnfinishedOutputIsNotAnError` pins the routing and the
 rename-before-kill ordering.
 
+### A full staging drive is not five broken sources (2026-09-08)
+
+The X9 reached **0 bytes free at 06:43** and five titles went red inside an
+hour, every one of them running VideoToolbox at CQ 70, none for anything
+about the source. Under the no-delete policy `complete/` only grows and the
+replenisher kept `queue/` at 10-14 sources; nothing in the pipeline looked at
+free space before writing an encode. Three faces of one cause, each fixed:
+
+- **Hereditary, Mary Queen of Scots, Iron Claw — "track mismatch 0a/0s".**
+  HandBrake could not write a byte of its own log (0 bytes, no
+  `job configuration:` line) and the 120 s gate read that as a track verdict.
+  `start_encode()` now checks for the job line FIRST: no job = kill, drop
+  the partial, `bank_strike`, retry next pass (`START FAILED`). Only a log
+  that reached its job configuration can produce a track mismatch.
+- **Mockingjay Part 1 (0.37%), Batman Returns (83.94%, 24 GiB) — "never
+  completed on 3 attempts"** after ONE attempt each. `midwrite_route()`
+  wrote its strike count with `printf > "$f"`; the write failed with ENOSPC
+  and **bash 3.2 flushed the unwritten count into the function's captured
+  stdout** on the way out, so the caller saw `1\nretry`, matched no arm and
+  fell to `*)` = `error_out`. Now `bank_strike()` writes in a subshell whose
+  stdout IS the file, counts only what reads back, and the caller's `error)`
+  arm is the literal word — anything else retries.
+  `tests/test_midwrite_retry.sh` fills a real 1 MiB HFS+ image to the last
+  byte to drive that path (a directory stand-in fails at OPEN, which does not
+  leak; the bug needs a file that opens and refuses the write).
+- **The dashboard captioned the three empty markers "CRF ladder exhausted".**
+  That was `core.error_marker()`'s fallback for a zero-byte file — a guess
+  from the day markers were invented. `core.EMPTY_ERROR_NOTE` now says what
+  an empty marker proves (the driver could not write the reason; the drive
+  was full) and `web/app.js`, `report.py` and `next_title.py` read it.
+
+Two gates so it cannot recur: `start_encode()` refuses to START without
+`ENCODE_HEADROOM_PCT` (80%) of the source plus 10 GiB free — `NO ROOM`,
+logged once per title, a WAIT and never an error — and
+`.replenish-queue.sh` reserves `ENCODE_RESERVE_KB` (150 GiB) above every
+pull instead of 10 GiB, because the pull gate was reserving room for the
+download and not for the encode written beside it. Freeing space is still
+the operator's: under no-delete, `complete/` is the only thing that can go.
+`test_error_state.py` pins the routing; `slug_of()` truncates to 20 chars,
+so Mockingjay Part 1 and Part 2 share `.hb-`/`.watch-`/`.midwrite-` files —
+known, not yet addressed.
+
 ### No gap between encodes — the operator's standing requirement (2026-08-31)
 
 **The only sanctioned gap between one encode finishing and the next starting

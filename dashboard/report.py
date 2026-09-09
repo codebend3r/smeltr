@@ -348,7 +348,7 @@ _NOTE_MAX = 92
 
 
 def _trim_note(note, title: str) -> str:
-    note = " ".join((note or "CRF ladder exhausted").split())
+    note = " ".join((note or core.EMPTY_ERROR_NOTE).split())
     if note.lower().startswith(title.lower() + ":"):
         note = note[len(title) + 1 :].strip()
     if len(note) > _NOTE_MAX:

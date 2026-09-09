@@ -36,6 +36,12 @@ TARGET=10
 # "3 per run" cap is gone -- every pull is still gated on free space below.
 FILL=14
 MAX=18
+# Room the ENCODES need, kept free on top of every pull (2026-09-08). The gate
+# below used to reserve 10 GiB beside the source, which is room for a pull
+# and not for the encode written next to it: the drive reached 0 bytes free
+# at 06:43 and five titles errored in an hour. Two encodes' worth at the top
+# of the band (~2 x 0.8 x 70 GiB) plus margin.
+ENCODE_RESERVE_KB=157286400   # 150 GiB
 DRY=false
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -316,11 +322,11 @@ while IFS=$'\t' read -r br size folder path; do
   printf 'PICK %.1f Mb/s  %s\n' "$(echo "$br" | awk '{print $1/1000000}')" "$folder"
   if $DRY; then continue; fi
   # Free-space gate: never start a pull the drive cannot hold. Source size
-  # plus a 10 GiB margin for the encode being written alongside it.
+  # plus ENCODE_RESERVE_KB for the encodes written alongside it.
   avail_kb=$(df -k "$X9" | awk 'NR==2{print $4}')
-  need_kb=$(( size / 1024 + 10485760 ))
+  need_kb=$(( size / 1024 + ENCODE_RESERVE_KB ))
   if [ -n "${avail_kb:-}" ] && [ "$avail_kb" -lt "$need_kb" ]; then
-    echo "  SKIPPING $folder - only $((avail_kb/1048576)) GiB free, need $((need_kb/1048576)) GiB"
+    echo "  SKIPPING $folder - only $((avail_kb/1048576)) GiB free, need $((need_kb/1048576)) GiB (source + $((ENCODE_RESERVE_KB/1048576)) GiB encode reserve)"
     continue
   fi
   # Pull over SSH, not SMB. Benchmarked 2026-08-17: SSH cat 18 MB/s vs SMB cp 9 MB/s.

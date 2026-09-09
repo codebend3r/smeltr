@@ -102,6 +102,58 @@ rm -f "$X9/.watch-$SLUG.log"
 ck "so the next crash starts from one again" "$(midwrite_route "$T")" retry
 ck "at strike 1"                            "$(cat "$X9/.midwrite-$SLUG" 2>/dev/null)" 1
 
+# --- 4b. a strike the drive would not record is not a strike ---------------
+# 2026-09-08: the X9 at 0 bytes free. `printf > "$f"` failed with ENOSPC,
+# bash 3.2 flushed the unwritten count into the function's captured stdout
+# ("1\nretry"), and the caller errored the title on its FIRST death as
+# "never completed on 3 attempts". Two shapes of "cannot record": a strike
+# path that cannot be OPENED (a directory stands in), and one that opens but
+# cannot be WRITTEN -- a real 1 MiB HFS+ image filled to the last byte, the
+# only way to make bash's stdio take the failed-flush path. Each must answer
+# exactly one word, always retry, never error.
+reset; partial; HBR=1
+mkdir -p "$X9/.midwrite-$SLUG"
+r1=$(midwrite_route "$T"); r2=$(midwrite_route "$T"); r3=$(midwrite_route "$T")
+ck "an unopenable strike answers one word"  "$(printf '%s' "$r1" | wc -l | tr -d ' ')" 0
+ck "and never escalates: first"             "$r1" retry
+ck "and never escalates: second"            "$r2" retry
+ck "and never escalates: third"             "$r3" retry
+ck "no error marker is written"             "$([ -e "$X9/.error-$T" ] && echo yes || echo no)" no
+rmdir "$X9/.midwrite-$SLUG"
+
+if command -v hdiutil >/dev/null 2>&1; then
+  IMG="$TMP/full.dmg"
+  hdiutil create -quiet -size 1m -fs HFS+ -volname SMELTRFULL "$IMG" -ov >/dev/null 2>&1
+  FULL=$(hdiutil attach -nobrowse "$IMG" 2>/dev/null | awk '/SMELTRFULL/{print $NF}')
+  if [ -n "$FULL" ] && [ -d "$FULL" ]; then
+    : > "$FULL/.midwrite-$SLUG"
+    for bs in 65536 4096 512 1; do i=0
+      while dd if=/dev/zero of="$FULL/fill.$bs.$i" bs=$bs count=1 2>/dev/null; do
+        i=$((i+1)); [ $i -gt 4000 ] && break
+      done
+    done
+    if printf 'x' > "$FULL/.probe" 2>/dev/null && [ "$(stat -f%z "$FULL/.probe")" = 1 ]; then
+      echo "(could not fill the test image to the last byte - skipping the ENOSPC half)"
+    else
+      # No reset here: it would delete the pre-created strike file, and a
+      # CREATE on a full volume fails at open (no leak) -- the bug needs an
+      # existing file that opens and then refuses the write.
+      SAVE_X9="$X9"; X9="$FULL"; HBR=1
+      r1=$(midwrite_route "$T"); r2=$(midwrite_route "$T"); r3=$(midwrite_route "$T")
+      X9="$SAVE_X9"
+      ck "ENOSPC: the answer is one word, nothing leaks" "$(printf '%s' "$r1" | wc -l | tr -d ' ')" 0
+      ck "ENOSPC: first death retries"      "$r1" retry
+      ck "ENOSPC: second death retries"     "$r2" retry
+      ck "ENOSPC: third death still retries (no strike was ever recorded)" "$r3" retry
+    fi
+    hdiutil detach -quiet "$FULL" >/dev/null 2>&1 || hdiutil detach -force -quiet "$FULL" >/dev/null 2>&1
+  else
+    echo "(hdiutil could not attach a test image - skipping the ENOSPC half)"
+  fi
+else
+  echo "(no hdiutil - skipping the ENOSPC half)"
+fi
+
 # --- 5. drop_partial removes every shape of the corpse --------------------
 # The output, its AppleDouble sidecar, and the `.killing` rename the watcher
 # leaves if it is killed between the rename and its own cleanup.

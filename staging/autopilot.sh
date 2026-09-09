@@ -236,6 +236,12 @@ finished_folder() {
 # look. A ladder retry is not one of them (see midwrite_route).
 MIDWRITE_STRIKES=3
 
+# Room an encode needs before it may START, as a share of its source (the top
+# of the band) plus a fixed margin. Not enough room is a WAIT, never an error
+# -- see the gate in start_encode() (2026-09-08).
+ENCODE_HEADROOM_PCT=80
+ENCODE_MARGIN_KB=10485760
+
 # Throw away a partial output and every shape it leaves behind: the file, its
 # AppleDouble sidecar (this volume is exFAT), and the `.killing` rename
 # .watch-encode.sh makes before it kills a band violation -- which is left
@@ -274,18 +280,39 @@ drop_partial() {
 # A KILLED line CLEARS the count: each rung is progress, not a repeat of the
 # same failure, and a ladder that legitimately walks five rungs must never
 # trip the crash bound.
-midwrite_route() {
-  local title="$1" slug f n
-  slug=$(slug_of "$title")
-  f="$X9/.midwrite-$slug"
-  if hb_running; then printf 'wait\n'; return; fi
-  if grep -q '^KILLED|' "$X9/.watch-$slug.log" 2>/dev/null; then
-    rm -f "$f"; printf 'retry\n'; return
-  fi
+# Bank one unexplained-failure strike for a title; exit 0 when the bound is
+# reached and a human is owed a look. The count lives in $X9/.midwrite-<slug>
+# and error_out/done_out clear it.
+#
+# ONLY A PERSISTED STRIKE COUNTS (2026-09-08). The X9 hit 0 bytes free that
+# morning: `printf > "$f"` failed with ENOSPC, and bash 3.2 then flushed the
+# unwritten count into the function's STDOUT on its way out -- the caller
+# captured "1\nretry", which matched no case arm and fell through to
+# error_out on the FIRST strike wearing the words "never completed on 3
+# attempts" (Mockingjay Part 1 at 0.37%, Batman Returns at 83.94%). Two
+# guards: the write runs in a subshell whose stdout IS the file, so a failed
+# flush has nowhere else to go; and the count is read back, so a strike the
+# drive would not record is not one -- a full drive is the cause of that
+# death, not a fact about the source.
+bank_strike() {
+  local f n
+  f="$X9/.midwrite-$(slug_of "$1")"
   n=$(cat "$f" 2>/dev/null)
   case "$n" in ''|*[!0-9]*) n=0 ;; esac
-  n=$((n + 1)); printf '%s\n' "$n" > "$f"
-  if [ "$n" -ge "$MIDWRITE_STRIKES" ]; then printf 'error\n'; else printf 'retry\n'; fi
+  n=$((n + 1))
+  ( exec >"$f" 2>/dev/null || exit 1; printf '%s\n' "$n" ) 2>/dev/null
+  [ "$(cat "$f" 2>/dev/null)" = "$n" ] || return 1
+  [ "$n" -ge "$MIDWRITE_STRIKES" ]
+}
+
+midwrite_route() {
+  local title="$1" slug
+  slug=$(slug_of "$title")
+  if hb_running; then printf 'wait\n'; return; fi
+  if grep -q '^KILLED|' "$X9/.watch-$slug.log" 2>/dev/null; then
+    rm -f "$X9/.midwrite-$slug"; printf 'retry\n'; return
+  fi
+  if bank_strike "$title"; then printf 'error\n'; else printf 'retry\n'; fi
 }
 
 # The replenisher, DETACHED, its output folded into this log. Detached because
@@ -507,6 +534,28 @@ start_encode() {
   local encflags=(-e x265_10bit -q "$q" --encoder-preset medium)
   [ "$enc" = "vt_h265_10bit" ] && encflags=(-e vt_h265_10bit -q "$q")
 
+  # NO ROOM IS A WAIT, NOT AN ERROR (2026-09-08). The X9 reached 0 bytes free
+  # at 06:43 and five titles errored inside an hour, none for anything about
+  # the source: three "track mismatch 0a/0s" where HandBrake could not write
+  # a byte of its own log, two "died mid-write" ENOSPC in the mux (Batman
+  # Returns at 83.94%, 24 GiB thrown away). Nothing here looked at the drive.
+  # The replenisher reserves room for a PULL, not for the encode written
+  # beside it, and under the no-delete policy complete/ only grows. Logged
+  # once per title so a long wait does not paper the Events tab; returns 2,
+  # which the loop treats as "nothing started this pass".
+  local srcb avail_kb need_kb
+  srcb=$(stat -f%z "$src" 2>/dev/null || echo 0)
+  avail_kb=$(df -k "$X9" 2>/dev/null | awk 'NR==2{print $4}')
+  need_kb=$(( srcb / 1024 * ENCODE_HEADROOM_PCT / 100 + ENCODE_MARGIN_KB ))
+  if [ -n "${avail_kb:-}" ] && [ "$avail_kb" -lt "$need_kb" ]; then
+    if [ "${NOROOM_LOGGED:-}" != "$title" ]; then
+      log "NO ROOM $title: $((avail_kb/1048576)) GiB free on the X9 but an encode of this $((srcb/1073741824)) GiB source needs up to $((need_kb/1048576)) GiB - waiting, not erroring. Free space on the drive (complete/ holds finished titles) or nothing starts"
+      NOROOM_LOGGED="$title"
+    fi
+    return 2
+  fi
+  NOROOM_LOGGED=""
+
   log "START $title with $enc at Q$q"
   $DRY && { log "(dry run) would encode: $src -> $out"; return 0; }
 
@@ -523,6 +572,23 @@ start_encode() {
     grep -q 'job configuration:' "$X9/.hb-${slug}.log" 2>/dev/null && break
     sleep 1
   done
+  # NO JOB IS NOT A TRACK MISMATCH (2026-09-08). With the drive full HandBrake
+  # could not write its own log: 0 bytes, no "job configuration:" line, and
+  # the gate below read "source 1a/8s but job writes 0a/0s" -- a verdict about
+  # tracks on a job that never began (Hereditary, Mary Queen of Scots, Iron
+  # Claw). A job that never reached its configuration says nothing about the
+  # source: kill whatever is there, drop the partial, bank a strike (the same
+  # bound as an unexplained mid-write death) and retry next pass.
+  if ! grep -q 'job configuration:' "$X9/.hb-${slug}.log" 2>/dev/null; then
+    kill "$pid" 2>/dev/null; sleep 2; drop_partial "$title"
+    local lb; lb=$(stat -f%z "$X9/.hb-${slug}.log" 2>/dev/null || echo 0)
+    if bank_strike "$title"; then
+      error_out "$title" "HandBrake never reached its job configuration on $MIDWRITE_STRIKES attempts (log $lb bytes) - failing on this source"
+    else
+      log "START FAILED $title: HandBrake wrote no job configuration in 120 s (log $lb bytes, $(( $(df -k "$X9" 2>/dev/null | awk 'NR==2{print $4}') / 1048576 )) GiB free) - not a track verdict; retrying next pass"
+    fi
+    return 1
+  fi
   local sa ss oa os
   oa=$(tr '\r' '\n' < "$X9/.hb-${slug}.log" | grep -cE '^\[[0-9:]+\][[:space:]]+\* audio track')
   os=$(tr '\r' '\n' < "$X9/.hb-${slug}.log" | grep -cE '^\[[0-9:]+\][[:space:]]+\* subtitle track')
@@ -629,10 +695,18 @@ while true; do
                 log "  $done_folder: unfinished output from an encode that never completed - dropping the partial and retrying"
                 drop_partial "$done_folder"
                 judged=retry ;;
-              *)
+              error)
                 drop_partial "$done_folder"
                 error_out "$done_folder" "the encode never completed on $MIDWRITE_STRIKES attempts and no watcher line explains it - HandBrake is failing on this source"
                 judged=error ;;
+              *)
+                # Anything but the three words is a broken helper, never a
+                # verdict on the source (2026-09-08: a failed strike write
+                # once leaked into this capture and errored a title on its
+                # first death). Retry; the persisted count still bounds it.
+                log "  $done_folder: midwrite_route answered something unreadable - dropping the partial and retrying"
+                drop_partial "$done_folder"
+                judged=retry ;;
             esac
           else
             error_out "$done_folder" "could not be evaluated (verdict exit 4)"; judged=error

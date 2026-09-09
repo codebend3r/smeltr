@@ -81,8 +81,7 @@ def main() -> int:
         msgs = {
             "arriving": "a replenish pull is still landing",
             "skipped": "staged titles are hand-skipped",
-            "errored": "staged titles are in an error state "
-            "(CRF ladder exhausted) awaiting review",
+            "errored": "staged titles are in an error state awaiting review",
         }
         print(
             "; ".join(msgs.get(w, w) for w in sorted(waits)) + " -- waiting",

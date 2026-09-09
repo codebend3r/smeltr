@@ -69,7 +69,19 @@ class MarkerRead(unittest.TestCase):
         an empty note must not silently clear the red row."""
         with tempfile.TemporaryDirectory() as x9, mock.patch.object(core, "X9", x9):
             open(os.path.join(x9, ".error-Tron (1982)"), "w").close()
-            self.assertEqual(core.error_marker("Tron (1982)"), "CRF ladder exhausted")
+            self.assertEqual(core.error_marker("Tron (1982)"), core.EMPTY_ERROR_NOTE)
+
+    def test_empty_marker_names_the_write_failure_not_a_ladder(self):
+        """2026-09-08: three zero-byte markers were written by a driver on a
+        drive at 0 bytes free, and the page captioned every one of them
+        "CRF ladder exhausted" -- on titles that ran VideoToolbox. The
+        fallback may not guess a cause; it names the one thing an empty
+        marker proves, and every surface reads the same constant."""
+        self.assertNotIn("CRF", core.EMPTY_ERROR_NOTE)
+        self.assertIn("empty", core.EMPTY_ERROR_NOTE)
+        for rel in (("web", "app.js"), ("dashboard", "report.py"), ("pipeline", "next_title.py")):
+            self.assertNotIn("CRF ladder exhausted", _read_repo_file(*rel), rel)
+        self.assertIn(core.EMPTY_ERROR_NOTE, _read_repo_file("web", "app.js").replace('" +\n    "', ""))
 
 
 class PickExclusion(unittest.TestCase):
@@ -507,6 +519,41 @@ class UnfinishedOutputIsNotAnError(unittest.TestCase):
         self.assertIn("midwrite_route() {", src)
         self.assertIn("drop_partial() {", src)
         self.assertIn("case $(midwrite_route \"$done_folder\") in", src)
+
+    def test_only_the_word_error_errors(self):
+        """2026-09-08: on a full X9 the strike write failed with ENOSPC and
+        bash 3.2 leaked the unwritten count into the captured answer
+        ("1\\nretry"), which matched no arm and fell to `*)` -- error_out on
+        the FIRST strike, captioned "never completed on 3 attempts". The
+        error arm is now the literal word; anything else retries."""
+        src = _read_repo_file("staging", "autopilot.sh")
+        self.assertIn("bank_strike() {", src)
+        # the write happens in a subshell whose stdout IS the file
+        self.assertIn("( exec >\"$f\" 2>/dev/null || exit 1; printf '%s\\n' \"$n\" ) 2>/dev/null", src)
+        # and only a persisted count is a strike
+        self.assertIn("[ \"$(cat \"$f\" 2>/dev/null)\" = \"$n\" ] || return 1", src)
+        i = src.index('case $(midwrite_route "$done_folder") in')
+        block = src[i : src.index("esac", i)]
+        j = block.index("error)")
+        self.assertIn("never completed on $MIDWRITE_STRIKES attempts", block[j:])
+        star = block[block.index("*)") :]
+        self.assertNotIn("error_out", star)
+        self.assertIn("judged=retry", star)
+
+    def test_no_room_is_a_wait_and_no_job_is_not_a_track_verdict(self):
+        """The two other faces of the same full drive (2026-09-08): an encode
+        must not START into a drive that cannot hold it, and a HandBrake that
+        never wrote its job configuration has said nothing about tracks."""
+        src = _read_repo_file("staging", "autopilot.sh")
+        self.assertIn("ENCODE_HEADROOM_PCT=80", src)
+        gate = src.index('log "NO ROOM $title:')
+        self.assertLess(gate, src.index('log "START $title with $enc at Q$q"'))
+        self.assertIn("return 2", src[gate : gate + 400])
+        self.assertNotIn("error_out", src[gate : gate + 400])
+        nojob = src.index("if ! grep -q 'job configuration:' \"$X9/.hb-${slug}.log\"")
+        self.assertLess(nojob, src.index('error_out "$title" "track mismatch:'))
+        self.assertIn('log "START FAILED $title: HandBrake wrote no job configuration', src[nojob:])
+        self.assertIn('bank_strike "$title"', src[nojob:])
 
     def test_a_retry_is_bounded(self):
         """A HandBrake crashing on one source leaves the same unfinished

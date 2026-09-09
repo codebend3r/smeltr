@@ -1082,18 +1082,31 @@ def done_marker(title: str) -> Optional[str]:
     return None
 
 
+# What an EMPTY marker means. The driver writes the reason into the marker
+# with one printf; on 2026-09-08 the X9 was at 0 bytes free and three markers
+# landed as zero-byte files. The old fallback text was "CRF ladder exhausted"
+# -- a guess from the day the marker was invented, and wrong on every one of
+# those rows (all three ran VideoToolbox). An empty file says the write
+# failed, and the one thing that fails a 200-byte write is a full drive.
+EMPTY_ERROR_NOTE = (
+    "error marker is empty - the driver could not write the reason "
+    "(the staging drive was almost certainly full)"
+)
+
+
 def error_marker(title: str) -> Optional[str]:
     """First line of $X9/.error-<title>, or None when the title is fine.
 
-    Written by .autopilot.sh when the CRF ladder exhausts (projection outside
-    the 10-70% band at every rung -- up 14-16-18-20-22 for too-big, down
-    14-12-10 for too-small). The marker is the title's ERROR state: never
-    deleted, never skipped (a skip is the operator's click, 2026-08-31),
-    just unpickable and rendered red until a human deletes the marker file.
+    Written by .autopilot.sh's error_out() for anything that is NOT a finished
+    encode: no source file, a genuine track mismatch at the 120 s gate, an
+    output that cannot be evaluated, repeated unexplained deaths. The marker
+    is the title's ERROR state: never deleted, never skipped (a skip is the
+    operator's click, 2026-08-31), just unpickable and rendered red until a
+    human deletes the marker file. An empty marker reads EMPTY_ERROR_NOTE.
     """
     try:
         with open(os.path.join(X9, ".error-" + title), encoding="utf-8") as fh:
-            return fh.readline().strip() or "CRF ladder exhausted"
+            return fh.readline().strip() or EMPTY_ERROR_NOTE
     except OSError:
         return None
 

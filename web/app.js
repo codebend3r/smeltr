@@ -1649,7 +1649,7 @@
             var em = el("span", "err-emoji", "❗");
             em.setAttribute("role", "img");
             em.setAttribute("aria-label", "error");
-            em.title = r.error_note || "CRF ladder exhausted";
+            em.title = r.error_note || EMPTY_ERROR_NOTE;
             cell.appendChild(em);
           }
           cell.appendChild(name);
@@ -2011,8 +2011,13 @@
    right shape for a bare file on the drive and the wrong one in a table whose
    previous column is the title — so the echo comes off here rather than being
    read twice on every row. */
+  /* Mirrors core.EMPTY_ERROR_NOTE: an empty marker is a write the driver
+   could not make (a full drive), never a guess about what went wrong. */
+  var EMPTY_ERROR_NOTE =
+    "error marker is empty - the driver could not write the reason " +
+    "(the staging drive was almost certainly full)";
   function trimNote(note, title) {
-    note = (note || "CRF ladder exhausted").trim();
+    note = (note || EMPTY_ERROR_NOTE).trim();
     var lead = title + ":";
     return note.slice(0, lead.length).toLowerCase() === lead.toLowerCase()
       ? note.slice(lead.length).trim()
