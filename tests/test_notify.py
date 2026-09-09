@@ -117,6 +117,15 @@ class _Base(unittest.TestCase):
         self.x9.cleanup()
         self.home.cleanup()
 
+    def both_channels(self):
+        """DEFAULT_CHANNELS is Slack only since 2026-09-09 -- no per-encode
+        email. The two-channel delivery mechanics still exist (low-space asks
+        for email by name, and a note may ask for both), so a test about what
+        happens when ONE of two channels fails has to ask for both."""
+        old = notify.DEFAULT_CHANNELS
+        notify.DEFAULT_CHANNELS = ("slack", "email")
+        self.addCleanup(lambda: setattr(notify, "DEFAULT_CHANNELS", old))
+
     def notifier(self, config=None, slack=None, email=None):
         return notify.Notifier(
             self.home.name,
@@ -463,15 +472,38 @@ class NewEvents(_Base):
         self.n = self.notifier()
         self.n.tick()
 
-    def test_a_new_line_is_sent_to_both_channels_once(self):
+    def test_a_new_line_is_sent_once_to_slack_and_never_to_email(self):
+        """2026-09-09, operator's rule: "stop sending me emails". Every
+        per-encode event -- done, kept, deleted, ladder, failed -- is Slack
+        only, with email configured and working. The two things that still
+        reach the inbox are the ones asked for by name: the LOW SPACE note,
+        which sets `channels` itself, and the 09:00 brief, which does not go
+        through this class at all."""
         with open(self.driver_log, "a") as f:
             f.write("2026-09-01 16:00:00  CYCLE COMPLETE Kubo (2016)\n")
         self.assertEqual(self.n.tick(), 1)
         self.assertEqual(self.n.tick(), 0)
         self.assertEqual(len(self.slack.sent), 1)
-        self.assertEqual(len(self.email.sent), 1)
+        self.assertEqual(self.email.sent, [])
         self.assertIn("Kubo (2016)", self.slack.sent[0]["text"])
-        self.assertIn("Kubo (2016)", self.email.sent[0]["subject"])
+        # Delivered, not stuck: a note whose only target landed is complete.
+        self.assertEqual(self.n.pending, [])
+
+    def test_no_event_kind_reaches_email(self):
+        """Every kind the parser can produce, in one tick. If a future
+        classify() branch forgets the rule, this is what says so."""
+        with open(self.driver_log, "a") as f:
+            f.write(
+                "2026-09-01 16:00:00  CYCLE COMPLETE Kubo (2016)\n"
+                "2026-09-01 16:01:00  LADDER too big -> CRF 16\n"
+                "2026-09-01 16:02:00  ERROR Kubo (2016) needs a human: x\n"
+                "2026-09-01 16:03:00  SYNC FAILED Kubo (2016)\n"
+                "2026-09-01 16:04:00  DONE Kubo (2016) kept in place\n"
+                "2026-09-01 16:05:00  STOP CONDITION: queue empty\n"
+            )
+        self.n.tick()
+        self.assertEqual(self.email.sent, [])
+        self.assertTrue(self.slack.sent)
 
     def test_deleted_is_built_from_the_ledger_row_not_the_log_blob(self):
         """RECORD writes the ledger row BEFORE the sync, so the row is the
@@ -499,7 +531,7 @@ class NewEvents(_Base):
         self.assertNotIn(" GB", text)
         self.assertNotIn("192.168", text)
         self.assertNotIn("autopilot already running", text)
-        self.assertIn("60.00 GiB", self.email.sent[-1]["subject"])
+        self.assertEqual(self.email.sent, [])
 
     def test_deleted_uses_the_newest_ledger_row_for_the_title(self):
         self.record("Kubo (2016)", 90 * GIB, 30 * GIB)
@@ -684,6 +716,7 @@ class Delivery(_Base):
         self.assertEqual(self.slack.calls, 3)
 
     def test_a_broken_channel_does_not_delay_the_working_one(self):
+        self.both_channels()
         self.slack.fail = True
         self.n.tick()
         self.assertEqual(len(self.email.sent), 1)
@@ -694,6 +727,7 @@ class Delivery(_Base):
         self.assertEqual(self.slack.calls, 1)
 
     def test_the_half_that_landed_is_not_resent(self):
+        self.both_channels()
         self.email.fail = True
         self.n.tick()
         self.assertEqual(len(self.slack.sent), 1)
@@ -707,6 +741,7 @@ class Delivery(_Base):
         """`smeltr restart` SIGKILLs after 5 s; a 15 s SMTP handshake after a
         successful Slack send is a wide window. What landed must already be
         on disk when the next channel starts."""
+        self.both_channels()
         seen_on_disk = []
 
         def email(cfg, message):

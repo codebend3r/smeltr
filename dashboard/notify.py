@@ -75,6 +75,15 @@ MAX_PENDING_SECONDS = 24 * 3600
 BURST_CAP = 10
 SEEN_CAP = 4000
 HTTP_TIMEOUT = 15
+# Where an event notification goes when its note does not name a channel
+# (2026-09-09, operator's rule: "stop sending me emails"). Every per-encode
+# message -- done, kept, ladder, failed, error, deleted, stopped -- is Slack
+# only. The two things that still reach the inbox are the ones that were
+# asked for by name: the LOW SPACE line, which names `channels=("email",)`
+# itself, and the 09:00 morning brief, which does not go through this class
+# at all. Restricted to what is configured in notify.json, so with no Slack
+# webhook an event note completes unsent rather than pending forever.
+DEFAULT_CHANNELS = ("slack",)
 GIB = 1073741824
 
 # Every `what` a notification can carry, with its glyph and label. A `what`
@@ -691,15 +700,13 @@ class Notifier:
                 changed = True
                 continue
             # A note may name the channels it wants (low-space is email
-            # only). Restricted to what is configured, so a note that asks
-            # for an unconfigured channel completes instead of pending
-            # forever. A list after the JSON round trip, a tuple before it.
-            want = item["note"].get("channels")
-            targets = (
-                {c for c in want if c in self.channels}
-                if want
-                else set(self.channels)
-            )
+            # only); everything else takes DEFAULT_CHANNELS, which is Slack
+            # -- no per-encode email. Restricted to what is configured, so a
+            # note that asks for an unconfigured channel completes instead of
+            # pending forever. A list after the JSON round trip, a tuple
+            # before it.
+            want = item["note"].get("channels") or DEFAULT_CHANNELS
+            targets = {c for c in want if c in self.channels}
             for name, (send, fmt) in self.channels.items():
                 if (
                     name not in targets

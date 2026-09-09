@@ -1768,10 +1768,25 @@ second request.
   the smeltr LaunchAgents from `launchctl list` with their purpose and
   state — the pid while running, else the LAST EXIT STATUS spelled out
   ("last run exited 1" is how a failing heartbeat shows up).
-- **Notifications (2026-09-05)** — `dashboard/notify.py`, imported ONLY by
-  `server.py`, started from `main()` when `notify.json` sits beside the
-  ledger (gitignored, holds the Slack webhook and the Gmail app password;
-  `./smeltr notify-test` sends one message per channel). Email via stdlib
+- **Notifications (2026-09-05; SLACK ONLY since 2026-09-09)** —
+  `dashboard/notify.py`, imported ONLY by `server.py`, started from `main()`
+  when `notify.json` sits beside the ledger.
+
+  **No event notification goes to email** (operator's rule, 2026-09-09:
+  "stop sending me emails"). `notify.DEFAULT_CHANNELS` is `("slack",)` and
+  every note that does not name its own `channels` takes it — encode done,
+  kept, deleted, ladder up/down, failed, error state, sync failed, stop
+  condition, burst summary. The mail channel stays configured and is used by
+  exactly two things, both asked for by name: the LOW SPACE note, which sets
+  `channels=("email",)` itself, and the 09:00 morning brief, which does not
+  go through `Notifier` at all. `./smeltr notify-test` still proves both
+  channels. Targets are intersected with what `notify.json` configures, so a
+  note whose only channel is unconfigured COMPLETES rather than pending
+  forever. `test_notify.py::NewEvents.test_no_event_kind_reaches_email` runs
+  every parser kind through one tick and asserts the inbox stays empty.
+
+  `notify.json` is gitignored and holds the Slack webhook and the Gmail app
+  password. Email via stdlib
   `smtplib` + STARTTLS, Slack via `urllib` to an incoming webhook — no
   dependency, no decision-path import (`test_layering.py` lists it in
   `DASHBOARD_ONLY`). It is an OBSERVER of `events.events()`, the same parser
