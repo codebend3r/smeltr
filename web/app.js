@@ -248,6 +248,30 @@
       );
       host.appendChild(ec);
     }
+    /* The staging-drive floor (2026-09-08). The driver is WAITING, not
+     stopped, and the fix is on the human: name the free figure and the line.
+     Both numbers come from the payload -- the server owns the floor -- so the
+     page can never disagree with the driver's own reason. */
+    if (s.low_space) {
+      var lc = el("div", "card alert");
+      var freeTxt = s.x9_free_bytes != null ? gib(s.x9_free_bytes) : "—";
+      var floorTxt = s.low_space_floor_bytes != null ? gib(s.low_space_floor_bytes) : "—";
+      lc.appendChild(
+        el("div", "live-title", "Low space on the staging drive — " + freeTxt + " free"),
+      );
+      lc.appendChild(
+        el(
+          "div",
+          "verdict loud",
+          "Nothing new starts until " +
+            floorTxt +
+            " is free. The running encode (if any) still finishes and moves to complete/. " +
+            "Free up space on the X9 and the driver resumes by itself within a minute.",
+        ),
+      );
+      makeCollapsible(lc, "alert-space", true);
+      host.appendChild(lc);
+    }
     if (s.library_complete !== false) return;
     var c = el("div", "card alert");
     c.appendChild(
@@ -810,44 +834,73 @@
       if (last.state) paint(last.state);
     });
   }
-  function bigToggle(paused, driverAlive, live, nextTitle) {
-    var b = el("button", "bigplay");
+  /* ONE state machine for BOTH renditions of the control: the full-width
+   .bigplay card (drawn only while nothing is encoding -- there is no bar for
+   a circle to lead) and the .pp circle at the head of the live card's
+   progress bar (2026-09-08, operator's pick). Two renditions of one decision
+   drift the moment one is edited alone, so neither carries its own branch. */
+  function toggleIntent(paused, driverAlive, live, nextTitle, lowSpace) {
+    var pick = nextTitle ? "next up: " + nextTitle : "nothing pickable — check the queue";
+    if (!driverAlive && driverWant !== null)
+      return {
+        cls: "busy",
+        act: "Starting the driver…",
+        sub: nextTitle ? "first pick: " + nextTitle : "",
+        go: null,
+      };
+    if (!driverAlive) return { cls: "play", act: "Start encoding", sub: pick, go: driverStartSend };
+    if (paused)
+      return {
+        cls: "play",
+        act: "Resume encoding",
+        sub: pick,
+        go: function () {
+          pauseSend(false);
+        },
+      };
+    return {
+      cls: "pause",
+      act: "Pause encoding",
+      sub: live.length
+        ? "after this encode — " + live[0].title + " still finishes and syncs"
+        : lowSpace
+          ? "waiting: low space on the staging drive — free up space"
+          : "nothing new will start",
+      go: function () {
+        pauseSend(true);
+      },
+    };
+  }
+  function bigToggle(paused, driverAlive, live, nextTitle, lowSpace) {
+    var t = toggleIntent(paused, driverAlive, live, nextTitle, lowSpace);
+    var b = el("button", "bigplay " + t.cls);
     b.type = "button";
     var icon = el("span", "bp-icon");
     icon.setAttribute("aria-hidden", "true");
     var txt = el("span", "bp-text");
-    var act = el("span", "bp-act"),
-      sub = el("span", "bp-sub");
-    txt.appendChild(act);
-    txt.appendChild(sub);
+    txt.appendChild(el("span", "bp-act", t.act));
+    txt.appendChild(el("span", "bp-sub", t.sub));
     b.appendChild(icon);
     b.appendChild(txt);
-    if (!driverAlive && driverWant !== null) {
-      b.classList.add("busy");
-      act.textContent = "Starting the driver…";
-      sub.textContent = nextTitle ? "first pick: " + nextTitle : "";
-    } else if (!driverAlive) {
-      b.classList.add("play");
-      act.textContent = "Start encoding";
-      sub.textContent = nextTitle ? "next up: " + nextTitle : "nothing pickable — check the queue";
-      b.addEventListener("click", driverStartSend);
-    } else if (paused) {
-      b.classList.add("play");
-      act.textContent = "Resume encoding";
-      sub.textContent = nextTitle ? "next up: " + nextTitle : "nothing pickable — check the queue";
-      b.addEventListener("click", function () {
-        pauseSend(false);
-      });
-    } else {
-      b.classList.add("pause");
-      act.textContent = "Pause encoding";
-      sub.textContent = live.length
-        ? "after this encode — " + live[0].title + " still finishes and syncs"
-        : "nothing new will start";
-      b.addEventListener("click", function () {
-        pauseSend(true);
-      });
-    }
+    if (t.go) b.addEventListener("click", t.go);
+    return b;
+  }
+  /* The circle. It leads the progress bar inside the live card, so the
+   control sits ON the thing it controls instead of in a card above it. The
+   sentence the big card carried becomes its accessible name and tooltip;
+   the ARMED consequence (a sync REPLACES the library original) still renders
+   on the card as .ppnote, because a tooltip never renders on the phones. */
+  function circleToggle(paused, driverAlive, live, nextTitle) {
+    var t = toggleIntent(paused, driverAlive, live, nextTitle, false);
+    var b = el("button", "pp " + t.cls);
+    b.type = "button";
+    var name = t.act + (t.sub ? " — " + t.sub : "");
+    b.setAttribute("aria-label", name);
+    b.title = name;
+    var icon = el("span", "pp-icon");
+    icon.setAttribute("aria-hidden", "true");
+    b.appendChild(icon);
+    if (t.go) b.addEventListener("click", t.go);
     return b;
   }
 
@@ -875,13 +928,15 @@
       "|n:" +
       (nextTitle || "") +
       "|w:" +
-      (driverWant !== null ? 1 : 0);
+      (driverWant !== null ? 1 : 0) +
+      "|ls:" +
+      (s.low_space ? 1 : 0);
     if (host.dataset.sig !== sig) {
       host.replaceChildren();
       liveRefs = {};
       host.dataset.sig = sig;
-      host.appendChild(bigToggle(paused, driverAlive, live, nextTitle));
       if (!live.length) {
+        host.appendChild(bigToggle(paused, driverAlive, live, nextTitle, s.low_space === true));
         var c = el("div", "card");
         if (paused) {
           /* A user-chosen state must never mask a sensor failure: the drive
@@ -926,16 +981,31 @@
           host.appendChild(c);
           return;
         }
-        c.appendChild(el("div", "live-title", "Nothing encoding"));
-        c.appendChild(
-          el(
-            "div",
-            "verdict",
-            s.x9_online
-              ? "The staging drive is mounted and idle."
-              : "The staging drive is not mounted.",
-          ),
-        );
+        if (s.low_space) {
+          /* The floor is a wait the driver chose FOR the human: say so where
+           the encode would be, not only in the alert stack above. */
+          c.appendChild(el("div", "live-title", "Waiting — low space on the staging drive"));
+          c.appendChild(
+            el(
+              "div",
+              "verdict",
+              "Nothing new starts until enough space is free (see the alert above " +
+                "for the figures). Free up space on the X9; the driver rechecks " +
+                "every minute and resumes by itself — no switch to flip.",
+            ),
+          );
+        } else {
+          c.appendChild(el("div", "live-title", "Nothing encoding"));
+          c.appendChild(
+            el(
+              "div",
+              "verdict",
+              s.x9_online
+                ? "The staging drive is mounted and idle."
+                : "The staging drive is not mounted.",
+            ),
+          );
+        }
         makeCollapsible(c, "live-idle");
         host.appendChild(c);
         return;
@@ -947,6 +1017,7 @@
         c.appendChild(refs.top);
         var row = el("div", "barrow"),
           bar = el("div", "bar");
+        row.appendChild(circleToggle(paused, driverAlive, live, nextTitle));
         bar.setAttribute("role", "progressbar");
         bar.setAttribute("aria-label", "Encode progress");
         bar.setAttribute("aria-valuemin", "0");
@@ -974,24 +1045,24 @@
         c.appendChild(kv);
         refs.verdict = el("div", "verdict", "");
         c.appendChild(refs.verdict);
-        /* Pause-after-current. The encode itself is never touched: the flag
-         only stops the NEXT one from starting, which is the difference
-         between this and the abort button on the queue row. The armed label
-         must name the consequence ON the card -- "sync" means the library
-         original is REPLACED, and a tooltip never renders on the phones. */
-        c.appendChild(
-          pauseSwitch(
-            paused,
-            paused
-              ? "will pause after this encode — " +
-                  e.title +
-                  " still finishes, " +
-                  "syncs, and replaces its " +
-                  (e.source_bytes != null ? gib(e.source_bytes) + " " : "") +
-                  "library original"
-              : "pause after this encode",
-          ),
-        );
+        /* Pause-after-current is the circle at the head of the bar. The
+         encode itself is never touched: the flag only stops the NEXT one
+         from starting, which is the difference between this and the abort
+         button on the queue row. The armed label must name the consequence
+         ON the card -- "sync" means the library original is REPLACED, and a
+         tooltip never renders on the phones. */
+        if (paused)
+          c.appendChild(
+            el(
+              "div",
+              "ppnote",
+              "will pause after this encode — " +
+                e.title +
+                " still finishes, syncs, and replaces its " +
+                (e.source_bytes != null ? gib(e.source_bytes) + " " : "") +
+                "library original",
+            ),
+          );
         /* Distinct key from the idle card — folding "Nothing encoding" must
          not fold the next real encode — and loud verdicts always open. */
         makeCollapsible(c, "live-run", !!PROJ_LOUD[e.verdict]);
@@ -1695,6 +1766,8 @@
               if (r.next_up) {
                 if (s && s.paused)
                   td.appendChild(el("span", "mark next paused", "next after resume"));
+                else if (s && s.low_space)
+                  td.appendChild(el("span", "mark next paused", "next once space is freed"));
                 else if (live && live.length)
                   td.appendChild(el("span", "mark next", "next after current"));
                 else td.appendChild(el("span", "mark next", "next up"));

@@ -1760,6 +1760,103 @@ tr.pin-end td {
     min-height: 68px;
   }
 }
+/* The circle: the play/pause control INSIDE the live card, leading the
+   progress bar (2026-09-08, operator's pick from five placements). It draws
+   the same three states as .bigplay from the same toggleIntent(), and
+   .bigplay now only draws while nothing is encoding. Same native-<button>
+   rules; the glyphs are CSS borders like .bp-icon, so nothing is innerHTML.
+   Colours are tokens only: pause on the encoding ambers, play on the
+   ready-row greens, a start in flight on the cool ring. */
+.pp {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  color: var(--ink);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    border-color 0.18s ease,
+    background-color 0.18s ease;
+}
+.pp.play {
+  background: var(--row-ready);
+  border-color: var(--good-bd);
+}
+.pp.pause {
+  background: var(--row-enc);
+  border-color: var(--warn-bd);
+}
+.pp.busy {
+  border-color: var(--cool-bd);
+  cursor: progress;
+}
+.pp.play:hover {
+  border-color: var(--good);
+}
+.pp.pause:hover {
+  border-color: var(--warn);
+}
+.pp:focus-visible {
+  outline: 2px solid var(--cool);
+  outline-offset: 3px;
+}
+.pp-icon {
+  display: block;
+  flex: none;
+}
+.pp.play .pp-icon {
+  width: 0;
+  height: 0;
+  margin-left: 3px;
+  border-left: 14px solid var(--good);
+  border-top: 9px solid transparent;
+  border-bottom: 9px solid transparent;
+}
+.pp.pause .pp-icon {
+  width: 14px;
+  height: 16px;
+  border-left: 5px solid var(--warn);
+  border-right: 5px solid var(--warn);
+}
+.pp.busy .pp-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2.5px solid var(--cool-bd);
+  border-top-color: var(--cool);
+  animation: ppspin 0.9s linear infinite;
+}
+@keyframes ppspin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* A finger is not a mouse pointer: 44px on a coarse pointer. */
+@media (pointer: coarse) {
+  .pp {
+    width: 44px;
+    height: 44px;
+  }
+}
+/* The armed consequence, on the card and not in a tooltip. */
+.ppnote {
+  margin: -2px 0 6px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  color: var(--warn);
+}
 .swt {
   position: relative;
   display: block;

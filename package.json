@@ -50,6 +50,7 @@
     "system-check": "bun run --sequential format:js:check lint test",
     "test": "bun run --sequential --no-exit-on-error test:py 'test:sh:*' 'test:js:*'",
     "test:js:crf": "bun tests/test_crf_picker.ts",
+    "test:js:low-space": "bun tests/test_low_space_ui.ts",
     "test:js:pause": "bun tests/test_pause_toggle.ts",
     "test:js:projection": "bun tests/test_projection_ui.ts",
     "test:js:repaint": "bun tests/test_repaint_key.ts",

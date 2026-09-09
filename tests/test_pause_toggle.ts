@@ -119,7 +119,12 @@ function harness() {
     fn("pauseState"),
     fn("pauseSend"),
     fn("pauseSwitch"),
-    "return {pauseState,pauseSend,pauseSwitch," +
+    /* The circle at the head of the live card's bar shares pauseSend with the
+       switch; driverWant/driverStartSend are the big toggle's start half. */
+    "var driverWant=null; function driverStartSend(){ driverWant=true; }",
+    fn("toggleIntent"),
+    fn("circleToggle"),
+    "return {pauseState,pauseSend,pauseSwitch,toggleIntent,circleToggle," +
       "setState:function(p){last.state={summary:{paused:p}};}," +
       "drawn:function(){return drawn;}," +
       "server:function(){return last.state.summary.paused;}};",
@@ -338,6 +343,85 @@ const tick = () => new Promise((r) => setImmediate(r));
       "they alternate",
       calls.map((c) => c.payload.paused).join(",") === "true,false,true,false,true,false",
       calls.map((c) => c.payload.paused).join(","),
+    );
+  }
+
+  sect("the circle at the head of the progress bar (2026-09-08)");
+  {
+    const { mod, calls } = harness();
+    const live = [{ title: "Hereditary (2018)" }];
+    const c = mod.circleToggle(false, true, live, null);
+    check("it is a <button>", c.tagName === "button" && c.type === "button");
+    check("it is the pause state while the driver runs", /\bpp pause\b/.test(c.className));
+    check(
+      "its accessible name carries the sentence the big card used to show",
+      /Pause encoding — after this encode — Hereditary \(2018\)/.test(
+        c.getAttribute("aria-label"),
+      ) && c.title === c.getAttribute("aria-label"),
+    );
+    check(
+      "the glyph is decoration, not a second control",
+      c.children.length === 1 &&
+        c.children[0].getAttribute("aria-hidden") === "true" &&
+        c.children[0].handlers.length === 0,
+    );
+    check("exactly one handler", c.handlers.length === 1);
+    c.click();
+    check("a click writes pause", calls.length === 1 && calls[0].payload.paused === true);
+    check("the flip is drawn at once", mod.drawn() === true);
+
+    const r = mod.circleToggle(true, true, live, "Next (2020)");
+    check("paused + driver alive = play (resume)", /\bpp play\b/.test(r.className));
+    r.click();
+    check("resume goes through the SAME pauseSend as the switch", mod.drawn() === false);
+
+    const st = mod.circleToggle(false, false, live, "Next (2020)");
+    check("driver dead = play (start)", /\bpp play\b/.test(st.className));
+    st.click();
+    const busy = mod.circleToggle(false, false, live, null);
+    check(
+      "start in flight = busy, with NO handler",
+      /\bpp busy\b/.test(busy.className) && busy.handlers.length === 0,
+    );
+
+    check(
+      "both renditions read ONE state machine",
+      /function bigToggle\([^)]*\)\s*\{\s*var t = toggleIntent\(/.test(src) &&
+        /function circleToggle\([^)]*\)\s*\{\s*var t = toggleIntent\(/.test(src),
+      "two copies of the three-state branch drift the moment one is edited alone",
+    );
+    check(
+      "renderLive puts the circle in the barrow BEFORE the bar",
+      /row\.appendChild\(circleToggle\([^)]*\)\);\s*bar\.setAttribute/.test(src),
+    );
+    check(
+      "the big card draws ONLY when nothing is encoding",
+      /if \(!live\.length\) \{\s*host\.appendChild\(bigToggle\(/.test(src) &&
+        (src.match(/host\.appendChild\(bigToggle\(/g) || []).length === 1,
+      "there is no bar for the circle to lead on the idle card",
+    );
+    check(
+      "the armed consequence still renders ON the card",
+      /el\(\s*"div",\s*"ppnote",\s*"will pause after this encode — "/.test(src),
+      "a tooltip never renders on the phones",
+    );
+    check("it is a circle", /\.pp\s*\{[^}]*border-radius:\s*50%/.test(css));
+    check(
+      "taps are not delayed by double-tap zoom",
+      /\.pp\s*\{[^}]*touch-action:\s*manipulation/.test(css),
+    );
+    check(
+      "a finger gets a 44px target",
+      /@media \(pointer:\s*coarse\)\s*\{\s*\.pp\s*\{\s*width:\s*44px;\s*height:\s*44px;?\s*\}/.test(
+        css,
+      ),
+    );
+    check("focus is visible", /\.pp:focus-visible\s*\{/.test(css));
+    check(
+      "every colour on it is a token",
+      !/\.pp[^{]*\{[^}]*#[0-9a-f]{3,6}/i.test(
+        css.slice(css.indexOf(".pp {"), css.indexOf(".ppnote")),
+      ),
     );
   }
 

@@ -225,6 +225,8 @@ jobs:
       - name: 🎚️ test:js:crf — CRF picker, the menu IS the ladder
         run: bun run test:js:crf
 
+      - name: 💾 test:js:low-space — the staging-drive floor on the page
+        run: bun run test:js:low-space
       - name: ⏯️ test:js:pause — pause toggle is ONE native button
         run: bun run test:js:pause
 

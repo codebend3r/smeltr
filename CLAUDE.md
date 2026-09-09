@@ -312,6 +312,20 @@ ledger.jsonl        the irreplaceable record, beside the launcher
    client-side. A start in flight renders through the same
    unsettled-intent pattern as the switch (`driverWant`), so a refused
    start snaps back instead of lying.
+
+   **While an encode runs, the control is a CIRCLE at the head of the
+   progress bar (2026-09-08, operator's pick from five placements).**
+   `circleToggle()` sits first in the live card's `.barrow`; the full-width
+   `.bigplay` card draws ONLY when nothing is encoding (there is no bar for
+   a circle to lead). Both read ONE state machine, `toggleIntent()` —
+   pause / play (resume or start) / busy — so the two renditions cannot
+   drift. The sentence the big card carried is the circle's `aria-label`
+   and tooltip; the ARMED consequence ("still finishes, syncs, and replaces
+   its N GiB library original") still renders on the card as `.ppnote`,
+   because a tooltip never renders on the phones. The little `.pauserow`
+   switch now appears only on the idle-paused card. Same native-`<button>`
+   rules as everything above; 44px on a coarse pointer; glyphs are CSS
+   borders, never markup. `tests/test_pause_toggle.ts` pins it.
 6. Per-title start CRF (2026-09-01): `POST /api/queue/crf` writes a
    `{"crf": {title: int}}` map into `queue_overrides.json`, and **the DRIVER
    reads it** — `.autopilot.sh` asks `smeltr crf "$title"` for the start rung
