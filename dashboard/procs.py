@@ -56,6 +56,8 @@ RULES = [
      "This page's server. Its threads: the 1 Hz resource sampler, the stage-pull pump, the notifier."),
     (r"ops/heartbeat|heartbeat\.py\b", "heartbeat", "heartbeat",
      "The hourly idle check that emails/Slacks when the pipeline has gone quiet."),
+    (r"dashboard/brief\.py\b|smeltr\S* brief\b", "brief", "morning brief",
+     "The 09:00 email: the last 24 h of conversions, the error state, anything of note."),
     (r"sweep_root\.py\b", "sweeper", "root sweeper",
      "Temporary: moves a folder that lands at the X9 root into queue/ the instant its pull completes."),
     (r"(^|/)caffeinate\b", "caffeinate", "caffeinate",
@@ -66,7 +68,8 @@ AGENTS = {
     "com.smeltr.watchdog": "Runs the watchdog every 60 s (relaunch an absent driver).",
     "com.smeltr.scan": "Rebuilds the bitrate index nightly at 03:00.",
     "com.smeltr.replenish": "Ticks the independent replenisher every 60 s (queue/ holds 10-18).",
-    "com.smeltr.heartbeat": "Hourly idle check with email/Slack.",
+    "com.smeltr.heartbeat": "Hourly idle check with email/Slack (disabled 2026-09-08; the brief replaced it).",
+    "com.smeltr.brief": "Emails the morning brief at 09:00.",
 }
 
 _TITLE = re.compile(r"/([^/]+ \(\d{4}\))(?:/|$)")

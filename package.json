@@ -9,6 +9,8 @@
     "url": "git+https://github.com/codebend3r/smeltr.git"
   },
   "scripts": {
+    "brief": "./smeltr brief",
+    "brief:check": "./smeltr brief --dry-run",
     "build": "python3 tools/build_check.py",
     "currentp": "python3 tools/current_processes.py",
     "deploy:dry-run": "bash ops/deploy-staging.sh --dry-run",

@@ -142,5 +142,11 @@ case "${1:-report}" in
   # so it is a bun script too -- but unlike the others it is also what the
   # com.smeltr.heartbeat LaunchAgent runs on the hour.
   heartbeat) shift; exec "$PY" "$DIR/dashboard/heartbeat.py" "$@" ;;
-  *)      echo "usage: smeltr {start|stop|restart|status|url|open|report [...]|record <folder> [...]|crf <title>|encoder <folder>|notify-test|set-password|heartbeat [--dry-run]}" >&2; exit 2 ;;
+  # The morning brief: ONE email at 09:00 (com.smeltr.brief LaunchAgent)
+  # listing the last 24 h of conversions, the error state, and anything of
+  # note. Replaced the hourly heartbeat alerts at the operator's request
+  # (2026-09-08). Reads the ledger, the events parser and the markers;
+  # writes nothing. `--dry-run` prints it instead of sending.
+  brief) shift; exec "$PY" "$DIR/dashboard/brief.py" "$@" ;;
+  *)      echo "usage: smeltr {start|stop|restart|status|url|open|report [...]|record <folder> [...]|crf <title>|encoder <folder>|notify-test|set-password|heartbeat [--dry-run]|brief [--dry-run]}" >&2; exit 2 ;;
 esac

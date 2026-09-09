@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.smeltr.brief</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/snowball/Developer/git/smeltr/smeltr</string>
+    <string>brief</string>
+  </array>
+  <!-- 09:00 every day, by calendar. Replaced the hourly com.smeltr.heartbeat
+       alerts at the operator's request (2026-09-08): one email a morning
+       listing the last 24 h of conversions, the error state, and anything
+       of note. launchd runs a missed calendar job once at the next wake if
+       the Mac was asleep at 09:00, so a brief is late rather than skipped. -->
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
+  <!-- NOT RunAtLoad: installing or reloading the agent must not send a brief
+       at an odd hour. Prove it with `bun run brief:check` instead. -->
+  <key>RunAtLoad</key><false/>
+  <key>ExitTimeOut</key><integer>120</integer>
+  <!-- NOT on the staging drive: launchd cannot create a log on a volume that
+       may be unmounted, and fails the job with EX_CONFIG (78) before it runs. -->
+  <key>StandardOutPath</key><string>/Users/snowball/Library/Logs/smeltr/brief.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/snowball/Library/Logs/smeltr/brief.err.log</string>
+</dict>
+</plist>

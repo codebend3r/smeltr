@@ -1824,6 +1824,31 @@ second request.
   dropped with a `server.log` line; a burst above 10 sends 10 plus one
   summary. Never in `LAN_WRITE_ROUTES` territory: there is no endpoint, the
   config is a file only this Mac can write.
+- **The morning brief (2026-09-08, operator's request)** — `dashboard/brief.py`,
+  run by `com.smeltr.brief` at **09:00 by calendar** (`smeltr brief`,
+  `bun run brief`; `bun run brief:check` prints it and sends nothing). ONE
+  email a day, through the same `notify.json` email channel and
+  `notify.send_email` as everything else (email only, no Slack — that is
+  what was asked for), listing: every ledger row `finished_at` inside the
+  last 24 h with its quality label, sizes, ratio, verdict word, encode time
+  and outcome (`kept in place` / `ORIGINAL REPLACED`); the ERROR STATE as it
+  stands — every `.error-<title>` marker on the X9, flagged `NEW` if it
+  appeared in the window — plus the red log lines of the window (`FAILED`,
+  `lastrung`, `ERROR`, `SYNC FAILED/ABORTED`; `ERROR` is matched by first
+  word because it is not in `events._KINDS` and arrives as `info`); and "of
+  note" (ladder moves, deletions, driver restarts, replenish PICKs
+  de-duplicated and only when the name ends in `(YYYY)` — the detail cap
+  truncates), then a RIGHT NOW block (free space on the X9 with a FULL flag
+  under 1%, queue/complete counts, what is encoding, driver alive, paused,
+  downloads vs budget). Honesty rules pinned in `tests/test_brief.py`: the
+  error headline counts TITLES not log lines; an unreadable X9 is BLIND not
+  clean; a log tail that starts after the window opened says so; window
+  bounds are ledger-format string compares, never a Date round trip; the
+  brief never writes `notify.cursor`. **It replaced the hourly
+  `com.smeltr.heartbeat` alerts**, which are `launchctl disable`d — the
+  heartbeat flagged a deliberate pause every hour to both channels. The
+  plist is `RunAtLoad` FALSE on purpose: reloading the agent must not send a
+  brief at an odd hour.
 - **A push renders on the History tab ONLY** (operator's call 2026-09-01): a
   recorded title has left the queue, and the synthetic "transferring" row the
   Queue tab used to draw up top read as work still waiting to encode. The
