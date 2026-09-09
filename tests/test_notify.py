@@ -110,21 +110,20 @@ class _Base(unittest.TestCase):
         }
         self.errs = []
         self.clock = [1_000_000.0]
+        # Production sends NOTHING since 2026-09-09 -- EVENT_NOTIFICATIONS is
+        # False and DEFAULT_CHANNELS is empty (see Switch below). The parsing,
+        # classification, burst and delivery machinery is still whole and
+        # still pinned, so these tests ask for both channels explicitly.
+        # Turning the feature back on must not land on untested code.
+        both = mock.patch.object(notify, "DEFAULT_CHANNELS", ("slack", "email"))
+        both.start()
+        self.patches.append(both)
 
     def tearDown(self):
         for p in self.patches:
             p.stop()
         self.x9.cleanup()
         self.home.cleanup()
-
-    def both_channels(self):
-        """DEFAULT_CHANNELS is Slack only since 2026-09-09 -- no per-encode
-        email. The two-channel delivery mechanics still exist (low-space asks
-        for email by name, and a note may ask for both), so a test about what
-        happens when ONE of two channels fails has to ask for both."""
-        old = notify.DEFAULT_CHANNELS
-        notify.DEFAULT_CHANNELS = ("slack", "email")
-        self.addCleanup(lambda: setattr(notify, "DEFAULT_CHANNELS", old))
 
     def notifier(self, config=None, slack=None, email=None):
         return notify.Notifier(
@@ -472,38 +471,15 @@ class NewEvents(_Base):
         self.n = self.notifier()
         self.n.tick()
 
-    def test_a_new_line_is_sent_once_to_slack_and_never_to_email(self):
-        """2026-09-09, operator's rule: "stop sending me emails". Every
-        per-encode event -- done, kept, deleted, ladder, failed -- is Slack
-        only, with email configured and working. The two things that still
-        reach the inbox are the ones asked for by name: the LOW SPACE note,
-        which sets `channels` itself, and the 09:00 brief, which does not go
-        through this class at all."""
+    def test_a_new_line_is_sent_to_both_channels_once(self):
         with open(self.driver_log, "a") as f:
             f.write("2026-09-01 16:00:00  CYCLE COMPLETE Kubo (2016)\n")
         self.assertEqual(self.n.tick(), 1)
         self.assertEqual(self.n.tick(), 0)
         self.assertEqual(len(self.slack.sent), 1)
-        self.assertEqual(self.email.sent, [])
+        self.assertEqual(len(self.email.sent), 1)
         self.assertIn("Kubo (2016)", self.slack.sent[0]["text"])
-        # Delivered, not stuck: a note whose only target landed is complete.
-        self.assertEqual(self.n.pending, [])
-
-    def test_no_event_kind_reaches_email(self):
-        """Every kind the parser can produce, in one tick. If a future
-        classify() branch forgets the rule, this is what says so."""
-        with open(self.driver_log, "a") as f:
-            f.write(
-                "2026-09-01 16:00:00  CYCLE COMPLETE Kubo (2016)\n"
-                "2026-09-01 16:01:00  LADDER too big -> CRF 16\n"
-                "2026-09-01 16:02:00  ERROR Kubo (2016) needs a human: x\n"
-                "2026-09-01 16:03:00  SYNC FAILED Kubo (2016)\n"
-                "2026-09-01 16:04:00  DONE Kubo (2016) kept in place\n"
-                "2026-09-01 16:05:00  STOP CONDITION: queue empty\n"
-            )
-        self.n.tick()
-        self.assertEqual(self.email.sent, [])
-        self.assertTrue(self.slack.sent)
+        self.assertIn("Kubo (2016)", self.email.sent[0]["subject"])
 
     def test_deleted_is_built_from_the_ledger_row_not_the_log_blob(self):
         """RECORD writes the ledger row BEFORE the sync, so the row is the
@@ -531,7 +507,7 @@ class NewEvents(_Base):
         self.assertNotIn(" GB", text)
         self.assertNotIn("192.168", text)
         self.assertNotIn("autopilot already running", text)
-        self.assertEqual(self.email.sent, [])
+        self.assertIn("60.00 GiB", self.email.sent[-1]["subject"])
 
     def test_deleted_uses_the_newest_ledger_row_for_the_title(self):
         self.record("Kubo (2016)", 90 * GIB, 30 * GIB)
@@ -716,7 +692,6 @@ class Delivery(_Base):
         self.assertEqual(self.slack.calls, 3)
 
     def test_a_broken_channel_does_not_delay_the_working_one(self):
-        self.both_channels()
         self.slack.fail = True
         self.n.tick()
         self.assertEqual(len(self.email.sent), 1)
@@ -727,7 +702,6 @@ class Delivery(_Base):
         self.assertEqual(self.slack.calls, 1)
 
     def test_the_half_that_landed_is_not_resent(self):
-        self.both_channels()
         self.email.fail = True
         self.n.tick()
         self.assertEqual(len(self.slack.sent), 1)
@@ -741,7 +715,6 @@ class Delivery(_Base):
         """`smeltr restart` SIGKILLs after 5 s; a 15 s SMTP handshake after a
         successful Slack send is a wide window. What landed must already be
         on disk when the next channel starts."""
-        self.both_channels()
         seen_on_disk = []
 
         def email(cfg, message):
@@ -1081,3 +1054,70 @@ class Wiring(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Switch(unittest.TestCase):
+    """The feature is OFF (2026-09-09, operator's rule, said twice: "stop
+    sending me fucking emails", then "stop the notifications to Slack too").
+    Nothing here is about how a message is built -- it is about nothing being
+    built at all."""
+
+    def test_event_notifications_are_off(self):
+        self.assertFalse(notify.EVENT_NOTIFICATIONS)
+
+    def test_nothing_is_the_default_destination(self):
+        """A Notifier constructed by hand -- a future caller, a future test --
+        must not resurrect a channel by accident."""
+        self.assertEqual(notify.DEFAULT_CHANNELS, ())
+
+    def test_start_does_not_run_and_never_reads_the_config(self):
+        """The early return is BEFORE load_config: with the feature off, a
+        malformed or loose-mode notify.json must not print a stderr line
+        about a channel nobody is sending on, and no thread may exist."""
+        called = []
+
+        with mock.patch.object(
+            notify, "load_config", lambda *a, **k: called.append(a) or None
+        ):
+            with tempfile.TemporaryDirectory() as d:
+                self.assertFalse(notify.start(d))
+        self.assertEqual(called, [])
+        self.assertFalse(
+            [t for t in threading.enumerate() if t.name == "smeltr-notify"]
+        )
+
+    def test_a_note_with_no_channels_is_delivered_nowhere_and_does_not_pend(self):
+        """With DEFAULT_CHANNELS empty, an event must COMPLETE unsent. A note
+        that stayed pending would retry forever and be resent the moment
+        anyone turned a channel back on."""
+        slack, email = _Transport(), _Transport()
+        with tempfile.TemporaryDirectory() as x9, tempfile.TemporaryDirectory() as home:
+            with mock.patch.object(core, "X9", x9), mock.patch.object(
+                core, "LEDGER", os.path.join(home, "ledger.jsonl")
+            ):
+                log = os.path.join(x9, ".autopilot.log")
+                _write(log, DRIVER_LOG)
+                n = notify.Notifier(
+                    home,
+                    config={
+                        "slack": {"webhook": "https://hooks.slack.com/x"},
+                        "email": {
+                            "host": "h",
+                            "port": 587,
+                            "user": "u",
+                            "password": "p",
+                            "to": "u",
+                        },
+                    },
+                    slack=slack,
+                    email=email,
+                    now=lambda: 1_000_000.0,
+                    err=lambda m: None,
+                )
+                n.tick()  # baseline
+                with open(log, "a") as f:
+                    f.write("2026-09-01 16:00:00  CYCLE COMPLETE Kubo (2016)\n")
+                n.tick()
+        self.assertEqual(slack.sent, [])
+        self.assertEqual(email.sent, [])
+        self.assertEqual(n.pending, [])

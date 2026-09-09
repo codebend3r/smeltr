@@ -1,4 +1,10 @@
-"""Email + Slack notifications for the events a human wants to hear about:
+"""OFF since 2026-09-09 -- `EVENT_NOTIFICATIONS = False`, the operator's
+rule, and `start()` returns before it builds anything. Nothing below runs in
+production; it is kept whole (and tested) because the switch is one constant
+and the machinery is the expensive part to rebuild. `smeltr notify-test` and
+the 09:00 morning brief still use `send_slack`/`send_email` directly.
+
+Email + Slack notifications for the events a human wants to hear about:
 an encode done, failed, laddered up or down, gone to the ERROR state, a
 sync that failed, the driver's stop condition, and — the one irreversible
 act — a library original deleted. Imported ONLY by `dashboard/server.py`;
@@ -75,15 +81,22 @@ MAX_PENDING_SECONDS = 24 * 3600
 BURST_CAP = 10
 SEEN_CAP = 4000
 HTTP_TIMEOUT = 15
-# Where an event notification goes when its note does not name a channel
-# (2026-09-09, operator's rule: "stop sending me emails"). Every per-encode
-# message -- done, kept, ladder, failed, error, deleted, stopped -- is Slack
-# only. The two things that still reach the inbox are the ones that were
-# asked for by name: the LOW SPACE line, which names `channels=("email",)`
-# itself, and the 09:00 morning brief, which does not go through this class
-# at all. Restricted to what is configured in notify.json, so with no Slack
-# webhook an event note completes unsent rather than pending forever.
-DEFAULT_CHANNELS = ("slack",)
+# EVENT NOTIFICATIONS ARE OFF (2026-09-09, operator's rule, said twice:
+# "stop sending me fucking emails", then "stop the notifications to Slack
+# too"). `start()` does not run the thread, so nothing is classified, sent
+# or queued on either channel -- not email, not Slack, for any event.
+#
+# `notify.json` is NOT the switch and must stay in place: `dashboard/brief.py`
+# reads it for the 09:00 morning brief's email channel, and `smeltr
+# notify-test` still proves both channels by hand. Turning this back on is
+# `EVENT_NOTIFICATIONS = True` plus a channel in DEFAULT_CHANNELS, and it is
+# the OPERATOR'S call, never an incidental edit.
+EVENT_NOTIFICATIONS = False
+# Where a note goes when it does not name its own channels. Empty means
+# nowhere: a note with no reachable target completes immediately rather than
+# pending forever, so a Notifier built by hand (or by a test) sends nothing
+# either.
+DEFAULT_CHANNELS = ()
 GIB = 1073741824
 
 # Every `what` a notification can carry, with its glyph and label. A `what`
@@ -742,10 +755,17 @@ class Notifier:
 
 
 def start(dir_=None) -> bool:
-    """Start the daemon thread if notify.json configures a channel.
-    Returns whether it started, so main() can log it. Never raises: this
-    runs above the server's socket bind, and an optional notifier must not
-    be able to take the page down."""
+    """Start the daemon thread if EVENT_NOTIFICATIONS is on and notify.json
+    configures a channel. Returns whether it started, so main() can log it.
+    Never raises: this runs above the server's socket bind, and an optional
+    notifier must not be able to take the page down.
+
+    OFF since 2026-09-09 -- see EVENT_NOTIFICATIONS. The early return is
+    before load_config on purpose: with the feature off, a malformed or
+    loose-mode notify.json must not produce a stderr line about a channel
+    nobody is sending on."""
+    if not EVENT_NOTIFICATIONS:
+        return False
     try:
         dir_ = dir_ or core.SMELTR_DIR
         cfg = load_config(os.path.join(dir_, CONFIG_NAME))

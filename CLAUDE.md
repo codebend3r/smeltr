@@ -479,7 +479,10 @@ need to free up space."
   written is the moment the X9 may have no room for it, and a marker that
   failed to land would re-send the email every minute. The 60 s
   `waiting: low space …` lines stay `info`.
-- **The email.** `events.py` maps the line to kind `lowspace` (first word
+- **The email** (BUILT, NOT SENDING — event notifications went OFF on
+  2026-09-09, see *Notifications*; the LOW SPACE line is on the dashboard,
+  the Events tab and `smeltr report`, and reaches the inbox again only if
+  the operator turns the notifier back on). `events.py` maps the line to kind `lowspace` (first word
   `LOW`, second word checked); `notify.classify` → `what="low-space"`,
   subject `smeltr: LOW SPACE — free up the X9 — staging drive`, body naming
   the free figure and the floor. Notes may now carry `channels`; this one is
@@ -954,7 +957,8 @@ finished encode: no source file, a track mismatch at the 120 s gate, an output
 that cannot be evaluated (verdict exit 4 — but see *An unfinished output is
 not an error* below), and an unresolvable library original for a `good`
 verdict outside the no-delete policy. The `DONE` line is
-event kind `done` (green chip) and notification `kept` ("Done — kept in
+event kind `done` (green chip) and — while notifications were on, off
+since 2026-09-09 — notification `kept` ("Done — kept in
 place", with the verdict word) — it REPLACED the ERROR line a thin verdict
 used to produce, so it may not be silent.
 `tests/test_error_state.py::DriverContract::test_a_finished_encode_is_done_whatever_the_verdict`
@@ -1768,25 +1772,34 @@ second request.
   the smeltr LaunchAgents from `launchctl list` with their purpose and
   state — the pid while running, else the LAST EXIT STATUS spelled out
   ("last run exited 1" is how a failing heartbeat shows up).
-- **Notifications (2026-09-05; SLACK ONLY since 2026-09-09)** —
+- **Notifications — OFF since 2026-09-09.** `notify.EVENT_NOTIFICATIONS` is
+  `False` and `notify.start()` returns before it builds anything, so no
+  event reaches any channel: not email, not Slack, for an encode done, kept,
+  deleted, laddered, failed, errored, a failed sync or the stop condition.
+  The operator asked twice — "stop sending me fucking emails", then "stop
+  the notifications to Slack too" — and the first fix only moved the traffic
+  from one channel to the other, which is not what was asked.
+
+  Two deliberate choices. The early return is BEFORE `load_config`, so a
+  malformed `notify.json` cannot print a stderr line about a channel nobody
+  sends on. And `DEFAULT_CHANNELS` is `()`, so a `Notifier` built by hand
+  delivers nowhere AND does not pend — a note left pending would be resent
+  in full the moment a channel came back.
+
+  **`notify.json` is not the switch and must stay in place**: `brief.py`
+  reads it for the 09:00 morning brief's email channel, and `./smeltr
+  notify-test` still proves both channels by hand through
+  `send_slack`/`send_email`. The parsing, classification, burst-cap and
+  delivery machinery below is kept whole and still fully tested, so turning
+  it back on cannot land on untested code — that is `EVENT_NOTIFICATIONS =
+  True` plus a channel in `DEFAULT_CHANNELS`, and it is the OPERATOR'S call,
+  never an incidental edit. `test_notify.py::Switch` pins the off state; the
+  rest of the suite opts both channels back in for the duration of a test.
+
+  What the machinery does when it is on, kept for that day:
   `dashboard/notify.py`, imported ONLY by `server.py`, started from `main()`
-  when `notify.json` sits beside the ledger.
-
-  **No event notification goes to email** (operator's rule, 2026-09-09:
-  "stop sending me emails"). `notify.DEFAULT_CHANNELS` is `("slack",)` and
-  every note that does not name its own `channels` takes it — encode done,
-  kept, deleted, ladder up/down, failed, error state, sync failed, stop
-  condition, burst summary. The mail channel stays configured and is used by
-  exactly two things, both asked for by name: the LOW SPACE note, which sets
-  `channels=("email",)` itself, and the 09:00 morning brief, which does not
-  go through `Notifier` at all. `./smeltr notify-test` still proves both
-  channels. Targets are intersected with what `notify.json` configures, so a
-  note whose only channel is unconfigured COMPLETES rather than pending
-  forever. `test_notify.py::NewEvents.test_no_event_kind_reaches_email` runs
-  every parser kind through one tick and asserts the inbox stays empty.
-
-  `notify.json` is gitignored and holds the Slack webhook and the Gmail app
-  password. Email via stdlib
+  when `notify.json` sits beside the ledger (gitignored, holds the Slack
+  webhook and the Gmail app password). Email via stdlib
   `smtplib` + STARTTLS, Slack via `urllib` to an incoming webhook — no
   dependency, no decision-path import (`test_layering.py` lists it in
   `DASHBOARD_ONLY`). It is an OBSERVER of `events.events()`, the same parser
