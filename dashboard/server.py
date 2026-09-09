@@ -726,14 +726,11 @@ def build_state() -> dict:
         # both ran against the whole list, so the skipped-title totals and
         # the driver's own pick are computed from exactly what they always
         # were -- core.queue() still returns every row.
-        # "done" rows (finished, kept in place under the no-delete policy)
-        # are set aside with the errors and skips -- they are not live work --
-        # but the page renders them green, never as an error.
         # A "done" row (finished, recorded, kept in place) belongs on the
         # History tab -- its ledger row -- and NOWHERE else (operator's call,
         # 2026-09-06: "not in errors tab"). Once recorded the queue drops it
         # by dedup; until then it is hidden from both tabs here.
-        aside = lambda r: r.get("error") or r.get("skipped")  # noqa: E731
+        aside = lambda r: r.get("error") or r.get("skipped")
         errors = [r for r in q if aside(r) and not r.get("done")]
         active = [r for r in q if not aside(r) and not r.get("done")]
         payload = {

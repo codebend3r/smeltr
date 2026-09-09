@@ -43,6 +43,7 @@
     "release": "bun pm version -m \"SMLTR: Release v%s\"",
     "report": "./smeltr report",
     "restart": "./smeltr restart",
+    "set-password": "./smeltr set-password",
     "smoke": "bun run --sequential smoke:report smoke:next build",
     "smoke:next": "bash tests/smoke_offline.sh next",
     "smoke:report": "bash tests/smoke_offline.sh report",

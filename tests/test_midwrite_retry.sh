@@ -132,7 +132,9 @@ if command -v hdiutil >/dev/null 2>&1; then
         i=$((i+1)); [ $i -gt 4000 ] && break
       done
     done
-    if printf 'x' > "$FULL/.probe" 2>/dev/null && [ "$(stat -f%z "$FULL/.probe")" = 1 ]; then
+    # The group is what silences it: `> file 2>/dev/null` sets up the failing
+    # redirect BEFORE stderr is moved, so bash reports ENOSPC on the real one.
+    if { printf 'x' > "$FULL/.probe"; } 2>/dev/null && [ "$(stat -f%z "$FULL/.probe")" = 1 ]; then
       echo "(could not fill the test image to the last byte - skipping the ENOSPC half)"
     else
       # No reset here: it would delete the pre-created strike file, and a

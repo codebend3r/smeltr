@@ -132,7 +132,7 @@ function check(name, cond, detail?) {
 }
 
 const LADDER = [10, 12, 14, 16, 18, 20, 22];
-const CQ = [50, 55, 60, 65, 70];
+const CQ = [50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100];
 const S = {
   crf_choices: LADDER,
   crf_default: 14,

@@ -334,8 +334,14 @@ def split_set_aside(q):
     in one order; both views cut it in the same place so the rank a person
     reads here is the rank they read there.
     """
-    aside = [r for r in q if r.get("error") or r.get("skipped")]
-    return [r for r in q if not (r.get("error") or r.get("skipped"))], aside
+    # A "done" row (finished, recorded `--kept`, left beside its source under
+    # the no-delete policy) is not live work either: server.py sets it aside
+    # the same way, and a finished title inside the running order would read
+    # as an encode still to do.
+    def aside(r):
+        return r.get("error") or r.get("skipped") or r.get("done")
+
+    return [r for r in q if not aside(r)], [r for r in q if aside(r)]
 
 
 # The driver writes the marker as "<title>: <what happened>", which is right

@@ -23,7 +23,6 @@ which invalidates every outstanding cookie; that is the logout-everywhere.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import json
@@ -250,7 +249,3 @@ def note_failure(peer: str) -> None:
 def note_success(peer: str) -> None:
     with _fail_lock:
         _fails.pop(peer, None)
-
-
-def b64(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).decode().rstrip("=")
