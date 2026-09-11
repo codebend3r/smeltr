@@ -301,6 +301,15 @@ jobs:
       - name: 🔎 test:sh:replenish-loop — every pick lands, budget caps
         run: bun run test:sh:replenish-loop
 
+      # The independent pusher: purges the source beside a finished encode,
+      # pushes the largest pending encode back to the NAS beside its original
+      # (nothing on the NAS is ever removed), verifies over ssh before the X9
+      # copy goes, holds behind a busy wire, marks a dead title without
+      # wedging the queue. Sandboxed drive, sandbox NAS, fake ssh; needs
+      # ffmpeg for a probe-able encode.
+      - name: 🔎 test:sh:pusher — complete/ goes back to the NAS
+        run: bun run test:sh:pusher
+
       # A verdict exit 4 that says "died mid-write" is a RETRY, not the ERROR
       # state: the partial an auto-kill leaves behind is not a finished
       # encode and not something a human is owed a look at. Erroring it
