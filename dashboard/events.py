@@ -61,6 +61,12 @@ _KINDS = {
     "DEFER": "defer",
     "REPLENISH": "replenish",
     "PURGE": "purge",
+    # The independent pusher (ops/push-complete.sh, 2026-09-10): a source
+    # purged from complete/, an encode going back to its library folder, one
+    # that landed and verified, one that could not.
+    "PURGED": "purge",
+    "PUSH": "push",
+    "PUSHED": "pushed",
     "===": "up",
 }
 
@@ -100,6 +106,11 @@ def _driver_events():
             kind = _KINDS.get(word, "info")
             if kind == "lowspace" and not m.group(3).startswith("LOW SPACE: "):
                 kind = "info"
+            # "PUSH FAILED <title>: ..." is the pusher giving up on a title
+            # (both copies kept). Same red as a HandBrake that died: it is
+            # the line a person opens the tab to find.
+            if kind == "push" and m.group(3).startswith("PUSH FAILED "):
+                kind = "failed"
             out.append(
                 {
                     "ts": m.group(1),

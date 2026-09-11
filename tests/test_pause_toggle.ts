@@ -143,6 +143,7 @@ function check(name, cond, detail?) {
   else {
     failed++;
     console.log("\nFAIL [" + section + "] " + name + (detail ? "\n     " + detail : ""));
+    process.exit(1);
   }
 }
 const tick = () => new Promise((r) => setImmediate(r));
@@ -401,9 +402,9 @@ const tick = () => new Promise((r) => setImmediate(r));
       "there is no bar for the circle to lead on the idle card",
     );
     check(
-      "the armed consequence still renders ON the card",
-      /el\(\s*"div",\s*"ppnote",\s*"will pause after this encode — "/.test(src),
-      "a tooltip never renders on the phones",
+      "the circle is the ONLY thing on the live card that changes when armed",
+      !/ppnote/.test(src) && !/\.ppnote/.test(css),
+      "operator's pick 2026-09-11: no extra line under the verdict",
     );
     check("it is a circle", /\.pp\s*\{[^}]*border-radius:\s*50%/.test(css));
     check(
@@ -420,7 +421,7 @@ const tick = () => new Promise((r) => setImmediate(r));
     check(
       "every colour on it is a token",
       !/\.pp[^{]*\{[^}]*#[0-9a-f]{3,6}/i.test(
-        css.slice(css.indexOf(".pp {"), css.indexOf(".ppnote")),
+        css.slice(css.indexOf(".pp {"), css.indexOf(".swt {")),
       ),
     );
   }

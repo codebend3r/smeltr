@@ -51,6 +51,7 @@ from dashboard import events as events_mod
 from dashboard import procs as procs_mod
 from dashboard import manual as manual_mod
 from dashboard import notify
+from dashboard import pushes
 from dashboard import sysmon
 
 # Token persists across restarts in a 0600 file, so LAN devices survive the
@@ -373,6 +374,29 @@ _xfer_track: dict = {}
 RATE_HOLD_SECONDS = 60
 
 
+def _xfer_dirs() -> list:
+    """(folder, dir) for every place a finished encode can be travelling
+    FROM: a staged folder (queue/ or a legacy root folder -- the driver's own
+    sync) and every folder in complete/ (the independent pusher, since
+    2026-09-10). complete/ is listed here and nowhere else in this function's
+    callers: a finished title is not queue work."""
+    out = [(f, core.folder_dir(f)) for f in core.staged_folders()]
+    # complete/ is unbounded under no-delete and every folder here costs an
+    # SMB destination lookup per 2 s frame -- so only the title a live
+    # `.pushing-` marker names is looked at, which is the only one that can
+    # have a .partial travelling.
+    comp = core.complete_dir()
+    for low in sorted(pushes.on_wire()):
+        try:
+            names = os.listdir(comp)
+        except OSError:
+            break
+        for n in names:
+            if n.lower() == low and os.path.isdir(os.path.join(comp, n)):
+                out.append((n, os.path.join(comp, n)))
+    return out
+
+
 def _transfers() -> list:
     """In-flight pushes back to the library, observed through the SMB mount.
 
@@ -388,8 +412,8 @@ def _transfers() -> list:
     rows = []
     now = time.monotonic()
     seen = set()
-    for folder in core.staged_folders():
-        stage = core.folder_dir(folder)
+    buckets_of: dict = {}  # root -> its bucket dirs, scanned once per call
+    for folder, stage in _xfer_dirs():
         try:
             names = [
                 n
@@ -411,11 +435,12 @@ def _transfers() -> list:
             continue
         dests = []
         for root in core.LIBRARY_ROOTS:
-            try:
-                buckets = [e.path for e in os.scandir(root) if e.is_dir()]
-            except OSError:
-                continue
-            for b in buckets:
+            if root not in buckets_of:
+                try:
+                    buckets_of[root] = [e.path for e in os.scandir(root) if e.is_dir()]
+                except OSError:
+                    buckets_of[root] = []
+            for b in buckets_of[root]:
                 d = os.path.join(b, folder)
                 if os.path.isdir(d):
                     dests.append((root, d))
@@ -726,14 +751,11 @@ def build_state() -> dict:
         # both ran against the whole list, so the skipped-title totals and
         # the driver's own pick are computed from exactly what they always
         # were -- core.queue() still returns every row.
-        # "done" rows (finished, kept in place under the no-delete policy)
-        # are set aside with the errors and skips -- they are not live work --
-        # but the page renders them green, never as an error.
         # A "done" row (finished, recorded, kept in place) belongs on the
         # History tab -- its ledger row -- and NOWHERE else (operator's call,
         # 2026-09-06: "not in errors tab"). Once recorded the queue drops it
         # by dedup; until then it is hidden from both tabs here.
-        aside = lambda r: r.get("error") or r.get("skipped")  # noqa: E731
+        aside = lambda r: r.get("error") or r.get("skipped")
         errors = [r for r in q if aside(r) and not r.get("done")]
         active = [r for r in q if not aside(r) and not r.get("done")]
         payload = {
@@ -744,6 +766,13 @@ def build_state() -> dict:
             "errors": errors,
             "transfers": _transfers(),
             "syncing": _sync_in_flight(),
+            # The push-back queue (ops/push-complete.sh): which finished
+            # titles are waiting for the wire, in the order they will take
+            # it, which one is on it, which failed and which already landed
+            # on the NAS. Read off the pusher's markers, never re-derived.
+            "pushes": pushes.pushes(),
+            "push_off": pushes.push_off(),
+            "push_hold": pushes.push_hold(),
             "encode_note": note,
             "crf_choices": list(CRF_CHOICES),
             # The picker's "auto" option is labelled with this, so a moved

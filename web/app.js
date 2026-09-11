@@ -207,9 +207,40 @@
     return b;
   }
 
-  function renderAlert(s, note) {
+  function renderAlert(s, note, pushes) {
     var host = document.getElementById("alert");
     host.replaceChildren();
+    /* A finished encode the pusher could not send back (no or two library
+     folders, a copy that did not verify). Both copies are kept and the
+     title waits in complete/; nothing else on the page says so. */
+    var failedPushes = Object.keys(pushes || {}).filter(function (k) {
+      return pushes[k].state === "failed";
+    });
+    if (failedPushes.length) {
+      var pc = el("div", "card alert");
+      pc.appendChild(
+        el(
+          "div",
+          "live-title",
+          failedPushes.length +
+            (failedPushes.length === 1 ? " finished encode" : " finished encodes") +
+            " could not be pushed back to the NAS",
+        ),
+      );
+      failedPushes.forEach(function (k) {
+        pc.appendChild(el("div", "verdict", pushes[k].title + " — " + pushes[k].note));
+      });
+      pc.appendChild(
+        el(
+          "div",
+          "muted",
+          "Both copies are kept; nothing on the NAS was touched. Delete " +
+            ".push-failed-<title> on the X9 to retry.",
+        ),
+      );
+      makeCollapsible(pc, "alert-push", true);
+      host.appendChild(pc);
+    }
     /* Outcome of the last start/abort. The slow halves (track parity, the kill
      grace) finish long after their POST returned, so this banner is how they
      report. kind=bad stays until the next action; ok/warn are informational. */
@@ -862,7 +893,7 @@
       cls: "pause",
       act: "Pause encoding",
       sub: live.length
-        ? "after this encode — " + live[0].title + " still finishes and syncs"
+        ? "after this encode — " + live[0].title + " still finishes and moves to complete/"
         : lowSpace
           ? "waiting: low space on the staging drive — free up space"
           : "nothing new will start",
@@ -887,9 +918,8 @@
   }
   /* The circle. It leads the progress bar inside the live card, so the
    control sits ON the thing it controls instead of in a card above it. The
-   sentence the big card carried becomes its accessible name and tooltip;
-   the ARMED consequence (a sync REPLACES the library original) still renders
-   on the card as .ppnote, because a tooltip never renders on the phones. */
+   sentence the big card carried becomes its accessible name and tooltip,
+   and that is ALL that changes on the card when pause is armed. */
   function circleToggle(paused, driverAlive, live, nextTitle) {
     var t = toggleIntent(paused, driverAlive, live, nextTitle, false);
     var b = el("button", "pp " + t.cls);
@@ -1045,24 +1075,15 @@
         c.appendChild(kv);
         refs.verdict = el("div", "verdict", "");
         c.appendChild(refs.verdict);
-        /* Pause-after-current is the circle at the head of the bar. The
-         encode itself is never touched: the flag only stops the NEXT one
-         from starting, which is the difference between this and the abort
-         button on the queue row. The armed label must name the consequence
-         ON the card -- "sync" means the library original is REPLACED, and a
-         tooltip never renders on the phones. */
-        if (paused)
-          c.appendChild(
-            el(
-              "div",
-              "ppnote",
-              "will pause after this encode — " +
-                e.title +
-                " still finishes, syncs, and replaces its " +
-                (e.source_bytes != null ? gib(e.source_bytes) + " " : "") +
-                "library original",
-            ),
-          );
+        /* Pause-after-current is the circle at the head of the bar, and the
+         circle is the ONLY thing on this card that changes when it is armed
+         (operator's pick, 2026-09-11, from screenshots of both options). The
+         encode itself is never touched: the flag only stops the NEXT one from
+         starting, which is the difference between this and the abort button
+         on the queue row. The consequence is the circle's accessible name and
+         tooltip; the amber note line that used to be appended here claimed a
+         sync that no longer happens (finished encodes move to complete/ and
+         are pushed beside their original). */
         /* Distinct key from the idle card — folding "Nothing encoding" must
          not fold the next real encode — and loud verdicts always open. */
         makeCollapsible(c, "live-run", !!PROJ_LOUD[e.verdict]);
@@ -1587,6 +1608,17 @@
       r.enc_q == null ? null : r.enc_q,
     ];
   }
+  /* The push-back queue's SHAPE: which titles, in which state, at which
+   position. Bytes are deliberately absent -- a row's structure does not
+   change as a transfer grows; the bar rides updateProgress(). */
+  function pushShape(p) {
+    return Object.keys(p || {})
+      .sort()
+      .map(function (k) {
+        var v = p[k];
+        return [k, v.state, v.pos || 0, v.total || 0, v.nas || ""];
+      });
+  }
   function xShape(t) {
     return [t.title, t.nas, t.src_dir, !!t.stalled, t.total_bytes, t.pct != null];
   }
@@ -1904,8 +1936,9 @@
     });
   }
 
-  function renderLedger(rows, xfers) {
+  function renderLedger(rows, xfers, pushes, pushInfo) {
     progRefs = {};
+    pushInfo = pushInfo || {};
     var pane = document.getElementById("pane");
     pane.replaceChildren();
     if (!rows.length) {
@@ -1986,13 +2019,54 @@
               else destTd.appendChild(el("span", "muted", "—"));
             }
           } else if (r.kept) {
-            /* Kept in place under the no-delete policy: encoded, recorded,
-             nothing moved. Named, never a dash that reads as "unknown". */
-            nasTd.appendChild(el("span", "mark done", "kept"));
+            /* Kept under the no-delete policy: encoded, recorded, the library
+             original never touched. WHERE the encode is now comes from the
+             pusher's markers (ops/push-complete.sh, 2026-09-10): waiting in
+             complete/ for the wire (numbered, largest first), on the wire
+             (the bar rides the row below), refused, or landed on the NAS
+             beside its original. Named, never a dash that reads as
+             "unknown" -- and never "on the X9" for a file that left it. */
             destTd = el("td");
-            var kp = el("span", "muted", "on the X9, beside its source");
-            kp.title = "No-delete policy: nothing was synced or deleted. Move it by hand.";
-            destTd.appendChild(kp);
+            var pk = pushes && pushes[r.title.toLowerCase()];
+            if (pk && pk.state === "pushed") {
+              nasTd.appendChild(nasMark(pk.nas || "?"));
+              if (pk.bucket && pk.nas && pk.nas !== "?")
+                destTd.appendChild(el("span", "mark bucket " + nasClass(pk.nas), pk.bucket));
+              var pd = el("span", "muted", " beside its original");
+              pd.title =
+                (pk.note || "Pushed back to " + pk.dest) +
+                " — the NAS original was NOT deleted; the X9 copy was removed after the NAS copy verified.";
+              destTd.appendChild(pd);
+            } else if (pk && pk.state === "pushing") {
+              nasTd.appendChild(el("span", "mark done", "kept"));
+              var pm = el("span", "muted", "moving to the NAS now");
+              pm.title =
+                "Travelling back to its library folder over SSH. The X9 copy goes only once the NAS copy verifies.";
+              destTd.appendChild(pm);
+            } else if (pk && pk.state === "failed") {
+              nasTd.appendChild(el("span", "mark err", "push failed"));
+              var pf = el("span", "muted", "on the X9 — " + pk.note);
+              pf.title = "Both copies kept. Delete .push-failed-<title> on the X9 to retry.";
+              destTd.appendChild(pf);
+            } else if (pk && pk.state === "queued") {
+              nasTd.appendChild(el("span", "mark done", "kept"));
+              var pq = el("span", "muted", "on the X9 · NAS queue #" + pk.pos + " of " + pk.total);
+              pq.title =
+                "Waiting for the wire: finished encodes go back to the NAS largest first, one at a time.";
+              destTd.appendChild(pq);
+              /* The HEAD of the queue carries the pusher's own reason for
+               waiting, so a stalled queue is never silent. The off switch
+               outranks a hold: nothing moves while it is set. */
+              if (pk.pos === 1 && pushInfo.off)
+                destTd.appendChild(el("span", "mark err", "pusher off (.push-off)"));
+              else if (pk.pos === 1 && pushInfo.hold)
+                destTd.appendChild(el("span", "mark xfer", "waiting — " + pushInfo.hold));
+            } else {
+              nasTd.appendChild(el("span", "mark done", "kept"));
+              var kp = el("span", "muted", "on the X9, beside its source");
+              kp.title = "No-delete policy: nothing was synced or deleted. Move it by hand.";
+              destTd.appendChild(kp);
+            }
           } else {
             nasTd.appendChild(el("span", "muted", "—"));
             destTd = el("td");
@@ -2132,7 +2206,10 @@
         ],
         rows,
         function (r) {
-          var tr = el("tr", r.error ? "rowerr" : r.done ? "rowdone" : "rowskip");
+          /* Done rows never reach this table: server.py sets them aside for
+           the History tab (their ledger row), so the only shapes here are
+           errored and skipped. */
+          var tr = el("tr", r.error ? "rowerr" : "rowskip");
           tr.dataset.title = r.title;
           var st = el("td");
           /* Both chips when a title is both. The error one comes first: a
@@ -2140,9 +2217,6 @@
            not finish, and reading only "skipped" there would credit the
            operator with a decision the pipeline actually made. */
           if (r.error) st.appendChild(el("span", "mark err", "error"));
-          /* Finished and kept in place under the no-delete policy: the job
-           SUCCEEDED on this title. Green, and never the error vocabulary. */
-          if (r.done && !r.error) st.appendChild(el("span", "mark done", "done"));
           if (r.skipped) st.appendChild(el("span", "mark skip", "skipped"));
           tr.appendChild(st);
           var band = r.mbps >= 90 ? "mbps-hi" : r.mbps >= 80 ? "mbps-mid" : "mbps-lo";
@@ -2396,6 +2470,7 @@
     cycle: "good",
     complete: "good",
     done: "good",
+    pushed: "good",
   };
   function renderEvents(x9on) {
     progRefs = {};
@@ -2471,7 +2546,7 @@
   }
 
   function paint(s) {
-    renderAlert(s.summary, s.encode_note);
+    renderAlert(s.summary, s.encode_note, s.pushes);
     renderStats(s.summary);
     var nextUp = (s.queue || []).filter(function (r) {
       return r.next_up;
@@ -2526,7 +2601,13 @@
               (s.transfers || []).length,
             ]
           : tab === "ledger"
-            ? [s.ledger, (s.transfers || []).map(xShape)]
+            ? [
+                s.ledger,
+                (s.transfers || []).map(xShape),
+                pushShape(s.pushes),
+                s.push_off,
+                s.push_hold,
+              ]
             : tab === "errors"
               ? [(s.errors || []).map(eShape)]
               : [evRev, evData === null, evErr],
@@ -2559,7 +2640,7 @@
               s.live,
             )
           : tab === "ledger"
-            ? renderLedger(s.ledger, s.transfers)
+            ? renderLedger(s.ledger, s.transfers, s.pushes, { off: s.push_off, hold: s.push_hold })
             : tab === "errors"
               ? renderErrors(s.errors || [])
               : tab === "procs"

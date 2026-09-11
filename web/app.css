@@ -1849,14 +1849,6 @@ tr.pin-end td {
     height: 44px;
   }
 }
-/* The armed consequence, on the card and not in a tooltip. */
-.ppnote {
-  margin: -2px 0 6px;
-  font-family: var(--mono);
-  font-size: 11.5px;
-  letter-spacing: 0.02em;
-  color: var(--warn);
-}
 .swt {
   position: relative;
   display: block;

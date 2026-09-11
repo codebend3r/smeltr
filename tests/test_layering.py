@@ -34,7 +34,7 @@ DASHBOARD_DIR = "dashboard"
 # them belongs in a process that decides on a deletion.
 DASHBOARD_ONLY = frozenset(
     {"server", "sysmon", "report", "events", "notify", "heartbeat", "auth",
-     "manual", "procs", "brief"}
+     "manual", "procs", "brief", "pushes"}
 )
 
 

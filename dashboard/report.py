@@ -19,6 +19,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dashboard import manual as manual_mod
+from dashboard import pushes as pushes_mod
 from pipeline import core
 
 GIB = core.GIB
@@ -328,14 +329,38 @@ def _arriving_on_x9(title: str, staged: bool) -> bool:
     )
 
 
+def kept_where(r, p) -> str:
+    """The 'Moved to' cell of a kept row, from the pusher's state."""
+    if not p:
+        return "kept on X9"
+    st = p.get("state")
+    if st == "queued":
+        return f"kept on X9 · NAS queue #{p.get('pos')} of {p.get('total')}"
+    if st == "pushing":
+        return "kept · moving to the NAS"
+    if st == "failed":
+        return "kept on X9 · PUSH FAILED"
+    if st == "pushed":
+        nas = p.get("nas") or "?"
+        b = p.get("bucket")
+        return f"on {nas}" + (f" · {b}" if b else "") + " (beside the original)"
+    return "kept on X9"
+
+
 def split_set_aside(q):
     """(live queue, set-aside rows) -- the terminal's half of the dashboard's
     Queue/Errors tab split (2026-09-06). core.queue() still returns one list
     in one order; both views cut it in the same place so the rank a person
     reads here is the rank they read there.
     """
-    aside = [r for r in q if r.get("error") or r.get("skipped")]
-    return [r for r in q if not (r.get("error") or r.get("skipped"))], aside
+    # A "done" row (finished, recorded `--kept`, left beside its source under
+    # the no-delete policy) is not live work either: server.py sets it aside
+    # the same way, and a finished title inside the running order would read
+    # as an encode still to do.
+    def aside(r):
+        return r.get("error") or r.get("skipped") or r.get("done")
+
+    return [r for r in q if not aside(r)], [r for r in q if aside(r)]
 
 
 # The driver writes the marker as "<title>: <what happened>", which is right
@@ -452,6 +477,11 @@ def section_ledger(hist, limit) -> str:
     shown = ordered if limit in (None, 0) else ordered[:limit]
 
     rows, notes = [], []
+    # Where a kept encode IS right now (ops/push-complete.sh, 2026-09-10):
+    # still on the X9 waiting for the wire, on it, refused, or landed on the
+    # NAS beside its original. "kept on X9" alone would claim a file that
+    # left the drive an hour ago is still there.
+    pushed = pushes_mod.pushes()
     for n, r in shown:
         approx = "~" if r.get("exact") is False else ""
         rows.append(
@@ -474,7 +504,9 @@ def section_ledger(hist, limit) -> str:
                 # one field, not a path claiming to be complete.
                 # A kept row never moved: say so, never a dash that reads as
                 # "unknown" beside a saving that was not reclaimed.
-                "kept on X9" if r.get("kept") else (r.get("dest") or "—").replace("/", " · "),
+                kept_where(r, pushed.get(r["title"].lower()))
+                if r.get("kept")
+                else (r.get("dest") or "—").replace("/", " · "),
                 RECORD_LABEL.get(r.get("provenance"), r.get("provenance") or "—"),
                 (r.get("finished_at") or "—")[:10],
             ]
