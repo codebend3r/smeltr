@@ -38,10 +38,13 @@ function fn(name: string) {
 let pass = 0,
   fail = 0;
 function ok(cond: unknown, msg: string) {
-  if (cond) pass++;
-  else {
+  if (cond) {
+    pass++;
+    process.stdout.write(".");
+  } else {
     fail++;
-    console.log("FAIL: " + msg);
+    console.log("\nFAIL: " + msg);
+    process.exit(1);
   }
 }
 
@@ -68,5 +71,5 @@ ok(/low space/i.test(live), "the idle card says why nothing is starting");
 const queue = fn("renderQueue");
 ok(/s\.low_space/.test(queue), "the queue's next pill knows about the floor");
 
-console.log(`${pass} passed, ${fail} failed`);
+console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

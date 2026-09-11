@@ -36,7 +36,7 @@ source "$TMP/helpers.sh"
 
 pass=0; fail=0
 ck(){ if [ "$2" = "$3" ]; then printf '.'; pass=$((pass+1))
-      else printf '\nFAIL %s: got %s want %s\n' "$1" "'$2'" "'$3'"; fail=$((fail+1)); fi; }
+      else printf '\nFAIL %s: got %s want %s\n' "$1" "'$2'" "'$3'"; exit 1; fi; }
 
 mkdir -p "$X9/Alpha (2001)" "$X9/Beta (2002)" "$X9/Gamma (2003)"
 touch "$X9/Alpha (2001)/Alpha (2001) Remux-2160p.mkv"

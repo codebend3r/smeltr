@@ -141,6 +141,7 @@ const ck = (what, got, want) => {
   } else {
     console.log(`\nFAIL ${what}: got '${got}' want '${want}'`);
     fail++;
+    process.exit(1);
   }
 };
 const ckHas = (what, hay, needle) => {
@@ -150,6 +151,7 @@ const ckHas = (what, hay, needle) => {
   } else {
     console.log(`\nFAIL ${what}: '${hay}' lacks '${needle}'`);
     fail++;
+    process.exit(1);
   }
 };
 const ckNot = (what, hay, needle) => {
@@ -159,6 +161,7 @@ const ckNot = (what, hay, needle) => {
   } else {
     console.log(`\nFAIL ${what}: '${hay}' must not contain '${needle}'`);
     fail++;
+    process.exit(1);
   }
 };
 const build = () => M.projBlock().refs;

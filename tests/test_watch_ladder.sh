@@ -40,8 +40,8 @@ WE="$(cd "$(dirname "$0")/.." && pwd)/staging/watch-encode.sh"
 WE_TEST=1 source "$WE" 1 f s o 99999 14 x265_10bit
 
 pass=0; fail=0
-ck(){ if [ "$2" = "$3" ]; then echo "PASS $1"; pass=$((pass+1))
-      else echo "FAIL $1: got '$2' want '$3'"; fail=$((fail+1)); fi; }
+ck(){ if [ "$2" = "$3" ]; then printf '.'; pass=$((pass+1))
+      else printf '\nFAIL %s: got %s want %s\n' "$1" "'$2'" "'$3'"; exit 1; fi; }
 
 # --- x265, too big: CRF steps UP, from EVERY rung ------------------------
 ck "x265 big 10 -> 12"              "$(next_rung x265_10bit 10 big)" 12
@@ -92,5 +92,5 @@ ck "a CQ rung is not a CRF rung" "$(next_rung x265_10bit 60 big)"      none-too-
 # An unknown encoder falls back to the x265 mapping -- the proven direction.
 ck "unknown encoder uses x265 rungs" "$(next_rung mystery 14 big)" 16
 
-echo "$pass passed, $fail failed"
+printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

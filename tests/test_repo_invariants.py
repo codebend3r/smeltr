@@ -357,7 +357,6 @@ class BunIsTheOnlyRunner(unittest.TestCase):
     def test_umbrella_scripts_use_buns_own_sequencer(self):
         for name in (
             "lint",
-            "test",
             "verify",
             "system-check",
             "format",
@@ -368,6 +367,25 @@ class BunIsTheOnlyRunner(unittest.TestCase):
                     self.scripts()[name].startswith("bun run --sequential"),
                     self.scripts()[name],
                 )
+
+    def test_the_suites_run_in_parallel_and_fail_fast(self):
+        """`bun run test` is bun's own `--parallel` over every suite
+        (2026-09-11, operator's rule: parallel, and stop on the first
+        error). Nothing in the suites binds a port or scans the live process
+        table, so they are safe side by side. `--no-exit-on-error` must stay
+        OFF: it is what turns a red suite into a green run."""
+        cmd = self.scripts()["test"]
+        self.assertTrue(cmd.startswith("bun run --parallel"), cmd)
+        self.assertNotIn("--no-exit-on-error", cmd)
+        # test:py is one module per process through tests/run_unittests.py;
+        # the child command it launches carries --failfast and the same
+        # ResourceWarning-as-error the sequential form had.
+        self.assertEqual(self.scripts()["test:py"], "python3 tests/run_unittests.py")
+        with open(os.path.join(REPO, "tests", "run_unittests.py")) as fh:
+            runner = fh.read()
+        self.assertIn('"--failfast"', runner)
+        self.assertIn('"error::ResourceWarning"', runner)
+        self.assertIn("os.cpu_count()", runner)
 
     def test_every_js_suite_runs_under_bun(self):
         js = {k: v for k, v in self.scripts().items() if k.startswith("test:js:")}

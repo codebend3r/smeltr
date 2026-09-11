@@ -13,6 +13,7 @@ halts the pick of OTHER titles nor claims the stop condition.
 """
 
 import os
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -454,9 +455,20 @@ class LastRungFinishes(unittest.TestCase):
         self.assertIn("no-saving", block)
         self.assertNotIn("nothing is deleted on this", src)
         # ...and the verdict really does say that, on the live baseline.
+        # The line that decides is the HIGHER of the relative line and the
+        # 15.0 floor (see `test_verdict_calibration.effective_line`): the
+        # relative line drifts with the median and had already risen past
+        # the floor by 2026-09-11, so a literal 15.1 here went `suspect`
+        # while the arm it describes still ends in a `good` verdict.
         hist = core.history_ratios()
         if len(hist) >= core.MIN_HISTORY:
-            self.assertEqual(core._verdict(15.1, hist, 15.1)[0], "good")
+            line = max(
+                statistics.median(hist) * core.OUTLIER_FACTOR,
+                core.OUTLIER_FLOOR_NORM,
+            )
+            self.assertLess(line, 29.9, "no `good` range left for a clean source")
+            lo = line + 0.1
+            self.assertEqual(core._verdict(lo, hist, lo)[0], "good")
             self.assertEqual(core._verdict(29.9, hist, 29.9)[0], "good")
             self.assertEqual(core._verdict(86.4, hist, 86.4)[0], "no-saving")
 

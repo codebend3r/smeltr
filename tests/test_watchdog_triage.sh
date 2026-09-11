@@ -26,7 +26,7 @@ source "$TMP/triage.sh"
 
 pass=0; fail=0
 ck(){ if [ "$2" = "$3" ]; then printf '.'; pass=$((pass+1))
-      else printf '\nFAIL %s: got %s want %s\n' "$1" "'$2'" "'$3'"; fail=$((fail+1)); fi; }
+      else printf '\nFAIL %s: got %s want %s\n' "$1" "'$2'" "'$3'"; exit 1; fi; }
 
 # A real, tiny, finalised MKV -- ffprobe reports a duration for it.
 mk_real() { ffmpeg -v error -y -f lavfi -i testsrc=size=32x32:rate=5 -t "${2:-2}" \
