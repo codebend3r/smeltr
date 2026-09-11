@@ -111,8 +111,10 @@ STOP_MBPS = 70.0
 # Three consumers must agree on it: .watch-encode.sh kills a projection that
 # lands outside it (BAND_LO/BAND_HI there), _verdict() below calls a finished
 # file at or above the top `no-saving`, and the dashboard draws it on the
-# projection strip. `summary()` carries both numbers so the page and the
-# terminal report read them from here rather than typing them again.
+# projection strip. `summary()` carries both numbers (`band_lo`/`band_hi`) for
+# any reader that wants them; the page still types its own copy, and
+# test_repo_invariants.py::TargetBand is what holds the four renditions to one
+# pair of numbers.
 # NOTE the absolute plausibility floor OUTLIER_FLOOR_NORM (15.0) sits INSIDE
 # this band on purpose: a 10-15% encode is in band for the ladder (it will
 # finish rather than be killed) and still `suspect` for the verdict (a human
@@ -200,12 +202,11 @@ ENCODER_CHOICES: dict = {
 # together, exactly like CRF_DEFAULT and the x265 ladder).
 DEFAULT_QUALITIES: dict = {"x265_10bit": CRF_DEFAULT, "vt_h265_10bit": 70}
 # THE GLOBAL DEFAULT IS VIDEOTOOLBOX CQ 70 (operator's call, 2026-09-06, restated 23:58; was
-# x265 CRF 14). Every title with no encoder override starts here. Known
-# consequence, accepted: with fewer than MIN_HISTORY VT rows in the ledger a
-# VT encode is `suspect` by construction, and `suspect` never records, so the
-# VT baseline cannot build itself -- every default encode ends in the ERROR
-# state with its output left beside the source for a human, and nothing is
-# synced or deleted. That is the VT beta flow the operator asked for.
+# x265 CRF 14). Every title with no encoder override starts here. With no VT
+# rows in the ledger the relative check in _verdict() has no baseline and only
+# the absolute floor applies (the "first encodes on a new encoder are suspect"
+# gate was removed the same day -- see _verdict()); under the no-delete policy
+# a `good` VT encode is recorded `--kept` and left beside its source.
 DEFAULT_ENCODER = "vt_h265_10bit"
 DEFAULT_QUALITY = DEFAULT_QUALITIES[DEFAULT_ENCODER]
 # Ledger rows written before the `encoder` field existed are x265 -- the ONLY

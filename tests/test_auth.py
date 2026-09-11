@@ -17,6 +17,8 @@ halves compare in constant time, a cookie cannot be forged or replayed past its
 expiry, and rotating the password logs every device out.
 """
 
+import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -88,7 +90,13 @@ class Verifier(Tmp):
         auth.write_config(self.dir, USER, PW)
         os.chmod(auth.path(self.dir), 0o640)
         auth.reload_config()
-        self.assertFalse(auth.enabled(self.dir))
+        # The refusal prints; capture it so the suite's own output stays clean
+        # AND so the operator-facing wording is actually asserted.
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said):
+            self.assertFalse(auth.enabled(self.dir))
+        self.assertIn("refusing to use it", said.getvalue())
+        self.assertIn("chmod 600", said.getvalue())
         self.assertFalse(auth.verify(self.dir, USER, PW))
 
     def test_a_corrupt_file_is_refused_not_crashed(self):

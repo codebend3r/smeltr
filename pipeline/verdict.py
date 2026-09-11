@@ -99,11 +99,12 @@ def main() -> int:
     src_geom, out_geom = info.get("source_geometry"), info.get("geometry")
     ratio = ob / sb * 100.0
     norm = ratio * core.crop_factor(src_geom, out_geom)
-    # Judge against SAME-encoder history only. A row with no recorded encoder
-    # is x265 (every row before 2026-08-25 was); a hardware encode with no
-    # same-encoder baseline comes back `suspect`, never `good` -- the first
-    # vt_h265_10bit titles are reviewed by a human, not deleted on a size
-    # comparison borrowed from a different rate-quality curve.
+    # Judge against SAME-encoder history only. A LEDGER row with no recorded
+    # encoder is x265 (history_ratios maps it to core.LEGACY_ENCODER); a log
+    # whose encoder line did not parse is judged as the current default. With
+    # no same-encoder baseline the relative check has no base and only the
+    # absolute floor applies -- the no-baseline `suspect` gate was removed
+    # 2026-09-06 (see core._verdict()).
     enc = info.get("encoder") or core.DEFAULT_ENCODER
     code, note = core._verdict(
         ratio,

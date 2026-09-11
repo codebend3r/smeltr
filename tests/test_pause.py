@@ -246,14 +246,31 @@ class ArrivingFolders(unittest.TestCase):
     is by construction; this pins the driver-facing behavior."""
 
     def setUp(self):
-        self._saved = (core.offline_roots, core.paused, core.queue_cached, core.X9)
+        self._saved = (
+            core.offline_roots,
+            core.paused,
+            core.queue_cached,
+            core.X9,
+            core.low_space,
+        )
         self._tmp = tempfile.TemporaryDirectory()
         core.X9 = self._tmp.name
         core.offline_roots = lambda: []
         core.paused = lambda: False
+        # core.X9 is a tmpdir, so the floor measures whatever filesystem the
+        # runner happens to have -- a CI box with <100 GiB free answers exit 3
+        # "low space" before the pick these tests are about. The floor has its
+        # own suite (test_low_space.py, which pins the precedence).
+        core.low_space = lambda: (False, None)
 
     def tearDown(self):
-        (core.offline_roots, core.paused, core.queue_cached, core.X9) = self._saved
+        (
+            core.offline_roots,
+            core.paused,
+            core.queue_cached,
+            core.X9,
+            core.low_space,
+        ) = self._saved
         self._tmp.cleanup()
 
     def _folder(self, title, files):
@@ -302,12 +319,15 @@ class PickNext(unittest.TestCase):
     fine."""
 
     def setUp(self):
-        self._saved = (core.X9, core.queue_cached)
+        self._saved = (core.X9, core.queue_cached, core.low_space)
         self._tmp = tempfile.TemporaryDirectory()
         core.X9 = self._tmp.name
+        # Same reason as ArrivingFolders: the tmpdir's own filesystem must
+        # not decide whether these wait reasons are ever reached.
+        core.low_space = lambda: (False, None)
 
     def tearDown(self):
-        core.X9, core.queue_cached = self._saved
+        core.X9, core.queue_cached, core.low_space = self._saved
         self._tmp.cleanup()
 
     def _folder(self, title, files):

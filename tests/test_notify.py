@@ -110,6 +110,14 @@ class _Base(unittest.TestCase):
         }
         self.errs = []
         self.clock = [1_000_000.0]
+        # Production sends NOTHING since 2026-09-09 -- EVENT_NOTIFICATIONS is
+        # False and DEFAULT_CHANNELS is empty (see Switch below). The parsing,
+        # classification, burst and delivery machinery is still whole and
+        # still pinned, so these tests ask for both channels explicitly.
+        # Turning the feature back on must not land on untested code.
+        both = mock.patch.object(notify, "DEFAULT_CHANNELS", ("slack", "email"))
+        both.start()
+        self.patches.append(both)
 
     def tearDown(self):
         for p in self.patches:
@@ -1046,3 +1054,70 @@ class Wiring(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Switch(unittest.TestCase):
+    """The feature is OFF (2026-09-09, operator's rule, said twice: "stop
+    sending me fucking emails", then "stop the notifications to Slack too").
+    Nothing here is about how a message is built -- it is about nothing being
+    built at all."""
+
+    def test_event_notifications_are_off(self):
+        self.assertFalse(notify.EVENT_NOTIFICATIONS)
+
+    def test_nothing_is_the_default_destination(self):
+        """A Notifier constructed by hand -- a future caller, a future test --
+        must not resurrect a channel by accident."""
+        self.assertEqual(notify.DEFAULT_CHANNELS, ())
+
+    def test_start_does_not_run_and_never_reads_the_config(self):
+        """The early return is BEFORE load_config: with the feature off, a
+        malformed or loose-mode notify.json must not print a stderr line
+        about a channel nobody is sending on, and no thread may exist."""
+        called = []
+
+        with mock.patch.object(
+            notify, "load_config", lambda *a, **k: called.append(a) or None
+        ):
+            with tempfile.TemporaryDirectory() as d:
+                self.assertFalse(notify.start(d))
+        self.assertEqual(called, [])
+        self.assertFalse(
+            [t for t in threading.enumerate() if t.name == "smeltr-notify"]
+        )
+
+    def test_a_note_with_no_channels_is_delivered_nowhere_and_does_not_pend(self):
+        """With DEFAULT_CHANNELS empty, an event must COMPLETE unsent. A note
+        that stayed pending would retry forever and be resent the moment
+        anyone turned a channel back on."""
+        slack, email = _Transport(), _Transport()
+        with tempfile.TemporaryDirectory() as x9, tempfile.TemporaryDirectory() as home:
+            with mock.patch.object(core, "X9", x9), mock.patch.object(
+                core, "LEDGER", os.path.join(home, "ledger.jsonl")
+            ):
+                log = os.path.join(x9, ".autopilot.log")
+                _write(log, DRIVER_LOG)
+                n = notify.Notifier(
+                    home,
+                    config={
+                        "slack": {"webhook": "https://hooks.slack.com/x"},
+                        "email": {
+                            "host": "h",
+                            "port": 587,
+                            "user": "u",
+                            "password": "p",
+                            "to": "u",
+                        },
+                    },
+                    slack=slack,
+                    email=email,
+                    now=lambda: 1_000_000.0,
+                    err=lambda m: None,
+                )
+                n.tick()  # baseline
+                with open(log, "a") as f:
+                    f.write("2026-09-01 16:00:00  CYCLE COMPLETE Kubo (2016)\n")
+                n.tick()
+        self.assertEqual(slack.sent, [])
+        self.assertEqual(email.sent, [])
+        self.assertEqual(n.pending, [])

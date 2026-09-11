@@ -20,6 +20,7 @@
     --bad: #ff5c5c;
     --bad-bd: #4a1f1f;
     --field: #13161c;
+    --hot-ink: #0b0c0f;
   }
   :root[data-theme="light"] {
     color-scheme: light;
@@ -33,6 +34,7 @@
     --bad: #c22f2d;
     --bad-bd: #f0c2c1;
     --field: #eef1f6;
+    --hot-ink: #ffffff;
   }
   * { box-sizing: border-box; }
   body {
@@ -102,7 +104,7 @@
     background: var(--hot);
     border: 0;
     border-radius: 8px;
-    color: #0b0c0f;
+    color: var(--hot-ink);
     font: 650 13px/1 var(--font);
     letter-spacing: 0.02em;
     cursor: pointer;
@@ -153,13 +155,20 @@
 </div>
 <script nonce="__NONCE__">
   (function () {
-    // Theme before paint, same rule and same key as the dashboard.
+    // Theme before paint, same rule and same key as web/theme.js: an
+    // explicit choice wins, otherwise the OS setting -- a system-light
+    // operator must not get a dark sign-in page in front of a light dashboard.
+    var t = null;
     try {
-      var t = localStorage.getItem("smeltr.theme");
-      if (t === "light" || t === "dark") {
-        document.documentElement.setAttribute("data-theme", t);
-      }
+      t = localStorage.getItem("smeltr.theme");
     } catch (e) {}
+    if (t !== "light" && t !== "dark") {
+      t =
+        window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches
+          ? "light"
+          : "dark";
+    }
+    document.documentElement.setAttribute("data-theme", t);
 
     var f = document.getElementById("f");
     var go = document.getElementById("go");
