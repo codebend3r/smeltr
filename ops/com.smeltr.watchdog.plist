@@ -10,6 +10,14 @@
   </array>
   <key>StartInterval</key><integer>60</integer>
   <key>RunAtLoad</key><true/>
+  <!-- launchd's PATH has no Homebrew. A driver this watchdog restarts inherits
+       it, and on 2026-09-11 that driver looped on "nohup: HandBrakeCLI: No such
+       file or directory" for six minutes while the dashboard showed an encode
+       that never started. HandBrakeCLI and ffprobe are Homebrew's. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
   <!-- NOT on the staging drive: launchd cannot create a log on a volume that
        may be unmounted, and fails the job with EX_CONFIG (78) before it runs. -->
   <key>StandardOutPath</key><string>/Users/snowball/Library/Logs/smeltr/watchdog.out.log</string>

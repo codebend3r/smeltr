@@ -20,6 +20,13 @@
 #   touch "$X9/.watchdog-off"  disables it without unloading anything.
 set -uo pipefail
 
+# The driver this script relaunches must find HandBrakeCLI and ffprobe, which
+# are Homebrew's. launchd starts us with /usr/bin:/bin:/usr/sbin:/sbin, and a
+# driver born from that PATH fails every start with "HandBrakeCLI: No such
+# file or directory" while the dashboard shows a title as next up forever
+# (2026-09-11). The plist sets PATH too; this line holds whoever launches us.
+case ":$PATH:" in *:/opt/homebrew/bin:*) ;; *) PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" ;; esac
+export PATH
 
 X9="${SMELTR_X9:-/Volumes/Crucial X9/4K Movies}"
 SMELTR="${SMELTR_BIN:-$HOME/Developer/git/smeltr/smeltr}"
