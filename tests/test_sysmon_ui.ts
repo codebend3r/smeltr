@@ -4,8 +4,8 @@
  *   bun tests/test_sysmon_ui.js
  *
  * Pins:
- *   - the zoom stops: ends (15 min .. 7 d), strict monotonicity, snapping
- *     (every slider position is one of the twelve named windows), and the
+ *   - the zoom stops: ends (1 min .. 7 d), strict monotonicity, snapping
+ *     (every slider position is one of the thirteen named windows), and the
  *     clamp on an out-of-range position
  *   - decimation: a one-second spike must survive into a bucket's MAX
  *     (averaging alone would erase it at 7 d zoom)
@@ -82,9 +82,10 @@ function eq(a, b, msg?) {
 
 sect("zoom stops");
 const STOPS = get.MON_STOPS;
-eq(get.monSpan(0), 900, "slider 0 is exactly 15 min");
+eq(get.monSpan(0), 60, "slider 0 is exactly 1 min");
+eq(get.monSpan(1), 900, "slider 1 is exactly 15 min");
 eq(get.monSpan(STOPS.length - 1), 604800, "the last stop is exactly 7 d");
-eq(get.monSpan(7), 86400, "the default stop (7) is exactly 24 h");
+eq(get.monSpan(8), 86400, "the default stop (8) is exactly 24 h");
 let mono = true;
 for (let p = 1; p < STOPS.length; p++) if (get.monSpan(p) <= get.monSpan(p - 1)) mono = false;
 ok(mono, "span is strictly increasing across the slider");
@@ -96,9 +97,10 @@ ok(
   STOPS.every((v) => v <= 604800),
   "no stop reaches past the 7 d ring",
 );
-eq(get.monSpan(-3), 900, "a position below the track clamps to 15 min");
+eq(get.monSpan(-3), 60, "a position below the track clamps to 1 min");
 eq(get.monSpan(999), 604800, "a position past the track clamps to 7 d");
-eq(get.monSpan(NaN), 900, "a NaN position clamps rather than yielding undefined");
+eq(get.monSpan(NaN), 60, "a NaN position clamps rather than yielding undefined");
+eq(get.spanLabel(60), "1 min", "1 min label");
 eq(get.spanLabel(900), "15 min", "15 min label");
 eq(get.spanLabel(1800), "30 min", "30 min label");
 eq(get.spanLabel(3600), "1 h", "1 h label");
@@ -128,6 +130,7 @@ STOPS.forEach((v) => {
 });
 eq(get.monTicks(604800), 86400, "the 7 d window ticks once per day");
 eq(get.monTicks(900), 300, "the 15 min window ticks every 5 min");
+eq(get.monTicks(60), 10, "the 1 min window ticks every 10 s");
 
 sect("decimation");
 const SLOTS = 604800;

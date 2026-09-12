@@ -1192,7 +1192,7 @@ dotted. Neither was visible in a number.
 
 - **`tests/test_sysmon_render.ts`** (in `bun run test` and CI) hands the real
   `drawMon()` a RECORDING 2D context and asserts the ops it emits: every one
-  of the twelve stops draws a line across the full plot width, the wash
+  of the thirteen stops draws a line across the full plot width, the wash
   appears if and only if the window overhangs the ring and is that overhang
   to the pixel, the no-data stretch rides 0 *and* carries its wash, a gap
   inside the history still breaks the path, gridlines stay at 3–16 per
@@ -1205,7 +1205,7 @@ dotted. Neither was visible in a number.
   touched — drives the Chrome already installed on this Mac over the
   DevTools Protocol with bun's built-in `WebSocket` (no package, no
   Playwright, nothing installed; it SKIPS LOUDLY with no Chrome), and
-  screenshots all twelve stops in both themes, then montages them into one
+  screenshots all thirteen stops in both themes, then montages them into one
   contact sheet per theme. `--depth-seconds N` seeds a PARTIAL ring, which
   is how the wash and the 0 baseline get on screen. It reads the stop count
   off the slider and the label off `#monSpanLbl` rather than page globals,
@@ -1657,10 +1657,14 @@ second request.
 - **The resource monitor (2026-08-25)** is a "This Mac" card between the live
   card and the tabs: three canvas charts (Utilization %, Network MiB/s, Disk
   I/O · all volumes MiB/s), 1 Hz samples, **7 d of history**, and a zoom
-  slider that **snaps to twelve named stops** — 15 min · 30 min · 1 h · 2 h ·
-  4 h · 6 h · 12 h · 24 h · 2 d · 3 d · 5 d · 7 d (widened 2026-08-29 from a
-  continuous log curve over 1 h–24 h, which handed out windows like "3.4 h"
-  that two readings of the chart could not be compared across).
+  slider that **snaps to thirteen named stops** — 1 min · 15 min · 30 min ·
+  1 h · 2 h · 4 h · 6 h · 12 h · 24 h · 2 d · 3 d · 5 d · 7 d (widened
+  2026-08-29 from a continuous log curve over 1 h–24 h, which handed out
+  windows like "3.4 h" that two readings of the chart could not be compared
+  across; the 1 min stop was prepended 2026-09-11). The zoom choice persists
+  as a window in SECONDS under `smeltr.monwin`, so adding a stop cannot
+  re-key it the way the old `smeltr.monstop` INDEX did; that key and the
+  older `smeltr.monspan` log position are migrated once and removed.
   `dashboard/sysmon.py` (imported ONLY by `server.py` — the decision path
   never loads it) samples on a daemon thread and persists to `sysmon.ring`
   beside the ledger: 16-byte magic header + 604800 slots of `<I7f` keyed
@@ -1713,6 +1717,12 @@ second request.
     one-bucket-per-column drew a fully-sampled 1 Hz series as a DOTTED line —
     the samples were not missing, the screen simply had more resolution than
     the data.
+  - The line is a **monotone cubic only at the 1 min and 15 min stops**
+    (`MON_CURVE_MAX`, 900 s), straight everywhere else. A monotone spline
+    cannot overshoot its own control points, so it never draws a peak the
+    data does not contain; at the wide stops a bucket is already an
+    aggregate and curving between aggregates would be a second smoothing on
+    top of the mean. Sub-minute gridlines carry seconds in their labels.
   - Throughput axes have a hard 1 MiB/s floor (background chatter must not
     autoscale into a mountain range) and sub-MiB values print as KiB/s, so a
     live trickle never rounds to 0.
