@@ -866,6 +866,24 @@ def _mark_ready(rows: list, live: list, paused: bool, low_space: bool = False) -
             pick["ready"] = True
 
 
+def _tool_env() -> dict:
+    """The environment every pipeline spawn gets: PATH with Homebrew first.
+
+    HandBrakeCLI and ffprobe are Homebrew's. The server inherits whatever PATH
+    its launcher had -- a terminal has /opt/homebrew/bin, launchd and some app
+    hosts do not -- and a driver or HandBrake spawned from a bare PATH dies
+    with "No such file or directory" while the dashboard shows the title as
+    next up (2026-09-11: six minutes of that after a play click). Same list
+    the launchd plists carry.
+    """
+    env = dict(os.environ)
+    parts = [p for p in env.get("PATH", "").split(":") if p]
+    if "/opt/homebrew/bin" not in parts:
+        parts.insert(0, "/opt/homebrew/bin")
+    env["PATH"] = ":".join(parts)
+    return env
+
+
 def _slug_of(title: str) -> str:
     """Byte-identical to .autopilot.sh slug_of(): lowercase, alnum only, 20."""
     return re.sub(r"[^a-z0-9]", "", title.lower())[:20]
@@ -1051,6 +1069,7 @@ def _parity_gate(
                     str(crf),
                     encoder,
                 ],
+                env=_tool_env(),
                 stdout=wf,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
@@ -2189,6 +2208,7 @@ class Handler(BaseHTTPRequestHandler):
                         "ac3",
                         "--all-subtitles",
                     ],
+                    env=_tool_env(),
                     stdout=fh,
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
@@ -2367,6 +2387,7 @@ class Handler(BaseHTTPRequestHandler):
             subprocess.Popen(
                 ["./.autopilot.sh"],
                 cwd=core.X9,
+                env=_tool_env(),
                 stdout=logf,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
