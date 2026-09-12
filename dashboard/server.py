@@ -786,6 +786,12 @@ def build_state() -> dict:
             "page_rev": PAGE_REV,
             "encoder_default": core.DEFAULT_ENCODER,
             "quality_default": core.DEFAULT_QUALITY,
+            # The staging drive's capacity, for the live card's free-space
+            # meter (operator 2026-09-11). Stat'd here, not in core: the
+            # meter is presentation, and the pipeline decides on free bytes
+            # alone. None when the drive cannot be stat'd -- the meter then
+            # hides rather than draw a fill against a made-up total.
+            "x9_total_bytes": _x9_total_bytes(),
             # The full per-encoder menu (x265 CRF + VideoToolbox CQ). The
             # legacy crf_choices key above stays the x265 half, so a page
             # cached from before the hybrid encoder still renders.
@@ -860,6 +866,15 @@ def _set_note(msg, kind="warn") -> None:
         _encode_note["msg"], _encode_note["kind"] = msg, kind
         _encode_note["at"] = time.monotonic()
         _state_cache["payload"] = None
+
+
+def _x9_total_bytes() -> "int | None":
+    """Capacity of the staging drive, or None when it cannot be stat'd."""
+    try:
+        st = os.statvfs(core.X9)
+    except OSError:
+        return None
+    return st.f_blocks * st.f_frsize
 
 
 def _mark_ready(rows: list, live: list, paused: bool, low_space: bool = False) -> None:
@@ -2453,16 +2468,9 @@ class Handler(BaseHTTPRequestHandler):
             core.set_paused(on)
         except OSError as e:
             return "could not write the pause flag: %s" % e
-        # Through the note banner, because the moment needs stating at the
-        # TOP of the page, and resume's 5-minute pickup latency is otherwise
-        # stated only while it does not yet apply and withdrawn when it does.
-        _set_note(
-            "Paused — the current encode (if any) still finishes, "
-            "verifies and syncs; nothing new starts until resumed."
-            if on
-            else "Resumed — the driver picks up the next title within 5 minutes.",
-            kind="ok",
-        )
+        # No note banner: the big toggle and the idle card already say
+        # paused/resumed where the encode is, and a second copy at the top
+        # of the page was judged noise (operator 2026-09-11).
         return None
 
     def _queue_rows(self) -> list[dict]:

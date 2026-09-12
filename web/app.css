@@ -809,6 +809,11 @@ body:not(.booted) #liveWrap .card {
   color: var(--hot-soft);
   white-space: nowrap;
 }
+/* The paused ghost card's dash: an empty bar has no heat, so its figure
+   takes the quiet ink rather than the pour's orange. */
+.pctbig.dim {
+  color: var(--ink-3);
+}
 /* Size projection -- the whole point of the job, in one strip. The scale is
    0-100% OF THE SOURCE, so further left is always better, and the shaded zone
    is the 10-70% target band. It renders before a projection exists: an empty
@@ -987,7 +992,9 @@ body:not(.booted) #liveWrap .card {
   margin-top: 12px;
 }
 .kv div span {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-size: 11px;
   color: var(--ink-3);
   text-transform: uppercase;
@@ -996,6 +1003,70 @@ body:not(.booted) #liveWrap .card {
 .kv div b {
   font-weight: 580;
   font-size: 14px;
+}
+/* The symbol sheet in index.html: out of flow, never painted itself. */
+.glyphs {
+  position: absolute;
+}
+/* Line glyphs before each label (operator 2026-09-11, option 6 of six):
+   currentColor strokes, so the cell's colour class paints the glyph. The
+   colours are the page's own tokens, so both themes already carry them. */
+.ic {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.kv .c-cool .ic {
+  color: var(--cool);
+}
+.kv .c-hot .ic {
+  color: var(--hot);
+}
+.kv .c-good .ic {
+  color: var(--good);
+}
+.kv .c-ink .ic {
+  color: var(--ink-2);
+}
+.kv .c-warn .ic,
+.kv .c-warn b {
+  color: var(--warn);
+}
+/* The free-space meter under the "Free on disk" figure: free out of the
+   drive's capacity, the tick at the driver's floor. Thin and unlit -- it
+   sits under the pour and must never read as a second progress bar. */
+.kv .disk b {
+  display: block;
+}
+.meter {
+  position: relative;
+  height: 5px;
+  margin-top: 5px;
+  border-radius: 99px;
+  background: var(--bar-bg);
+  box-shadow: inset 0 1px 1px var(--bar-inset);
+}
+.meter > i {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: var(--good);
+  transition: width 0.9s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.meter > i.under {
+  background: var(--warn);
+}
+.meter > u {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 1.5px;
+  background: var(--warn);
 }
 .verdict {
   margin-top: 12px;
@@ -1631,52 +1702,9 @@ tr.pin-end td {
   color: var(--good);
   border-color: var(--good-bd);
 }
-/* Pause-after-current: a switch, because it IS two-state ("let it run" /
-   "stop after this one"), unlike the one-shot row actions. Armed reads in
-   the warn amber -- a scheduled interruption, not a defect. Tokens only:
-   both themes inherit it. */
-/* .pauserow is the BUTTON now (pill + sentence inside it), so it carries the
-   button reset. inline-flex, not flex: the whole thing is the tap target, so
-   it must hug its content instead of turning the card's full width into a
-   pipeline control. touch-action:manipulation drops the double-tap-zoom
-   delay; the tap-highlight is suppressed because the .on styling is the
-   feedback. */
-.pauserow {
-  margin-top: 14px;
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0;
-  border: 0;
-  background: none;
-  font: inherit;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-  touch-action: manipulation;
-  -webkit-user-select: none;
-  user-select: none;
-  -webkit-tap-highlight-color: transparent;
-}
-.pauserow:hover .swt {
-  border-color: var(--warn-bd);
-}
-.pauserow:focus-visible {
-  outline: 2px solid var(--warn);
-  outline-offset: 3px;
-  border-radius: 6px;
-}
-/* A finger is not a mouse pointer: give it a full-size target even though the
-   pill is 20px tall. */
-@media (pointer: coarse) {
-  .pauserow {
-    min-height: 44px;
-  }
-}
-
 /* The BIG play/pause toggle -- the one control that must be findable from
-   across the room, so it takes the full card width (unlike .pauserow, which
-   deliberately hugs). Same native-<button> rules. Colours are tokens only:
+   across the room, so it takes the full card width. Same native-<button>
+   rules. Colours are tokens only:
    .play leans on the ready-row greens, .pause on the encoding ambers, so
    both themes already carry every colour used here. */
 .bigplay {
@@ -1731,7 +1759,8 @@ tr.pin-end td {
   border-bottom: 16px solid transparent;
 }
 .bigplay.pause .bp-icon {
-  width: 26px;
+  box-sizing: content-box;
+  width: 8px;
   height: 30px;
   border-left: 9px solid var(--warn);
   border-right: 9px solid var(--warn);
@@ -1823,8 +1852,13 @@ tr.pin-end td {
   border-top: 9px solid transparent;
   border-bottom: 9px solid transparent;
 }
+/* Two 5px bars with a 4px gap. The gap is the CONTENT width, stated as
+   content-box so the glyph cannot widen if the global border-box reset ever
+   stops reaching it (the preview page lacked that reset and drew a 14px gap,
+   operator 2026-09-11). */
 .pp.pause .pp-icon {
-  width: 14px;
+  box-sizing: content-box;
+  width: 4px;
   height: 16px;
   border-left: 5px solid var(--warn);
   border-right: 5px solid var(--warn);
@@ -1848,48 +1882,6 @@ tr.pin-end td {
     width: 44px;
     height: 44px;
   }
-}
-.swt {
-  position: relative;
-  display: block;
-  width: 36px;
-  height: 20px;
-  flex: 0 0 auto;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: none;
-  transition:
-    border-color 0.18s ease,
-    background-color 0.18s ease;
-}
-.swt i {
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--ink-3);
-  transition:
-    transform 0.18s ease,
-    background-color 0.18s ease;
-}
-.swt.on {
-  border-color: var(--warn-bd);
-  background: var(--warn-bd);
-}
-.swt.on i {
-  transform: translateX(16px);
-  background: var(--warn);
-}
-.swt-label {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  letter-spacing: 0.02em;
-  color: var(--ink-3);
-}
-.swt-label.on {
-  color: var(--warn);
 }
 /* The ledger's finished stamp: date, then the time set apart so the date
    stays the thing you scan down. nowrap keeps the pair on one line. */
