@@ -69,6 +69,19 @@
     return n;
   }
 
+  /* A line glyph from the symbol sheet in index.html. Built with the SVG
+   namespace, never innerHTML; the id is one of ours, never server data. */
+  function icon(id) {
+    var NS = "http://www.w3.org/2000/svg";
+    var svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("class", "ic");
+    svg.setAttribute("aria-hidden", "true");
+    var u = document.createElementNS(NS, "use");
+    u.setAttribute("href", "#" + id);
+    svg.appendChild(u);
+    return svg;
+  }
+
   function statCard(k, v, s, cls) {
     var d = el("div", "stat");
     d.appendChild(el("div", "k", k));
@@ -468,14 +481,68 @@
     return top;
   }
 
+  /* [label, value, glyph, colour]. The glyph and colour are option 6 of six
+   previews (operator 2026-09-11): each icon takes a page colour -- the clock
+   cool, the gauge hot, the play green, the two byte/number fields plain. */
   function liveFields(e) {
     return [
-      ["ETA", dur(e.eta_s)],
-      ["Speed", e.avg_fps == null ? "—" : e.avg_fps.toFixed(1) + " fps avg"],
-      ["Written", gib(e.output_bytes)],
-      ["Started", e.started_text ? startedText(e.started_text) : "—"],
-      ["PID", String(e.pid)],
+      ["ETA", dur(e.eta_s), "i-clock", "c-cool"],
+      ["Speed", e.avg_fps == null ? "—" : e.avg_fps.toFixed(1) + " fps avg", "i-gauge", "c-hot"],
+      ["Written", gib(e.output_bytes), "i-disk", "c-ink"],
+      ["Started", e.started_text ? startedText(e.started_text) : "—", "i-play", "c-good"],
+      ["PID", e.pid == null ? "—" : String(e.pid), "i-hash", "c-ink"],
     ];
+  }
+  /* One cell of the field row: glyph + label over the value. */
+  function kvCell(label, glyph, colour, value) {
+    var d = el("div", colour);
+    var sp = el("span");
+    sp.appendChild(icon(glyph));
+    sp.appendChild(document.createTextNode(label));
+    d.appendChild(sp);
+    var b = el("b", null, value);
+    d.appendChild(b);
+    return { node: d, b: b };
+  }
+  /* The sixth field: free space on the staging drive, with a meter under the
+   figure (option 4's cell, operator 2026-09-11). Green fill is free out of
+   the drive's capacity, the amber tick is the driver's floor; under the
+   floor the glyph and the figure go amber, the same fact the low-space
+   alert states in words. The figure and the fill update in place every
+   frame -- this is a byte count, so it never rides the card's rebuild key.
+   No capacity means no meter: a fill against a made-up total is a lie. */
+  function diskField() {
+    var c = kvCell("Free on disk", "i-drive", "c-good", "—");
+    c.node.classList.add("disk");
+    var m = el("div", "meter");
+    var fill = el("i");
+    var tick = el("u");
+    m.appendChild(fill);
+    m.appendChild(tick);
+    m.hidden = true;
+    c.node.appendChild(m);
+    return { node: c.node, b: c.b, meter: m, fill: fill, tick: tick };
+  }
+  function updateDisk(d, s, total) {
+    var free = s.x9_free_bytes,
+      floor = s.low_space_floor_bytes;
+    d.b.textContent = free == null ? "—" : gib(free);
+    var under = free != null && floor != null && free < floor;
+    d.node.classList.toggle("c-warn", under);
+    d.node.classList.toggle("c-good", !under);
+    if (free == null || total == null || total <= 0) {
+      d.meter.hidden = true;
+      return;
+    }
+    d.meter.hidden = false;
+    d.fill.style.width = Math.max(0, Math.min(100, (free / total) * 100)) + "%";
+    d.fill.className = under ? "under" : "";
+    if (floor != null) {
+      d.tick.hidden = false;
+      d.tick.style.left = Math.max(0, Math.min(100, (floor / total) * 100)) + "%";
+      d.tick.title = "floor " + gib(floor) + " — nothing new starts under it";
+    } else d.tick.hidden = true;
+    d.meter.title = gib(free) + " free of " + gib(total);
   }
 
   /* The strip's colour and headline come from `e.verdict` -- the SAME verdict
@@ -770,44 +837,6 @@
     })();
   }
 
-  /* ONE NATIVE <button> IS THE WHOLE CONTROL -- the pill and the sentence both
-   live inside it. Two separate failures put it here and both are worth not
-   reintroducing:
-
-   1. Only the 36x20 pill was clickable. The label beside it is a SENTENCE
-      ("will pause after this encode — <title> still finishes, syncs, and
-      replaces its 90.35 GiB library original") and a person reads it and
-      clicks it. Hit-testing the real page, a click on the words did nothing.
-   2. Moving the handler onto a wrapping <div> fixed the mouse and NOT the
-      iPad, which is where this is actually watched. iOS Safari only
-      synthesises a click from a tap on natively interactive elements (or
-      ones carrying cursor:pointer), so a listener on a plain div is a
-      coin-toss across platforms.
-
-   A <button> takes the event from a mouse, a finger, a pen and the keyboard
-   everywhere, with no touch/pointer shims, no synthetic-click plumbing and
-   no double-fire. It is also the accessible control for free: role="switch"
-   + aria-checked, with the sentence as its name. The pill is decorative
-   markup inside it (aria-hidden), never a second focus stop. */
-  function pauseSwitch(on, label) {
-    var b = el("button", "pauserow" + (on ? " on" : ""));
-    b.type = "button";
-    b.setAttribute("role", "switch");
-    b.setAttribute("aria-checked", on ? "true" : "false");
-    b.title = on
-      ? "Resume — let the driver start the next encode (it rechecks within 5 minutes)"
-      : "Finish, verify and sync this encode as normal, then start nothing new — frees the CPU/GPU";
-    var pill = el("span", "swt" + (on ? " on" : ""));
-    pill.setAttribute("aria-hidden", "true");
-    pill.appendChild(el("i"));
-    b.appendChild(pill);
-    b.appendChild(el("span", "swt-label" + (on ? " on" : ""), label));
-    b.addEventListener("click", function () {
-      pauseSend(!on);
-    });
-    return b;
-  }
-
   /* ---- the big play/pause toggle ------------------------------------------
    One oversized control at the top of the live section, because the states
    it covers were previously spread across three places (the pause switch,
@@ -904,7 +933,87 @@
     return b;
   }
 
-  function renderLive(live, s, driverAlive, nextTitle) {
+  /* The paused ghost card (operator 2026-09-11, option 4 of six previews):
+   while paused with a live driver and nothing encoding, the slot draws the
+   RUNNING card's exact layout -- title, chips, the circle at the head of the
+   bar, the projection strip, the field row -- with every value at a dash
+   and the circle in its play state. Resuming then changes nothing on the
+   card but the circle and the numbers filling in. The big full-width card
+   is kept only for the states that are not a pause: driver dead (start),
+   low space, and the two sensor-failure pauses that must say themselves
+   first. The chips mirror liveChips() field for field: the next pick's
+   name, the quality it WILL start at (same derivation as the queue's start
+   button), and the two trailing chips liveChips() always draws. */
+  function ghostCard(paused, driverAlive, nextRow, defs) {
+    var c = el("div", "card live");
+    var top = el("div", "live-top");
+    var name = String(nextRow.folder || nextRow.title)
+      .split("/")
+      .pop();
+    var t = el("div", "live-title", name);
+    if (name !== nextRow.title) t.title = nextRow.title;
+    top.appendChild(t);
+    /* One state chip, the same three states the circle draws. */
+    if (paused) {
+      var pchip = el("span", "chip warn", "PAUSED");
+      pchip.title = "Nothing starts until you press play. This is the next pick.";
+      top.appendChild(pchip);
+    } else if (!driverAlive) {
+      var dchip = el("span", "chip warn", "NO DRIVER");
+      dchip.title =
+        "No autopilot process exists. Press play to launch it; check " +
+        ".autopilot.log for a HALTED: line first.";
+      top.appendChild(dchip);
+    } else {
+      var nchip = el("span", "chip", "NEXT UP");
+      nchip.title = "The driver's next pick. It starts on the driver's next pass.";
+      top.appendChild(nchip);
+    }
+    var enc = nextRow.enc
+      ? nextRow.enc
+      : nextRow.crf_set
+        ? "x265_10bit"
+        : defs.encoder_default || "x265_10bit";
+    var q = nextRow.enc
+      ? nextRow.enc_q
+      : nextRow.crf_set
+        ? nextRow.crf
+        : defs.quality_default != null
+          ? defs.quality_default
+          : nextRow.crf;
+    if (q != null) top.appendChild(el("span", "chip", qLabel(enc) + " " + q));
+    top.appendChild(el("span", "chip", "decoder errors not yet reported"));
+    top.appendChild(el("span", "chip", "UNKNOWN"));
+    c.appendChild(top);
+    var row = el("div", "barrow"),
+      bar = el("div", "bar");
+    row.appendChild(circleToggle(paused, driverAlive, [], nextRow.title));
+    bar.setAttribute("role", "progressbar");
+    bar.setAttribute("aria-label", "Encode progress");
+    bar.setAttribute("aria-valuemin", "0");
+    bar.setAttribute("aria-valuemax", "100");
+    bar.appendChild(el("i"));
+    row.appendChild(bar);
+    row.appendChild(el("div", "pctbig num dim", "—"));
+    c.appendChild(row);
+    var pj = projBlock();
+    updateProj(pj.refs, {
+      verdict: "unknown",
+      source_bytes: nextRow.bytes == null ? null : nextRow.bytes,
+    });
+    pj.refs.detail.textContent = "The projection starts once the encode does.";
+    c.appendChild(pj.node);
+    var kv = el("div", "kv");
+    liveFields({}).forEach(function (p) {
+      kv.appendChild(kvCell(p[0], p[2], p[3], "—").node);
+    });
+    var disk = diskField();
+    kv.appendChild(disk.node);
+    c.appendChild(kv);
+    return { node: c, disk: disk };
+  }
+
+  function renderLive(live, s, driverAlive, nextTitle, nextRow, defs) {
     /* paused rides in the summary -- the ONE carrier, the same field report.py
      banners -- never a second top-level copy. It and driverAlive are in the
      sig: the pause control and the idle card's claims are built once per
@@ -927,6 +1036,8 @@
       (driverAlive ? 1 : 0) +
       "|n:" +
       (nextTitle || "") +
+      "|nq:" +
+      (nextRow ? [nextRow.enc, nextRow.enc_q, nextRow.crf_set ? nextRow.crf : ""].join(",") : "") +
       "|w:" +
       (driverWant !== null ? 1 : 0) +
       "|ls:" +
@@ -935,7 +1046,19 @@
       host.replaceChildren();
       liveRefs = {};
       host.dataset.sig = sig;
-      if (!live.length) {
+      /* THE GHOST IS THE IDLE CARD (operator 2026-09-11, twice): whenever
+       nothing encodes and there is a pick, the slot draws the running card's
+       shape -- paused, between encodes, or with no driver -- and only the
+       circle and the state chip say which. The big card and the prose idle
+       card survive for the states that have no pick to be the card OF, or
+       where a sensor fact must speak first: drive unmounted, low space,
+       an empty queue. */
+      if (s.x9_online !== false && !s.low_space && nextRow && !live.length) {
+        var g = ghostCard(paused, driverAlive, nextRow, defs || {});
+        makeCollapsible(g.node, "live-idle");
+        host.appendChild(g.node);
+        liveRefs.__ghost = g;
+      } else if (!live.length) {
         host.appendChild(bigToggle(paused, driverAlive, live, nextTitle, s.low_space === true));
         var c = el("div", "card");
         if (paused) {
@@ -964,19 +1087,11 @@
               ),
             );
           } else {
+            /* Paused with nothing pickable: the ghost card above needs a
+             next pick to be the card OF, so this is the one paused state
+             the big toggle still fronts. */
             c.appendChild(el("div", "live-title", "Paused — nothing will start"));
-            c.appendChild(
-              el(
-                "div",
-                "verdict",
-                "The driver is idling by request: an in-flight sync still " +
-                  "finishes and stages its replacement, but after that nothing " +
-                  "new starts or is pulled until you resume. The CPU is yours. " +
-                  "The driver rechecks every 5 minutes.",
-              ),
-            );
           }
-          c.appendChild(pauseSwitch(true, "paused — nothing starts until resumed"));
           makeCollapsible(c, "live-idle");
           host.appendChild(c);
           return;
@@ -1035,13 +1150,12 @@
         var kv = el("div", "kv");
         refs.kv = {};
         liveFields(e).forEach(function (p) {
-          var d = el("div");
-          d.appendChild(el("span", null, p[0]));
-          var b = el("b", null, "—");
-          refs.kv[p[0]] = b;
-          d.appendChild(b);
-          kv.appendChild(d);
+          var cell = kvCell(p[0], p[2], p[3], "—");
+          refs.kv[p[0]] = cell.b;
+          kv.appendChild(cell.node);
         });
+        refs.disk = diskField();
+        kv.appendChild(refs.disk.node);
         c.appendChild(kv);
         refs.verdict = el("div", "verdict", "");
         c.appendChild(refs.verdict);
@@ -1084,8 +1198,11 @@
         var b = refs.kv[p[0]];
         if (b) b.textContent = p[1];
       });
+      updateDisk(refs.disk, s, defs && defs.x9_total_bytes);
       writeVerdict(refs, e.verdict_note, !!PROJ_LOUD[e.verdict]);
     });
+    if (!live.length && liveRefs.__ghost)
+      updateDisk(liveRefs.__ghost.disk, s, defs && defs.x9_total_bytes);
   }
 
   /* The verdict note behind a caution icon.
@@ -2476,7 +2593,11 @@
     var nextUp = (s.queue || []).filter(function (r) {
       return r.next_up;
     })[0];
-    renderLive(s.live, s.summary, s.driver_alive === true, nextUp ? nextUp.title : null);
+    renderLive(s.live, s.summary, s.driver_alive === true, nextUp ? nextUp.title : null, nextUp, {
+      encoder_default: s.encoder_default,
+      quality_default: s.quality_default,
+      x9_total_bytes: s.x9_total_bytes,
+    });
     /* The key must cover EVERYTHING the pane's STRUCTURE depends on — and
      nothing more. Transfers are in the LEDGER key only: History is the one
      tab that draws a push (2026-09-01 — the queue's synthetic transferring

@@ -1,6 +1,11 @@
-/* The pause switch, run against the real functions in web/app.js.
+/* The pause control, run against the real functions in web/app.js.
  *
- *   bun tests/test_pause_toggle.js
+ *   bun tests/test_pause_toggle.ts
+ *
+ * The control is the play/pause circle at the head of the live card's bar
+ * (and the big toggle while nothing encodes); the old pill-and-sentence
+ * switch row is gone (operator 2026-09-11). Every click path below drives
+ * the circle, which goes through the same pauseSend.
  *
  * The switch used to disable itself for the whole POST round-trip. That
  * round-trip is NOT short: /api/pause answers with a freshly built state
@@ -118,13 +123,13 @@ function harness() {
     "function paint(s){ drawn=pauseState(s.summary); }",
     fn("pauseState"),
     fn("pauseSend"),
-    fn("pauseSwitch"),
     /* The circle at the head of the live card's bar shares pauseSend with the
        switch; driverWant/driverStartSend are the big toggle's start half. */
     "var driverWant=null; function driverStartSend(){ driverWant=true; }",
     fn("toggleIntent"),
     fn("circleToggle"),
-    "return {pauseState,pauseSend,pauseSwitch,toggleIntent,circleToggle," +
+    "return {pauseState,pauseSend,toggleIntent,circleToggle," +
+      'sw:function(on){return circleToggle(on,true,[{title:"x"}],null);},' +
       "setState:function(p){last.state={summary:{paused:p}};}," +
       "drawn:function(){return drawn;}," +
       "server:function(){return last.state.summary.paused;}};",
@@ -160,77 +165,11 @@ const tick = () => new Promise((r) => setImmediate(r));
     "an unsettled click would wait for SMB before it showed",
   );
 
-  sect("the control is ONE native button -- mouse, finger and keyboard");
-  {
-    const { mod, calls } = harness();
-    const row = mod.pauseSwitch(false, "pause after this encode");
-    const pill = row.children[0],
-      lbl = row.children[1];
-    check(
-      "the control itself is a <button>",
-      row.tagName === "button",
-      "a div only gets a tap-synthesised click on SOME platforms -- iOS Safari " +
-        "was the one where it did not, which is where this is watched",
-    );
-    check("it is typed, so it never submits anything", row.type === "button");
-    check(
-      "it is the switch a screen reader drives",
-      row.getAttribute("role") === "switch" && row.getAttribute("aria-checked") === "false",
-    );
-    check(
-      "the sentence is INSIDE it, so aiming at the words works",
-      lbl.className.indexOf("swt-label") >= 0 && lbl.textContent.length > 0,
-      "only the 36x20 pill used to be clickable",
-    );
-    check(
-      "the pill is decoration inside it, not a second control",
-      pill.tagName === "span" &&
-        pill.getAttribute("aria-hidden") === "true" &&
-        pill.handlers.length === 0,
-    );
-    check("exactly one handler -- two would fire twice and toggle back", row.handlers.length === 1);
-    row.click();
-    check(
-      "one write, from a click anywhere on it",
-      calls.length === 1 && calls[0].payload.paused === true,
-    );
-  }
-
-  sect("and its CSS makes it a real target on a touch screen");
-  {
-    check(
-      "it hugs pill+sentence rather than the whole card width",
-      /\.pauserow\s*\{[^}]*display:\s*inline-flex/.test(css),
-      "a full-width target would toggle the pipeline on a stray tap",
-    );
-    check(
-      "it carries the button reset now that it IS the button",
-      /\.pauserow\s*\{[^}]*border:\s*0/.test(css) &&
-        /\.pauserow\s*\{[^}]*background:\s*none/.test(css),
-    );
-    check("it says it is clickable", /\.pauserow\s*\{[^}]*cursor:\s*pointer/.test(css));
-    check(
-      "taps are not delayed by double-tap zoom",
-      /\.pauserow\s*\{[^}]*touch-action:\s*manipulation/.test(css),
-    );
-    check(
-      "a finger gets a 44px target",
-      /@media \(pointer:\s*coarse\)\s*\{\s*\.pauserow\s*\{\s*min-height:\s*44px;?\s*\}/.test(css),
-      "the pill is only 20px tall",
-    );
-    check("focus is still visible on the button", /\.pauserow:focus-visible\s*\{/.test(css));
-    check(
-      "the pill no longer claims to be interactive itself",
-      !/\.swt\s*\{[^}]*cursor:\s*pointer/.test(css) && !/\.swt:focus-visible/.test(css),
-    );
-  }
-
   sect("a click is never swallowed");
   {
     const { mod, calls } = harness();
-    const row = mod.pauseSwitch(false, "pause after this encode");
-    const sw = row.children[0];
-    check("the switch does not disable itself", sw.disabled === false);
+    const row = mod.sw(false);
+    check("the control does not disable itself", row.disabled === false);
     check("clicking it is accepted", row.click() === true);
     check(
       "one write went out, asking to pause",
@@ -249,10 +188,10 @@ const tick = () => new Promise((r) => setImmediate(r));
   {
     const { mod, calls } = harness();
     /* Click 1: pause. Nothing has settled, so this write is in flight. */
-    mod.pauseSwitch(false, "").click();
+    mod.sw(false).click();
     check("write #1 asks to pause", calls.length === 1 && calls[0].payload.paused === true);
     /* Click 2 lands inside that window -- the case that used to vanish. */
-    mod.pauseSwitch(true, "").click(); /* resume */
+    mod.sw(true).click(); /* resume */
     check(
       "no second round-trip races the first",
       calls.length === 1,
@@ -277,9 +216,9 @@ const tick = () => new Promise((r) => setImmediate(r));
   sect("clicking back to where it started asks for nothing");
   {
     const { mod, calls } = harness();
-    mod.pauseSwitch(false, "").click(); /* pause */
-    mod.pauseSwitch(true, "").click(); /* resume */
-    mod.pauseSwitch(false, "").click(); /* pause again */
+    mod.sw(false).click(); /* pause */
+    mod.sw(true).click(); /* resume */
+    mod.sw(false).click(); /* pause again */
     /* api() assigns the server's fresh payload to last.state before our
        continuation runs, so model that: the write it sent DID commit. */
     mod.setState(true);
@@ -297,7 +236,7 @@ const tick = () => new Promise((r) => setImmediate(r));
   sect("a settled write hands the switch back to the server");
   {
     const { mod, calls } = harness();
-    mod.pauseSwitch(false, "").click();
+    mod.sw(false).click();
     mod.setState(true); /* the server agreed */
     calls[0].settle();
     await tick();
@@ -313,7 +252,7 @@ const tick = () => new Promise((r) => setImmediate(r));
   sect("a write that never took snaps back to the truth");
   {
     const { mod, calls } = harness();
-    mod.pauseSwitch(false, "").click();
+    mod.sw(false).click();
     check("the optimistic flip is showing", mod.drawn() === true);
     /* api() resolves even on failure -- it catches and raises a notice --
        so "failed" reaches here as a settled write the server never honoured. */
@@ -332,7 +271,7 @@ const tick = () => new Promise((r) => setImmediate(r));
     const { mod, calls } = harness();
     for (let i = 0; i < 6; i++) {
       const on = i % 2 === 1;
-      mod.pauseSwitch(on, "").click();
+      mod.sw(on).click();
       calls[calls.length - 1].settle();
       await tick();
       await tick();
@@ -396,9 +335,55 @@ const tick = () => new Promise((r) => setImmediate(r));
     );
     check(
       "the big card draws ONLY when nothing is encoding",
-      /if \(!live\.length\) \{\s*host\.appendChild\(bigToggle\(/.test(src) &&
+      /if \(!live\.length\) \{[\s\S]*?host\.appendChild\(bigToggle\(/.test(src) &&
         (src.match(/host\.appendChild\(bigToggle\(/g) || []).length === 1,
       "there is no bar for the circle to lead on the idle card",
+    );
+    /* The paused ghost card (operator 2026-09-11, option 4 of six): paused
+       with a live driver and a pick draws the RUNNING card's layout, dashes
+       throughout, the circle in play at the head of an empty bar. */
+    check(
+      "any idle state with a pick draws the ghost card, never the big card",
+      /if \(s\.x9_online !== false && !s\.low_space && nextRow && !live\.length\) \{\s*var g = ghostCard\(/.test(
+        src,
+      ) &&
+        /function ghostCard\([^)]*\)\s*\{[\s\S]*?row\.appendChild\(circleToggle\(paused, driverAlive, \[\], nextRow\.title\)\)/.test(
+          src,
+        ),
+      "the ghost card must lead its bar with the same circle the running card uses",
+    );
+    check(
+      "the ghost card is the running card's shape: chips, bar, projection, fields",
+      (function () {
+        const g = fn("ghostCard");
+        return (
+          /"card live"/.test(g) &&
+          /liveFields\(\{\}\)/.test(g) &&
+          /projBlock\(\)/.test(g) &&
+          /"pctbig num dim", "—"/.test(g) &&
+          /"chip warn", "PAUSED"/.test(g)
+        );
+      })(),
+      "a paused slot must look exactly like an encoding one, minus the numbers",
+    );
+    check(
+      "the idle paused card is title-only -- no paragraph, no top banner",
+      !/idling by request/.test(src) &&
+        !/still finishes, verifies and syncs/.test(
+          require("fs").readFileSync(
+            require("path").join(__dirname, "..", "dashboard", "server.py"),
+            "utf8",
+          ),
+        ),
+      "operator 2026-09-11: the sentence under the title and the pause note banner were both noise",
+    );
+    check(
+      "the switch row never draws on the idle card -- the big toggle IS the resume",
+      !/pauseSwitch/.test(src) &&
+        !/nothing starts until resumed/.test(src) &&
+        !/\.pauserow/.test(css),
+      "operator 2026-09-11: the paused pill row shows only while a video is encoding, " +
+        "and the running card carries the circle instead, so renderLive draws it nowhere",
     );
     check(
       "the armed consequence still renders ON the card",
