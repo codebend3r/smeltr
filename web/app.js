@@ -86,7 +86,15 @@
     var d = el("div", "stat");
     d.appendChild(el("div", "k", k));
     d.appendChild(el("div", "v " + (cls || ""), v));
-    if (s) d.appendChild(el("div", "s", s));
+    if (s) {
+      d.appendChild(el("div", "s", s));
+      /* The totals are an inline strip in the page head now, and the strip
+       shows label over value only. The sub-line is the half that keeps the
+       number honest -- "excludes 2 skipped", "library not fully mounted" --
+       so it stays reachable on the element rather than being dropped with
+       the line that used to carry it. */
+      d.title = k + ": " + v + " — " + s;
+    }
     return d;
   }
 
@@ -419,22 +427,6 @@
         " not yet encoded",
     );
     prevStats = seen;
-    /* The collapsed digest. Same values as the cards above, same refusal
-     to print a queue number while a root is offline -- a folded "148
-     queued" read off a partial library is the most dangerous cell on
-     the page whether or not the grid is showing. */
-    var sum = document.getElementById("statsSum");
-    if (sum)
-      sum.textContent =
-        gib(s.reclaimed_bytes) +
-        " reclaimed · " +
-        pct(s.avg_saved_pct) +
-        " average shrink · " +
-        (complete
-          ? s.queue_waiting +
-            " queued · " +
-            (s.job_progress_pct == null ? "progress —" : "~" + pct(s.job_progress_pct) + " done")
-          : "queue unknown — library not fully mounted");
   }
 
   function liveChips(e) {
@@ -1043,6 +1035,53 @@
     return { node: c, disk: disk };
   }
 
+  /* The hero ring. A radial track plus an arc, drawn in the SVG namespace like
+   icon() -- never innerHTML. The arc is one stroke-dashoffset away from any
+   percentage, so the live pass writes a number and nothing is rebuilt; it
+   carries the progressbar role and its ARIA value, because the linear bar it
+   replaces is only in the DOM for the folded card. */
+  var RING_R = 52,
+    RING_C = 2 * Math.PI * RING_R;
+  function ringNode() {
+    var NS = "http://www.w3.org/2000/svg";
+    var n = el("div", "ring");
+    var svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 120 120");
+    svg.setAttribute("aria-hidden", "true");
+    function circ(cls) {
+      var c = document.createElementNS(NS, "circle");
+      c.setAttribute("cx", "60");
+      c.setAttribute("cy", "60");
+      c.setAttribute("r", String(RING_R));
+      c.setAttribute("class", cls);
+      return c;
+    }
+    svg.appendChild(circ("ring-track"));
+    var arc = circ("ring-arc");
+    arc.setAttribute("stroke-dasharray", String(RING_C));
+    arc.setAttribute("stroke-dashoffset", String(RING_C));
+    svg.appendChild(arc);
+    n.appendChild(svg);
+    var mid = el("div", "ring-mid");
+    var p = el("div", "pctbig num", "—");
+    var sub = el("div", "ring-sub", "");
+    mid.appendChild(p);
+    mid.appendChild(sub);
+    n.appendChild(mid);
+    n.setAttribute("role", "progressbar");
+    n.setAttribute("aria-label", "Encode progress");
+    n.setAttribute("aria-valuemin", "0");
+    n.setAttribute("aria-valuemax", "100");
+    return { node: n, arc: arc, pct: p, sub: sub };
+  }
+  function ringWrite(r, e) {
+    var v = Math.max(0, Math.min(100, Number(e.pct) || 0));
+    r.arc.style.strokeDashoffset = String(RING_C * (1 - v / 100));
+    r.pct.textContent = pctLive(e.pct);
+    r.sub.textContent = e.eta_s == null ? "ETA —" : "ETA " + dur(e.eta_s);
+    r.node.setAttribute("aria-valuenow", String(e.pct || 0));
+  }
+
   function renderLive(live, s, driverAlive, nextTitle, nextRow, defs) {
     /* paused rides in the summary -- the ONE carrier, the same field report.py
      banners -- never a second top-level copy. It and driverAlive are in the
@@ -1158,25 +1197,22 @@
       live.forEach(function (e) {
         var c = el("div", "card live"),
           refs = {};
+        /* Head: the chip row, and the pause circle pinned to its right. The
+         circle used to lead the linear bar; the bar is now only the FOLDED
+         card's progress, and a control that vanished when the card opened
+         would be the one thing on this card you cannot find. */
+        var head = el("div", "hero-head");
         refs.top = liveChips(e);
-        c.appendChild(refs.top);
-        var row = el("div", "barrow"),
-          bar = el("div", "bar");
-        row.appendChild(circleToggle(paused, driverAlive, live, nextTitle));
-        bar.setAttribute("role", "progressbar");
-        bar.setAttribute("aria-label", "Encode progress");
-        bar.setAttribute("aria-valuemin", "0");
-        bar.setAttribute("aria-valuemax", "100");
-        refs.bar = bar;
-        refs.fill = el("i");
-        bar.appendChild(refs.fill);
-        row.appendChild(bar);
-        refs.pct = el("div", "pctbig num", "—");
-        row.appendChild(refs.pct);
-        c.appendChild(row);
+        head.appendChild(refs.top);
+        head.appendChild(circleToggle(paused, driverAlive, live, nextTitle));
+        c.appendChild(head);
+        var hero = el("div", "hero");
+        refs.ring = ringNode();
+        hero.appendChild(refs.ring.node);
+        var body = el("div", "hero-body");
         var pj = projBlock();
         refs.proj = pj.refs;
-        c.appendChild(pj.node);
+        body.appendChild(pj.node);
         var kv = el("div", "kv");
         refs.kv = {};
         liveFields(e).forEach(function (p) {
@@ -1186,9 +1222,24 @@
         });
         refs.disk = diskField();
         kv.appendChild(refs.disk.node);
-        c.appendChild(kv);
+        body.appendChild(kv);
         refs.verdict = el("div", "verdict", "");
-        c.appendChild(refs.verdict);
+        body.appendChild(refs.verdict);
+        hero.appendChild(body);
+        c.appendChild(hero);
+        /* The folded card's progress, and only that: a fold that showed a
+         title and a verdict chip alone read as "nothing moving". Same
+         persistent `.bar > i` node, so the width transition still runs. */
+        var row = el("div", "barrow"),
+          bar = el("div", "bar");
+        bar.setAttribute("aria-hidden", "true");
+        refs.bar = bar;
+        refs.fill = el("i");
+        bar.appendChild(refs.fill);
+        row.appendChild(bar);
+        refs.pct = el("div", "pctbig num", "—");
+        row.appendChild(refs.pct);
+        c.appendChild(row);
         /* Pause-after-current is the circle at the head of the bar, and the
          circle is the ONLY thing on this card that changes when it is armed
          (operator's pick, 2026-09-11, from screenshots of both options). The
@@ -1212,8 +1263,8 @@
       refs.top.replaceWith(top);
       refs.top = top;
       refs.fill.style.width = (e.pct || 0) + "%";
-      refs.bar.setAttribute("aria-valuenow", String(e.pct || 0));
       refs.pct.textContent = pctLive(e.pct);
+      ringWrite(refs.ring, e);
       updateProj(refs.proj, e);
       liveFields(e).forEach(function (p) {
         var b = refs.kv[p[0]];
@@ -2662,6 +2713,73 @@
       );
   }
 
+  /* ---- the rail -------------------------------------------------------------
+   The section list, its counts, the four gauges, and the collapse. Counts are
+   numbers only: the phrasing they used to carry in the tab labels moved to the
+   pane head, which has the room for it. A count with no data yet is BLANK, not
+   a zero -- "Processes 0" before the first `ps` lands is a claim we cannot
+   make. ---- */
+  function navCount(id, n) {
+    var e = document.getElementById(id);
+    if (e) e.textContent = n == null ? "" : String(n);
+  }
+  /* What the pane's head says per tab: [title, note]. The middle slot (the
+   sub-line) is the live count, written by paint(). */
+  var PANE_HEAD = {
+    queue: ["Queue", "Drag to reorder"],
+    ledger: ["History", "Newest first"],
+    errors: ["Errors", "Cleared by deleting the marker"],
+    events: ["Events", "Newest first"],
+    procs: ["Processes", "Sampled every 5 s"],
+  };
+  var paneSub = {};
+  function writePaneHead(loud) {
+    var h = PANE_HEAD[tab] || PANE_HEAD.queue;
+    document.getElementById("paneTitle").textContent = h[0];
+    document.getElementById("paneSub").textContent = paneSub[tab] || "";
+    document.getElementById("paneNote").textContent = h[1];
+    document
+      .querySelector("#tablewrap > .panehead")
+      .classList.toggle("loud", tab === "errors" && !!loud);
+  }
+
+  /* CPU / GPU / RAM come from the LAST monitor sample -- the same array the
+   charts draw, so the rail and the chart can never disagree. Free space is
+   the staging drive's, measured against its capacity, and goes amber under
+   the driver's floor exactly as the live card's meter does. A metric with no
+   sample stays an em dash with an empty bar: a 0%-wide bar standing in for
+   "unknown" is the lie this page refuses everywhere else. */
+  var GAUGE_KEYS = ["cpu", "gpu", "ram", "disk"];
+  var gaugeEls = {};
+  GAUGE_KEYS.forEach(function (k) {
+    var n = document.querySelector('.gauge[data-g="' + k + '"]');
+    if (n) gaugeEls[k] = { node: n, b: n.querySelector("b"), fill: n.querySelector(".gbar i") };
+  });
+  function gaugeWrite(k, text, width) {
+    var g = gaugeEls[k];
+    if (!g) return;
+    g.b.textContent = text;
+    g.fill.style.width = width == null ? "0" : Math.max(0, Math.min(100, width)) + "%";
+  }
+  function railGauges(s) {
+    var v = monLast ? monLast.v : null;
+    ["cpu", "gpu", "ram"].forEach(function (k, i) {
+      var n = v && typeof v[i] === "number" && !isNaN(v[i]) ? v[i] : null;
+      gaugeWrite(k, n == null ? "—" : Math.round(n) + "%", n);
+    });
+    var sum = (s && s.summary) || {};
+    var free = sum.x9_free_bytes == null ? null : sum.x9_free_bytes,
+      total = s ? s.x9_total_bytes : null,
+      floor = sum.low_space_floor_bytes == null ? null : sum.low_space_floor_bytes;
+    var g = gaugeEls.disk;
+    if (g) g.node.classList.toggle("low", free != null && floor != null && free < floor);
+    gaugeWrite(
+      "disk",
+      free == null ? "—" : gib(free),
+      free == null || total == null || total <= 0 ? null : (free / total) * 100,
+    );
+  }
+
   function paint(s) {
     renderAlert(s.summary, s.encode_note, s.pushes);
     renderStats(s.summary);
@@ -2801,30 +2919,38 @@
      that used to ride here has moved to the Errors tab's own label, where
      the rows it counts actually are. */
     var nq = s.summary.queue_count != null ? s.summary.queue_count : s.queue.length;
-    document.getElementById("tabQueue").textContent = "Queue (" + nq + ")";
-    /* Named for the serious half. A tab reading "Errors (0)" while three
-     titles sit skipped would be wrong, so the label counts BOTH and the
-     breakdown rides behind it whenever the two differ. */
+    /* Named for the serious half. A rail reading "Errors 0" while three titles
+     sit skipped would be wrong, so the COUNT is both and the breakdown rides
+     in the pane's sub-line whenever the two differ. */
     var errs = s.errors || [];
     var nerr = errs.filter(function (r) {
       return r.error;
     }).length;
-    document.getElementById("tabErrors").textContent =
-      "Errors (" +
-      errs.length +
-      (nerr && nerr !== errs.length ? " · " + nerr + " errored" : "") +
-      ")";
-    document.getElementById("tabErrors").classList.toggle("hasErr", nerr > 0);
-    document.getElementById("tabLedger").textContent = "History (" + s.ledger.length + ")";
-    /* "(250 of 266)" — a bare "(250)" read as a count of everything that
-     exists, while both a row limit and the log-tail window cut it. */
-    document.getElementById("tabEvents").textContent =
-      "Events" +
-      (evData
-        ? " (" + (evTotal > evData.length ? evData.length + " of " + evTotal : evData.length) + ")"
-        : "");
-    document.getElementById("tabProcs").textContent =
-      "Processes" + (prData ? " (" + prData.procs.length + ")" : "");
+    navCount("nQueue", nq);
+    navCount("nLedger", s.ledger.length);
+    navCount("nErrors", errs.length);
+    navCount("nEvents", evData ? evData.length : null);
+    navCount("nProcs", prData ? prData.procs.length : null);
+    document.getElementById("tabErrors").classList.toggle("loud", nerr > 0);
+    /* The pane head carries the phrasing the tab labels used to -- including
+     "250 of 266", because a bare "250" read as a count of everything that
+     exists while both a row limit and the log-tail window cut it. */
+    paneSub = {
+      queue: nq + (nq === 1 ? " title" : " titles"),
+      ledger: s.ledger.length + " finished",
+      errors:
+        errs.length +
+        " set aside" +
+        (nerr && nerr !== errs.length ? " · " + nerr + " errored" : ""),
+      events: evData
+        ? evTotal > evData.length
+          ? evData.length + " of " + evTotal
+          : String(evData.length)
+        : "",
+      procs: prData ? prData.procs.length + " running" : "",
+    };
+    writePaneHead(nerr > 0);
+    railGauges(s);
     var anyPin = s.queue.some(function (r) {
       return r.pinned && !r.skipped;
     });
@@ -2866,6 +2992,7 @@
     document.getElementById("tabErrors").setAttribute("aria-selected", String(name === "errors"));
     document.getElementById("tabEvents").setAttribute("aria-selected", String(name === "events"));
     document.getElementById("tabProcs").setAttribute("aria-selected", String(name === "procs"));
+    writePaneHead(document.getElementById("tabErrors").classList.contains("loud"));
     /* Opening the tab fetches now, not at the next poll boundary. */
     if (name === "procs") prFetchedAt = 0;
     if (last.state) paint(last.state);
@@ -3026,6 +3153,36 @@
       localStorage.removeItem(THEME_KEY);
     } catch (e) {}
     applyTheme();
+  });
+
+  /* Rail collapse. The choice is remembered, because a rail is furniture and
+   re-collapsing it on every load is the kind of small insult a dashboard you
+   leave open all day earns forgiveness for exactly once. Below 1080px the
+   media query forces the narrow rail regardless, so the stored value is only
+   ever consulted, never fought. The canvases resize with the column, so the
+   monitor is told to repaint once the transition has run. */
+  var RAIL_KEY = "smeltr.rail";
+  var railBtn = document.getElementById("railToggle");
+  function applyRail(on) {
+    document.body.classList.toggle("railed", on);
+    railBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    railBtn.title = on ? "Expand sidebar" : "Collapse sidebar";
+    railBtn.setAttribute("aria-label", railBtn.title);
+  }
+  (function () {
+    var v = null;
+    try {
+      v = localStorage.getItem(RAIL_KEY);
+    } catch (e) {}
+    applyRail(v === "1");
+  })();
+  railBtn.addEventListener("click", function () {
+    var on = !document.body.classList.contains("railed");
+    try {
+      localStorage.setItem(RAIL_KEY, on ? "1" : "0");
+    } catch (e) {}
+    applyRail(on);
+    setTimeout(monDrawSoon, 240);
   });
 
   function conn(state, text) {
@@ -3651,7 +3808,14 @@
         Math.max(y0 + 4, Math.min(y1 - 4, y)),
       );
     });
-    var step = monTicks(t1 - t0);
+    /* monTicks() picks a step from the SPAN alone. The three charts now sit
+     abreast, so the same 1 d window that spaced its labels comfortably across
+     a full-width card crushed them into an unreadable smear at a third of it.
+     Thin the step until each tick has room — and thin the GRIDLINES with the
+     labels, because a gridline nobody labelled is a line with no meaning. */
+    var step = monTicks(t1 - t0),
+      MIN_TICK_PX = 72;
+    while (step < t1 - t0 && (step / (t1 - t0)) * (x1 - x0) < MIN_TICK_PX) step *= 2;
     for (var tt = Math.ceil(t0 / step) * step; tt < t1; tt += step) {
       var gx = Math.round(X(tt)) + 0.5;
       ctx.strokeStyle = css.grid;
@@ -3974,7 +4138,6 @@
   /* Static card: fold control attached once at load. The chevron rides in
    .monhead (flex, right edge) so it never overlaps the zoom slider. */
   makeCollapsible(document.getElementById("sysmon"), "mon");
-  makeCollapsible(document.getElementById("stats"), "stats");
   var tableFold = makeCollapsible(document.getElementById("tablewrap"), "table");
 
   function bootSkel() {
@@ -4083,6 +4246,9 @@
   /* The redraw clock is a plain interval, not the SSE frames: the window is
    anchored to now and must keep sliding -- and the legend must go stale --
    even when the sampler or the stream stops feeding it. */
-  setInterval(monDrawSoon, 1000);
+  setInterval(function () {
+    monDrawSoon();
+    railGauges(last.state);
+  }, 1000);
   monLoad(true);
 })();
