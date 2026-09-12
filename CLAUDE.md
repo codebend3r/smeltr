@@ -64,7 +64,7 @@ Operating rules for this repo.
 
 ## Observability
 
-- The resource monitor keeps 7 days of 1 Hz samples in a ring file with twelve fixed zoom stops. Gaps are gaps, never interpolation. No-data regions ride a labelled wash.
+- The resource monitor keeps 7 days of 1 Hz samples in a ring file with thirteen fixed zoom stops (1 min to 7 d). The line is a monotone curve at the 1 min and 15 min stops only, straight elsewhere. Gaps are gaps, never interpolation. No-data regions ride a labelled wash.
 - The Events tab parses the driver and watcher logs. The Processes tab classifies `ps` output by purpose. Both are dashboard-only modules.
 - Notifications are off since 2026-09-09 at the operator's request. The morning brief at 09:00 is the one daily email and replaced the hourly heartbeat.
 - Repaint keys carry shape, never a live number. Byte counts reach the DOM through in-place updates so transfer bars move without rebuilding the table.

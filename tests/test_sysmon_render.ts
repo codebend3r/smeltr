@@ -1,4 +1,4 @@
-/* What the monitor charts actually DRAW, at every one of the twelve zoom
+/* What the monitor charts actually DRAW, at every one of the thirteen zoom
  * stops, run against the real drawMon() pulled out of web/app.js:
  *
  *   bun tests/test_sysmon_render.js
@@ -80,9 +80,12 @@ const code = [
   decl(/var CLOCK_RE\s*=[^\n]*;/),
   fn("clock12"),
   fn("hhmm"),
+  fn("hhmmss"),
   decl(/var MON_DAYS\s*=\s*\[[^\]]*\];/),
   fn("tickLab"),
   fn("axLab"),
+  decl(/var MON_CURVE_MAX\s*=\s*\d+;/),
+  fn("monTrace"),
   fn("drawMon"),
   "function setRing(ts,v,dv){ monTs=ts; monV=v; monDataV=dv; }",
 ].join("\n");
@@ -141,6 +144,12 @@ function recorder(w, h) {
     },
     lineTo(x, y) {
       cur.push({ m: "L", x, y });
+    },
+    /* Only the segment's END is recorded: the assertions ask where the
+       line passes through, and a monotone curve passes through exactly
+       the bucket means, so the control points would say nothing extra. */
+    bezierCurveTo(_c1x, _c1y, _c2x, _c2y, x, y) {
+      cur.push({ m: "C", x, y });
     },
     stroke() {
       ops.push({ op: "stroke", pts: cur.slice(), stroke: ctx.strokeStyle, width: ctx.lineWidth });
@@ -240,11 +249,16 @@ for (const span of STOPS) {
   eq(d.series.length, 3, `${label}: all three series draw`);
   const first = d.series[0].pts[0],
     last = d.series[0].pts[d.series[0].pts.length - 1];
-  near(first.x, X0, 1.5, `${label}: the line starts at the left edge of the plot`);
-  near(last.x, X1, 1.5, `${label}: the line reaches the right edge of the plot`);
+  /* A point sits at the CENTRE of its bucket, so at a stop with fewer
+     seconds than pixel columns the first and last points are half a
+     bucket in from the edges (6.25 px at 1 min on this canvas). */
+  const cols = Math.min(COLS, span),
+    half = (X1 - X0) / cols / 2;
+  near(first.x, X0 + half, 1, `${label}: the line starts at the left edge of the plot`);
+  near(last.x, X1 - half, 1, `${label}: the line reaches the right edge of the plot`);
   ok(
-    d.series[0].pts.length > COLS * 0.9,
-    `${label}: the line is continuous across the window (${d.series[0].pts.length} of ${COLS} columns)`,
+    d.series[0].pts.length > cols * 0.9,
+    `${label}: the line is continuous across the window (${d.series[0].pts.length} of ${cols} columns)`,
   );
 }
 
@@ -281,6 +295,11 @@ for (const span of STOPS) {
   const d = draw(NOW, span, EARLIEST);
   const label = api.spanLabel(span);
   const overhang = (span - HELD) / span; // fraction with nothing behind it
+  if (span <= HELD) {
+    eq(d.washes.length, 0, `${label}: a window inside the record draws no wash`);
+    eq(d.edges.length, 0, `${label}: and no history-starts-here rule`);
+    continue;
+  }
   eq(d.washes.length, 1, `${label}: the empty stretch is washed exactly once`);
   near(
     d.washes[0].w,
@@ -370,7 +389,7 @@ sect("a missing second inside the history");
   ok(breaks.length >= 1, "a sampler outage breaks the path -- the 0 baseline never bridges it");
   eq(d.washes.length, 0, "and it draws no wash: this window IS covered by the ring");
   ok(
-    !s0.some((p) => p.m === "L" && p.y === Y1 && p.x > X0 + 10),
+    !s0.some((p) => (p.m === "L" || p.m === "C") && p.y === Y1 && p.x > X0 + 10),
     "nothing is drawn at 0 across the outage",
   );
 }
@@ -447,6 +466,48 @@ function flatRing(now, depth, spikeAt?) {
     "the tip of the line is the RAW last bucket mean -- no trailing-only lag",
   );
   ok(raw.avg[cols - 1] > 60, "and that tip really is the fresh 80% step, not old baseline");
+}
+
+/* ---- 8. curves at the two narrowest stops only, through the raw means ---- */
+sect("curves at 1 min and 15 min only");
+ring(NOW, SLOTS);
+for (const span of STOPS) {
+  const d = draw(NOW, span, NOW - SLOTS + 1);
+  const label = api.spanLabel(span);
+  const segs = d.series[0].pts.slice(1);
+  const curved = segs.some((p) => p.m === "C"),
+    straight = segs.some((p) => p.m === "L");
+  if (span <= 900) ok(curved && !straight, `${label}: the line is a curve`);
+  else ok(straight && !curved, `${label}: the line is a straight polyline`);
+}
+{
+  /* The curve passes THROUGH every bucket mean: a 1 s spike at 100 amid
+     20s peaks at exactly 100 on the 1 min stop, and the tip of the line is
+     the raw last sample (80), not an average pulled toward the baseline. */
+  flatRing(NOW, SLOTS, NOW - 30);
+  const rec = recorder(W, H);
+  const ch = chart(rec);
+  api.drawMon(ch, NOW + 1 - 60, NOW + 1, Object.assign({}, CSS, { histStart: NOW - SLOTS }));
+  const line = rec.ops.filter((o) => o.op === "stroke" && String(o.stroke).startsWith("--ch-"))[0];
+  const YV = (v) => Y1 - (Math.min(v, 100) / 100) * (Y1 - Y0);
+  eq(line.pts.length, 60, "1 min: one point per second");
+  near(Math.min(...line.pts.map((p) => p.y)), YV(100), 0.5, "1 min: the spike peaks at 100");
+  near(line.pts[line.pts.length - 1].y, YV(80), 0.5, "1 min: the tip is the raw last sample");
+  ok(
+    line.pts.filter((p) => Math.abs(p.y - YV(20)) < 0.5).length === 49,
+    "1 min: every other pre-step second sits on the measured 20",
+  );
+}
+{
+  /* 10 s ticks inside one minute, each ON the mark (:00, :10, :20 ...): the
+     labels must carry seconds or six gridlines read as the same clock. */
+  const d = draw(NOW, 60, NOW - SLOTS + 1);
+  const ticks = d.labels.filter((o) => o.y > Y1).map((o) => o.t);
+  eq(ticks.length, 6, "1 min: six ticks, one every 10 s");
+  ok(
+    ticks.every((t) => /^\d{1,2}:\d{2}:[0-5]0 [ap]m$/.test(t)),
+    `1 min: every tick is a 12-hour clock on a whole 10 s mark (${ticks.join(", ")})`,
+  );
 }
 
 if (failures) {

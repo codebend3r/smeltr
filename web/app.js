@@ -3052,16 +3052,16 @@
    repaint keys: a chart frame never rebuilds a table.
 
    The slider SNAPS to a named window rather than sliding along a log
-   curve. Twelve stops, 15 min to 7 d, one per integer position: "3 h" is a
+   curve. Thirteen stops, 1 min to 7 d, one per integer position: "3 h" is a
    window you can hold in your head and compare against yesterday's, where
    the old continuous mapping handed out "3.4 h" and made two readings of
    the same chart incomparable. The window is always anchored at now. ---- */
   var MON_SLOTS = 604800,
     MIB = 1048576; /* 7 d, matching sysmon.SLOTS */
   var MON_STOPS = [
-    900, 1800, 3600, 7200, 14400, 21600, 43200, 86400, 172800, 259200, 432000, 604800,
+    60, 900, 1800, 3600, 7200, 14400, 21600, 43200, 86400, 172800, 259200, 432000, 604800,
   ];
-  var MON_DEFAULT = 7; /* 24 h -- the stop the page opens on */
+  var MON_DEFAULT = 8; /* 24 h -- the stop the page opens on */
   function monSpan(pos) {
     var i = Math.round(pos);
     if (!(i >= 0)) i = 0; /* NaN included */
@@ -3084,25 +3084,27 @@
     return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p;
   }
   function monTicks(span) {
-    return span <= 1800
-      ? 300
-      : span <= 3600
-        ? 600
-        : span <= 7200
-          ? 900
-          : span <= 14400
-            ? 1800
-            : span <= 28800
-              ? 3600
-              : span <= 43200
-                ? 7200
-                : span <= 86400
-                  ? 10800
-                  : span <= 172800
-                    ? 21600
-                    : span <= 259200
-                      ? 43200
-                      : 86400;
+    return span <= 60
+      ? 10
+      : span <= 1800
+        ? 300
+        : span <= 3600
+          ? 600
+          : span <= 7200
+            ? 900
+            : span <= 14400
+              ? 1800
+              : span <= 28800
+                ? 3600
+                : span <= 43200
+                  ? 7200
+                  : span <= 86400
+                    ? 10800
+                    : span <= 172800
+                      ? 21600
+                      : span <= 259200
+                        ? 43200
+                        : 86400;
   }
   function monBuckets(tsArr, valArr, t0, t1, cols) {
     var lo = new Float64Array(cols),
@@ -3190,6 +3192,69 @@
     }
     return out;
   }
+  /* The line is drawn as a CURVE at the 1 min and 15 min stops only
+   (operator's pick, 2026-09-11) -- there a bucket is one sample and spans
+   whole pixels, so a polyline reads as facets. The curve is a monotone
+   cubic (Fritsch-Carlson): it passes through every bucket mean and never
+   rises or dips between two of them past either, so a one-second spike
+   still peaks at its measured value and nothing is drawn that no sample
+   reached. Wider stops keep the straight polyline. A null point is a gap
+   and breaks the path; each run traces from its own moveTo. */
+  var MON_CURVE_MAX = 900;
+  function monTrace(ctx, pts, curved) {
+    var runs = [],
+      run = [],
+      i;
+    for (i = 0; i < pts.length; i++) {
+      if (pts[i]) run.push(pts[i]);
+      else if (run.length) {
+        runs.push(run);
+        run = [];
+      }
+    }
+    if (run.length) runs.push(run);
+    runs.forEach(function (r) {
+      var n = r.length,
+        k;
+      ctx.moveTo(r[0].x, r[0].y);
+      if (!curved || n < 3) {
+        for (k = 1; k < n; k++) ctx.lineTo(r[k].x, r[k].y);
+        return;
+      }
+      var d = new Float64Array(n - 1),
+        m = new Float64Array(n);
+      for (k = 0; k < n - 1; k++) d[k] = (r[k + 1].y - r[k].y) / (r[k + 1].x - r[k].x);
+      m[0] = d[0];
+      m[n - 1] = d[n - 2];
+      for (k = 1; k < n - 1; k++) m[k] = d[k - 1] * d[k] <= 0 ? 0 : (d[k - 1] + d[k]) / 2;
+      for (k = 0; k < n - 1; k++) {
+        if (d[k] === 0) {
+          m[k] = 0;
+          m[k + 1] = 0;
+          continue;
+        }
+        var a = m[k] / d[k],
+          b = m[k + 1] / d[k],
+          s = a * a + b * b;
+        if (s > 9) {
+          var t = 3 / Math.sqrt(s);
+          m[k] = t * a * d[k];
+          m[k + 1] = t * b * d[k];
+        }
+      }
+      for (k = 0; k < n - 1; k++) {
+        var h = r[k + 1].x - r[k].x;
+        ctx.bezierCurveTo(
+          r[k].x + h / 3,
+          r[k].y + (m[k] * h) / 3,
+          r[k + 1].x - h / 3,
+          r[k + 1].y - (m[k + 1] * h) / 3,
+          r[k + 1].x,
+          r[k + 1].y,
+        );
+      }
+    });
+  }
   function monFmtPct(v) {
     return v == null || v !== v ? "—" : Math.round(v) + "%";
   }
@@ -3212,6 +3277,16 @@
       String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"),
     );
   }
+  function hhmmss(t) {
+    var d = new Date(t * 1000);
+    return clock12(
+      String(d.getHours()).padStart(2, "0") +
+        ":" +
+        String(d.getMinutes()).padStart(2, "0") +
+        ":" +
+        String(d.getSeconds()).padStart(2, "0"),
+    );
+  }
   var MON_DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   /* Past 24 h the window crosses midnight, and a bare "06:00" on the axis --
    or in the tooltip -- names three different mornings at the 7 d stop.
@@ -3229,6 +3304,8 @@
     return isToday(t) ? hhmm(t) : MON_DAYS[new Date(t * 1000).getDay()] + " " + hhmm(t);
   }
   function tickLab(t, span) {
+    /* A sub-minute tick step puts several gridlines inside one hh:mm. */
+    if (monTicks(span) < 60) return hhmmss(t);
     if (span <= 86400) return hhmm(t);
     var d = new Date(t * 1000),
       day = MON_DAYS[d.getDay()];
@@ -3321,29 +3398,36 @@
     });
   });
 
-  /* The stored value is a STOP INDEX now; "smeltr.monspan" held a 0..100
-   position on the old log curve, so it is read once, converted to the
-   nearest stop, and rewritten under the new key. A stale key left behind
+  /* The stored value is the window in SECONDS ("smeltr.monwin"), so adding a
+   stop never moves anyone's saved choice. The two older keys are read once
+   and converted: "smeltr.monstop" was a stop INDEX into the table before the
+   1 min stop was prepended (so index i is MON_STOPS[i + 1] now), and
+   "smeltr.monspan" a 0..100 position on a log curve. A stale key left behind
    would silently restore a position that no longer means anything. */
-  try {
-    var _sv = localStorage.getItem("smeltr.monstop");
-    if (_sv != null && +_sv >= 0 && +_sv <= MON_STOPS.length - 1) monPos = Math.round(+_sv);
-    else {
-      var _old = localStorage.getItem("smeltr.monspan");
-      if (_old != null && +_old >= 0 && +_old <= 100) {
-        var want = 3600 * Math.pow(24, +_old / 100),
-          best = MON_DEFAULT,
-          bd = Infinity;
-        MON_STOPS.forEach(function (v, i) {
-          var d = Math.abs(Math.log(v) - Math.log(want));
-          if (d < bd) {
-            bd = d;
-            best = i;
-          }
-        });
-        monPos = best;
-        localStorage.setItem("smeltr.monstop", String(monPos));
+  function monNearest(want) {
+    var best = MON_DEFAULT,
+      bd = Infinity;
+    MON_STOPS.forEach(function (v, i) {
+      var d = Math.abs(Math.log(v) - Math.log(want));
+      if (d < bd) {
+        bd = d;
+        best = i;
       }
+    });
+    return best;
+  }
+  try {
+    var _sv = localStorage.getItem("smeltr.monwin");
+    if (_sv != null && MON_STOPS.indexOf(+_sv) >= 0) monPos = MON_STOPS.indexOf(+_sv);
+    else {
+      var _idx = localStorage.getItem("smeltr.monstop"),
+        _old = localStorage.getItem("smeltr.monspan");
+      if (_idx != null && +_idx >= 0 && +_idx <= MON_STOPS.length - 2)
+        monPos = Math.round(+_idx) + 1;
+      else if (_old != null && +_old >= 0 && +_old <= 100)
+        monPos = monNearest(3600 * Math.pow(24, +_old / 100));
+      localStorage.setItem("smeltr.monwin", String(monSpan(monPos)));
+      localStorage.removeItem("smeltr.monstop");
       localStorage.removeItem("smeltr.monspan");
     }
   } catch (_) {}
@@ -3353,7 +3437,7 @@
     monPos = Math.round(+monZoomEl.value);
     monLblEl.textContent = spanLabel(monSpan(monPos));
     try {
-      localStorage.setItem("smeltr.monstop", String(monPos));
+      localStorage.setItem("smeltr.monwin", String(monSpan(monPos)));
     } catch (_) {}
     monLoad(); /* no-op unless this stop needs more history */
     monDrawSoon();
@@ -3599,7 +3683,7 @@
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
       ctx.beginPath();
-      var pen = false;
+      var pts = [];
       /* BEFORE the oldest held sample the line rides the 0 baseline. Nothing
        was measured there, and the --skel wash under it plus the "history
        since HH:MM" caption are what say so -- the baseline exists only so a
@@ -3609,23 +3693,15 @@
        the sampler was running and produced nothing, which is a fact about
        the machine rather than about how long we have been recording. */
       if (preCols > 0) {
-        ctx.moveTo(x0, Y(0));
-        ctx.lineTo(x0 + preCols * cw, Y(0));
-        pen = true;
+        pts.push({ x: x0, y: Y(0) });
+        pts.push({ x: x0 + preCols * cw, y: Y(0) });
       }
       for (c = preCols; c < cols; c++) {
         var v = (b.sm || b.avg)[c];
-        if (v !== v) {
-          pen = false;
-          continue;
-        } /* gap: break, never bridge */
-        var y = Y(v);
-        if (pen) ctx.lineTo(x0 + (c + 0.5) * cw, y);
-        else {
-          ctx.moveTo(x0 + (c + 0.5) * cw, y);
-          pen = true;
-        }
+        /* gap: a null breaks the path, never bridges it */
+        pts.push(v !== v ? null : { x: x0 + (c + 0.5) * cw, y: Y(v) });
       }
+      monTrace(ctx, pts, t1 - t0 <= MON_CURVE_MAX);
       ctx.stroke();
     });
     if (monHover && monHover.t >= t0 && monHover.t < t1) {
@@ -3705,10 +3781,14 @@
         c++;
         continue;
       }
-      var s = c;
-      while (c < cols && line[c] === line[c]) c++;
+      var s = c,
+        run = [];
+      while (c < cols && line[c] === line[c]) {
+        run.push({ x: (c + 0.5) * cw, y: Y(line[c]) });
+        c++;
+      }
       ctx.beginPath();
-      for (var k = s; k < c; k++) ctx.lineTo((k + 0.5) * cw, Y(line[k]));
+      monTrace(ctx, run, t1 - t0 <= MON_CURVE_MAX);
       ctx.strokeStyle = colr;
       ctx.lineWidth = 1.5;
       ctx.lineJoin = "round";
