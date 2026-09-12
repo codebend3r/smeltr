@@ -330,9 +330,22 @@ const tick = () => new Promise((r) => setImmediate(r));
         /function circleToggle\([^)]*\)\s*\{\s*var t = toggleIntent\(/.test(src),
       "two copies of the three-state branch drift the moment one is edited alone",
     );
+    /* 2026-09-11: the circle moved out of `.barrow` and into the card's
+       `.hero-head`, because `.barrow` is now the FOLDED card's progress bar
+       and is display:none while the card is open. Both cards that carry the
+       control must put it in the head -- ghostCard kept it in the barrow for
+       one commit, and the resume button was invisible for the whole of a
+       deliberate pause, which is the state that card exists to show. */
     check(
-      "renderLive puts the circle in the barrow BEFORE the bar",
-      /row\.appendChild\(circleToggle\([^)]*\)\);\s*bar\.setAttribute/.test(src),
+      "renderLive puts the circle in the card head, not the folded-only barrow",
+      /head\.appendChild\(circleToggle\(/.test(fn("renderLive")) &&
+        !/row\.appendChild\(circleToggle\(/.test(fn("renderLive")),
+    );
+    check(
+      "ghostCard puts the circle in the card head too",
+      /head\.appendChild\(circleToggle\(/.test(fn("ghostCard")) &&
+        !/row\.appendChild\(circleToggle\(/.test(fn("ghostCard")),
+      "a control inside .barrow is display:none unless the card is folded",
     );
     check(
       "the big card draws ONLY when nothing is encoding",
@@ -342,16 +355,16 @@ const tick = () => new Promise((r) => setImmediate(r));
     );
     /* The paused ghost card (operator 2026-09-11, option 4 of six): paused
        with a live driver and a pick draws the RUNNING card's layout, dashes
-       throughout, the circle in play at the head of an empty bar. */
+       throughout, the circle in play in the card head. */
     check(
       "any idle state with a pick draws the ghost card, never the big card",
       /if \(s\.x9_online !== false && !s\.low_space && nextRow && !live\.length\) \{\s*var g = ghostCard\(/.test(
         src,
       ) &&
-        /function ghostCard\([^)]*\)\s*\{[\s\S]*?row\.appendChild\(circleToggle\(paused, driverAlive, \[\], nextRow\.title\)\)/.test(
-          src,
+        /head\.appendChild\(circleToggle\(paused, driverAlive, \[\], nextRow\.title\)\)/.test(
+          fn("ghostCard"),
         ),
-      "the ghost card must lead its bar with the same circle the running card uses",
+      "the ghost card must carry the same circle the running card uses",
     );
     check(
       "the ghost card is the running card's shape: chips, bar, projection, fields",

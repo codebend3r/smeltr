@@ -86,15 +86,7 @@
     var d = el("div", "stat");
     d.appendChild(el("div", "k", k));
     d.appendChild(el("div", "v " + (cls || ""), v));
-    if (s) {
-      d.appendChild(el("div", "s", s));
-      /* The totals are an inline strip in the page head now, and the strip
-       shows label over value only. The sub-line is the half that keeps the
-       number honest -- "excludes 2 skipped", "library not fully mounted" --
-       so it stays reachable on the element rather than being dropped with
-       the line that used to carry it. */
-      d.title = k + ": " + v + " — " + s;
-    }
+    if (s) d.appendChild(el("div", "s", s));
     return d;
   }
 
@@ -1006,10 +998,16 @@
     if (q != null) top.appendChild(el("span", "chip", qLabel(enc) + " " + q));
     top.appendChild(el("span", "chip", "decoder errors not yet reported"));
     top.appendChild(el("span", "chip", "UNKNOWN"));
-    c.appendChild(top);
+    /* The circle rides the head, exactly as the running card's does. It used
+     to lead the bar inside `.barrow` -- and `.barrow` is now the FOLDED
+     card's progress only, so leaving it there made the one control that
+     restarts the encoder display:none for the whole of a deliberate pause. */
+    var head = el("div", "hero-head");
+    head.appendChild(top);
+    head.appendChild(circleToggle(paused, driverAlive, [], nextRow.title));
+    c.appendChild(head);
     var row = el("div", "barrow"),
       bar = el("div", "bar");
-    row.appendChild(circleToggle(paused, driverAlive, [], nextRow.title));
     bar.setAttribute("role", "progressbar");
     bar.setAttribute("aria-label", "Encode progress");
     bar.setAttribute("aria-valuemin", "0");
@@ -1074,12 +1072,26 @@
     n.setAttribute("aria-valuemax", "100");
     return { node: n, arc: arc, pct: p, sub: sub };
   }
-  function ringWrite(r, e) {
-    var v = Math.max(0, Math.min(100, Number(e.pct) || 0));
+  /* `bar` is the folded card's copy: role=progressbar rides BOTH, because
+   the fold hides the ring and a folded encode that announced no progress at
+   all is the "stalled, never a progress bar" failure in ARIA form. A null
+   percentage DROPS valuenow rather than claiming 0 -- the centre text reads
+   an em dash, and role=progressbar is children-presentational, so valuenow
+   is the whole contract an announcement gets. The reported value is the
+   CLAMPED one: HandBrake can log past 100, and the arc, the attribute and
+   the text must not be three different numbers. */
+  function ringWrite(r, e, bar) {
+    var raw = Number(e.pct);
+    var known = e.pct != null && raw === raw;
+    var v = known ? Math.max(0, Math.min(100, raw)) : 0;
     r.arc.style.strokeDashoffset = String(RING_C * (1 - v / 100));
     r.pct.textContent = pctLive(e.pct);
     r.sub.textContent = e.eta_s == null ? "ETA —" : "ETA " + dur(e.eta_s);
-    r.node.setAttribute("aria-valuenow", String(e.pct || 0));
+    [r.node, bar].forEach(function (n) {
+      if (!n) return;
+      if (known) n.setAttribute("aria-valuenow", String(v));
+      else n.removeAttribute("aria-valuenow");
+    });
   }
 
   function renderLive(live, s, driverAlive, nextTitle, nextRow, defs) {
@@ -1232,7 +1244,10 @@
          persistent `.bar > i` node, so the width transition still runs. */
         var row = el("div", "barrow"),
           bar = el("div", "bar");
-        bar.setAttribute("aria-hidden", "true");
+        bar.setAttribute("role", "progressbar");
+        bar.setAttribute("aria-label", "Encode progress");
+        bar.setAttribute("aria-valuemin", "0");
+        bar.setAttribute("aria-valuemax", "100");
         refs.bar = bar;
         refs.fill = el("i");
         bar.appendChild(refs.fill);
@@ -1264,7 +1279,7 @@
       refs.top = top;
       refs.fill.style.width = (e.pct || 0) + "%";
       refs.pct.textContent = pctLive(e.pct);
-      ringWrite(refs.ring, e);
+      ringWrite(refs.ring, e, refs.bar);
       updateProj(refs.proj, e);
       liveFields(e).forEach(function (p) {
         var b = refs.kv[p[0]];
@@ -2762,7 +2777,13 @@
     g.fill.style.width = width == null ? "0" : Math.max(0, Math.min(100, width)) + "%";
   }
   function railGauges(s) {
-    var v = monLast ? monLast.v : null;
+    /* The SAME staleness gate the legend and the mini sparklines use: a
+     sampler that has gone quiet must show an em dash, not its last reading
+     forever. Without it the rail froze its pre-sleep numbers while the chart
+     three inches away drew an honest gap -- two readings of one metric,
+     disagreeing, with the frozen one in the louder position. */
+    var fresh = monLast && Math.floor(Date.now() / 1000) - monLast.t <= 5;
+    var v = fresh ? monLast.v : null;
     ["cpu", "gpu", "ram"].forEach(function (k, i) {
       var n = v && typeof v[i] === "number" && !isNaN(v[i]) ? v[i] : null;
       gaugeWrite(k, n == null ? "—" : Math.round(n) + "%", n);
@@ -2772,11 +2793,22 @@
       total = s ? s.x9_total_bytes : null,
       floor = sum.low_space_floor_bytes == null ? null : sum.low_space_floor_bytes;
     var g = gaugeEls.disk;
-    if (g) g.node.classList.toggle("low", free != null && floor != null && free < floor);
+    if (g) {
+      g.node.classList.toggle("low", free != null && floor != null && free < floor);
+      g.node.title =
+        free == null
+          ? ""
+          : gib(free) + " free" + (total ? " of " + gib(total) : "") + " on the staging drive";
+    }
+    /* The bar is USED, not free. The three above it all mean "more bar =
+     worse"; a free-fill in the same 3px style, in the same group, meant the
+     opposite -- invisible while the drive sits near half, and a nearly-empty
+     drive reading as a nearly-full one. The VALUE stays free bytes, because
+     free is what the driver's floor is about, and the word says which. */
     gaugeWrite(
       "disk",
-      free == null ? "—" : gib(free),
-      free == null || total == null || total <= 0 ? null : (free / total) * 100,
+      free == null ? "—" : gib(free) + " free",
+      free == null || total == null || total <= 0 ? null : ((total - free) / total) * 100,
     );
   }
 
@@ -2938,10 +2970,18 @@
     paneSub = {
       queue: nq + (nq === 1 ? " title" : " titles"),
       ledger: s.ledger.length + " finished",
-      errors:
-        errs.length +
-        " set aside" +
-        (nerr && nerr !== errs.length ? " · " + nerr + " errored" : ""),
+      errors: !errs.length
+        ? "none set aside"
+        : nerr === errs.length
+          ? nerr + " errored"
+          : nerr
+            ? errs.length +
+              " set aside · " +
+              nerr +
+              " errored + " +
+              (errs.length - nerr) +
+              " skipped"
+            : errs.length + " skipped",
       events: evData
         ? evTotal > evData.length
           ? evData.length + " of " + evTotal
@@ -2966,6 +3006,13 @@
    tab switch is not a page the back button should walk through. The token
    and anything else in the query survive untouched. */
   var TABS = { queue: 1, ledger: 1, errors: 1, events: 1, procs: 1 };
+  var TAB_BTN = {
+    queue: "tabQueue",
+    ledger: "tabLedger",
+    errors: "tabErrors",
+    events: "tabEvents",
+    procs: "tabProcs",
+  };
   function tabFromUrl() {
     try {
       var v = new URLSearchParams(location.search).get("tab");
@@ -2992,6 +3039,10 @@
     document.getElementById("tabErrors").setAttribute("aria-selected", String(name === "errors"));
     document.getElementById("tabEvents").setAttribute("aria-selected", String(name === "events"));
     document.getElementById("tabProcs").setAttribute("aria-selected", String(name === "procs"));
+    /* The pane is the tabpanel the five rail tabs control; the selected tab
+     is what labels it, so the pointer moves with the selection. */
+    var pane = document.getElementById("pane");
+    if (pane) pane.setAttribute("aria-labelledby", TAB_BTN[name] || "tabQueue");
     writePaneHead(document.getElementById("tabErrors").classList.contains("loud"));
     /* Opening the tab fetches now, not at the next poll boundary. */
     if (name === "procs") prFetchedAt = 0;
@@ -3488,6 +3539,7 @@
     {
       cv: "monU",
       leg: "legU",
+      axis: true,
       pctAxis: true,
       fmt: monFmtPct,
       scale: 1,
@@ -3500,6 +3552,7 @@
     {
       cv: "monN",
       leg: "legN",
+      axis: true,
       fmt: monFmtMibs,
       scale: MIB,
       series: [
@@ -3808,14 +3861,23 @@
         Math.max(y0 + 4, Math.min(y1 - 4, y)),
       );
     });
-    /* monTicks() picks a step from the SPAN alone. The three charts now sit
-     abreast, so the same 1 d window that spaced its labels comfortably across
-     a full-width card crushed them into an unreadable smear at a third of it.
-     Thin the step until each tick has room — and thin the GRIDLINES with the
-     labels, because a gridline nobody labelled is a line with no meaning. */
-    var step = monTicks(t1 - t0),
-      MIN_TICK_PX = 72;
-    while (step < t1 - t0 && (step / (t1 - t0)) * (x1 - x0) < MIN_TICK_PX) step *= 2;
+    /* monTicks() picks a step from the SPAN alone. The three charts sit
+     abreast now, so the same 1 d window that spaced its labels comfortably
+     across a full-width card crushed them into an unreadable smear at a third
+     of it. Thin the step until each tick has room — and thin the GRIDLINES
+     with the labels, because a gridline nobody labelled is a line with no
+     meaning.
+
+     The room needed is measured from the label this window actually prints,
+     not from a constant: "8:00 pm" and "Wed 8:00 pm" want very different
+     gaps, and a constant wide enough for the second left a 24 h chart — the
+     stop the page OPENS on — with two labels on it, which cannot locate an
+     event. 10px mono is 0.6em per glyph, so the estimate needs no canvas and
+     is identical under test. */
+    var step = monTicks(t1 - t0);
+    var probe = tickLab(Math.ceil(t0 / step) * step, t1 - t0);
+    var need = probe.length * 6 + 14;
+    while (step < t1 - t0 && (step / (t1 - t0)) * (x1 - x0) < need) step *= 2;
     for (var tt = Math.ceil(t0 / step) * step; tt < t1; tt += step) {
       var gx = Math.round(X(tt)) + 0.5;
       ctx.strokeStyle = css.grid;
