@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.smeltr.push</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/snowball/Developer/git/smeltr/ops/push-complete.sh</string>
+  </array>
+  <!-- One tick a minute, like the replenisher. The script's own lock makes a
+       tick that lands mid-push a no-op; a push runs for the length of one
+       file (30-60 min at ~18 MB/s). -->
+  <key>StartInterval</key><integer>60</integer>
+  <key>RunAtLoad</key><true/>
+  <!-- launchd's PATH has no Homebrew; the push is plain ssh but the local
+       probe before a source is purged, and the track-parity half of the
+       verify, need ffprobe. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <!-- NOT on the staging drive: launchd cannot create a log on a volume that
+       may be unmounted, and fails the job with EX_CONFIG (78) before it runs. -->
+  <key>StandardOutPath</key><string>/Users/snowball/Library/Logs/smeltr/push.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/snowball/Library/Logs/smeltr/push.err.log</string>
+</dict>
+</plist>
