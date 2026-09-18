@@ -78,7 +78,7 @@
     "replenisher": "bash ops/replenisher.sh --supervise"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.1",
+    "@types/bun": "^1.4.2",
     "husky": "9.1.7",
     "lint-staged": "17.5.0",
     "oxfmt": "0.66.0",
@@ -100,5 +100,5 @@
     "{web/*,dashboard/server.py}": "sh -c 'python3 tests/check_page.py' --",
     "{web/*.js,tests/*.ts,tests/visual/*.mts,tsconfig.json}": "sh -c 'tsc --noEmit -p tsconfig.json' --"
   },
-  "packageManager": "bun@1.4.1"
+  "packageManager": "bun@1.4.2"
 }
