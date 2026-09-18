@@ -224,9 +224,9 @@ for parent in (os.path.join(x9, 'queue'), os.path.join(x9, 'complete'), x9):
 
 # Never stage or encode these, regardless of bitrate. Substring match on the full path, lowercased.
 SKIP = ('lord of the rings',
-        # operator blacklist 2026-09-06 -- mirrors pipeline/core.py SKIP
-        'skyscraper (2018)', 'timecop (1994)', 'mechanic resurrection (2016)',
-        'bloodsport (1988)')
+        # operator blacklist 2026-09-06 -- mirrors pipeline/core.py SKIP.
+        # Bloodsport (1988) un-blacklisted 2026-09-15; dropped from both copies.
+        'skyscraper (2018)', 'timecop (1994)', 'mechanic resurrection (2016)')
 
 # Dashboard overrides: skipped titles are never staged; hand-prioritised
 # titles are staged FIRST, in the chosen order, so a reorder on the dashboard
@@ -236,10 +236,25 @@ try:
 except Exception:
     ov = {}
 user_skip = {s.lower() for s in ov.get('skip', []) if isinstance(s, str)}
+# Every title the ledger has recorded, by folder name. ledger.jsonl sits
+# beside queue_overrides.json; unreadable reads as "nothing recorded", which
+# only ever risks a redundant pull, never a missed one.
+recorded = set()
+try:
+    with open(os.path.join(os.path.dirname(ovp), 'ledger.jsonl')) as lf:
+        for line in lf:
+            try:
+                t = json.loads(line).get('title')
+            except Exception:
+                continue
+            if isinstance(t, str):
+                recorded.add(t.lower())
+except Exception:
+    pass
 rank = {s.lower(): i for i, s in enumerate(ov.get('priority', []))
         if isinstance(s, str)}
 
-MIN_BPS = 70 * 1000 * 1000
+MIN_BPS = 60 * 1000 * 1000
 picks = []
 for f in d['files']:
     p = f['path']
@@ -258,6 +273,20 @@ for f in d['files']:
     # clears the marker -- pulling it fills a slot with ~60 GB that cannot
     # encode. 2026-09-06.
     if os.path.exists(os.path.join(x9, '.error-' + folder)):
+        continue
+    # A FINISHED title never comes back (2026-09-10). Since the pusher
+    # (ops/push-complete.sh) sends a finished encode back to the NAS and
+    # removes its X9 folder, the library still lists the ORIGINAL at its
+    # full bitrate and the folder is no longer "on the drive" -- the two
+    # checks above would pull it again into a slot nothing can encode. The
+    # .done- / .pushed- markers outlive the folder, and the ledger is the
+    # record of record.
+    if os.path.exists(os.path.join(x9, '.done-' + folder)) or \
+       os.path.exists(os.path.join(x9, '.pushed-' + folder)):
+        continue
+    # ...unless the operator pinned it on the dashboard: a `priority` entry
+    # is the one way to re-stage a recorded title without editing the ledger.
+    if folder.lower() in recorded and folder.lower() not in rank:
         continue
     # Below the stop threshold is never encoded (mirrors core.STOP_MBPS --
     # the fifth hand-synced copy of that number). With every bitrate 0 on

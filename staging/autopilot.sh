@@ -38,7 +38,7 @@ STAGE="$X9/queue"
 COMPLETE="$X9/complete"
 SMELTR="$HOME/Developer/git/smeltr/smeltr"
 LOG="$X9/.autopilot.log"
-STOP_MBPS=70
+STOP_MBPS=60
 DRY=false
 [ "${1:-}" = "--dry-run" ] && DRY=true
 

@@ -108,6 +108,7 @@ function ok(cond, msg?) {
   } else {
     failures++;
     console.log("\nFAIL [" + section + "] " + msg);
+    process.exit(1);
   }
 }
 function eq(a, b, msg?) {

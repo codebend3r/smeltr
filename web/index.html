@@ -16,8 +16,9 @@
 <script nonce="__NONCE__">__THEME_JS__</script>
 </head>
 <body data-rev="__PAGE_REV__">
-<!-- Line glyphs for the live card's field row (operator 2026-09-11). Static
-     markup referenced by <use>, never built from server data. -->
+<!-- Line glyphs for the rail nav, the rail gauges and the live card's field
+     row (operator 2026-09-11). Static markup referenced by <use>, never
+     built from server data. -->
 <svg class="glyphs" width="0" height="0" aria-hidden="true" focusable="false">
   <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
   <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M4 16a8 8 0 0 1 16 0"/><path d="M12 16l4-5"/><circle cx="12" cy="16" r="1.4"/></symbol>
@@ -25,36 +26,81 @@
   <symbol id="i-play" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l5.5-3.5z"/></symbol>
   <symbol id="i-hash" viewBox="0 0 24 24"><path d="M5 9h14M5 15h14M10 4L8 20M16 4l-2 16"/></symbol>
   <symbol id="i-drive" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M3 13h18"/><circle cx="17" cy="15" r="0.9"/><circle cx="17" cy="10" r="0.9"/></symbol>
+  <symbol id="i-queue" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3l9.5 17h-19z"/><path d="M12 10v4.5M12 17.3v.3"/></symbol>
+  <symbol id="i-pulse" viewBox="0 0 24 24"><path d="M3 12h4l3-7 4 14 3-7h4"/></symbol>
+  <symbol id="i-chip" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></symbol>
+  <symbol id="i-ram" viewBox="0 0 24 24"><path d="M3 8h18v8H3z"/><path d="M8 8v8M12 8v8M16 8v8M3 16v3M21 16v3"/></symbol>
+  <symbol id="i-ban" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
 </svg>
-<header>
-  <span class="pulse" id="pulse"></span>
-  <div class="wordmark">SMELTR<b>.</b></div>
-  <div class="tag">remuxes in &middot; ingots out</div>
-  <div class="conn"><span class="dot" id="dot"></span><span id="connText">connecting</span></div>
-  <div class="themeseg" role="group" aria-label="Theme">
-    <button class="themebtn" id="themeLight" type="button" title="Light theme" aria-label="Light theme" aria-pressed="false"><i></i></button>
-    <button class="themebtn" id="themeDark" type="button" title="Dark theme" aria-label="Dark theme" aria-pressed="false"><i class="full"></i></button>
-    <button class="themebtn" id="themeSystem" type="button" title="Follow system theme" aria-label="Follow system theme" aria-pressed="false"><i class="half"></i></button>
+
+<!-- The shell. A sticky section rail on the left, everything else in <main>.
+     Below 1000px the rail collapses to icons; below 640px it lies flat
+     across the top. -->
+<nav class="rail" id="rail" aria-label="Sections">
+  <div class="brand">
+    <span class="pulse" id="pulse"></span>
+    <span class="rlbl">
+      <span class="wordmark">SMELTR<b>.</b></span>
+      <span class="tag">remuxes in &middot; ingots out</span>
+    </span>
   </div>
+
+  <div class="navlist" role="tablist">
+    <button class="nav" id="tabQueue"  role="tab" aria-selected="true"  aria-controls="pane" title="Queue"><svg class="ic" aria-hidden="true"><use href="#i-queue"/></svg><span class="rlbl">Queue</span><span class="navn num" id="nQueue"></span></button>
+    <button class="nav" id="tabLedger" role="tab" aria-selected="false" aria-controls="pane" title="History"><svg class="ic" aria-hidden="true"><use href="#i-clock"/></svg><span class="rlbl">History</span><span class="navn num" id="nLedger"></span></button>
+    <button class="nav" id="tabErrors" role="tab" aria-selected="false" aria-controls="pane" title="Errors"><svg class="ic" aria-hidden="true"><use href="#i-alert"/></svg><span class="rlbl">Errors</span><span class="navn num" id="nErrors"></span></button>
+    <button class="nav" id="tabEvents" role="tab" aria-selected="false" aria-controls="pane" title="Events"><svg class="ic" aria-hidden="true"><use href="#i-pulse"/></svg><span class="rlbl">Events</span><span class="navn num" id="nEvents"></span></button>
+    <button class="nav" id="tabProcs"  role="tab" aria-selected="false" aria-controls="pane" title="Processes"><svg class="ic" aria-hidden="true"><use href="#i-chip"/></svg><span class="rlbl">Processes</span><span class="navn num" id="nProcs"></span></button>
+    <button class="nav" id="tabBlacklist" role="tab" aria-selected="false" aria-controls="pane" title="Blacklist"><svg class="ic" aria-hidden="true"><use href="#i-ban"/></svg><span class="rlbl">Blacklist</span><span class="navn num" id="nBlacklist"></span></button>
+  </div>
+
+  <!-- The rail gauges are the SAME samples the monitor charts draw (the `mon`
+       SSE frame), read at their latest value; free space is the staging
+       drive's, the one the driver's floor is about. An em dash until a
+       sample lands -- never a zero-width bar standing in for "unknown". -->
+  <div class="railsec rlbl">This Mac</div>
+  <div class="gauges" id="gauges">
+    <div class="gauge" data-g="cpu"><span class="gk"><svg class="ic" aria-hidden="true"><use href="#i-chip"/></svg>CPU</span><b class="num">—</b><span class="gbar"><i></i></span></div>
+    <div class="gauge" data-g="gpu"><span class="gk"><svg class="ic" aria-hidden="true"><use href="#i-gauge"/></svg>GPU</span><b class="num">—</b><span class="gbar"><i></i></span></div>
+    <div class="gauge" data-g="ram"><span class="gk"><svg class="ic" aria-hidden="true"><use href="#i-ram"/></svg>RAM</span><b class="num">—</b><span class="gbar"><i></i></span></div>
+    <div class="gauge" data-g="disk"><span class="gk"><svg class="ic" aria-hidden="true"><use href="#i-drive"/></svg>Staging</span><b class="num">—</b><span class="gbar"><i></i></span></div>
+  </div>
+
+  <div class="railfill"></div>
+
+  <div class="railfoot">
+    <span class="conn"><span class="dot" id="dot"></span><span class="rlbl" id="connText">connecting</span></span>
+    <div class="themeseg" role="group" aria-label="Theme">
+      <button class="themebtn" id="themeLight" type="button" title="Light theme" aria-label="Light theme" aria-pressed="false"><i></i></button>
+      <button class="themebtn" id="themeDark" type="button" title="Dark theme" aria-label="Dark theme" aria-pressed="false"><i class="full"></i></button>
+      <button class="themebtn" id="themeSystem" type="button" title="Follow system theme" aria-label="Follow system theme" aria-pressed="false"><i class="half"></i></button>
+    </div>
+    <button class="railbtn" id="railToggle" type="button" title="Collapse sidebar" aria-label="Collapse sidebar" aria-pressed="false"><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button>
+  </div>
+</nav>
+
+<main>
+<section id="alert"></section>
+
+<header class="pagehead">
+  <h1>Overview</h1>
+  <span class="grow"></span>
+  <section id="stats" aria-label="Totals">
+    <div class="statsgrid" id="statsGrid">
+    <div class="skelwrap skelgrid" aria-hidden="true"><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div></div>
+    </div>
+  </section>
 </header>
 
-<section id="alert"></section>
-<section class="stats" id="stats" aria-label="Totals">
-  <div class="monhead">
-    <span class="montitle">Totals</span>
-    <span class="monnote" id="statsSum"></span>
-  </div>
-  <div class="statsgrid" id="statsGrid">
-  <div class="skelwrap skelgrid" aria-hidden="true"><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div><div class="stat skel"><div class="skel sk-k"></div><div class="skel sk-v"></div></div></div>
-  </div>
-</section>
 <section id="liveWrap">
   <div class="skelwrap" aria-hidden="true"><div class="card skel"><div class="skel sk-title"></div><div class="skel sk-bar"></div></div></div>
 </section>
 
 <section id="sysmon" aria-label="System resource monitor">
   <div class="monhead">
-    <span class="montitle">This Mac</span>
+    <span class="montitle">Resources</span>
     <span class="monmini" id="monMini"
       ><span class="monmini-s" data-k="0"><canvas aria-hidden="true"></canvas><span>CPU <b class="num">—</b></span></span
       ><span class="monmini-s" data-k="1"><canvas aria-hidden="true"></canvas><span>GPU <b class="num">—</b></span></span
@@ -74,35 +120,36 @@
         ><option value="10"></option><option value="11"></option
         ><option value="12"></option></datalist></span>
   </div>
-  <div class="monchart tall">
-    <div class="monlab"><span>Utilization</span><span class="unit">%</span>
-      <span class="monleg" id="legU"></span></div>
-    <canvas id="monU"></canvas>
-  </div>
-  <div class="monchart">
-    <div class="monlab"><span>Network</span><span class="unit">MiB/s</span>
-      <span class="monleg" id="legN"></span></div>
-    <canvas id="monN"></canvas>
-  </div>
-  <div class="monchart">
-    <div class="monlab"><span>Disk I/O · all volumes</span><span class="unit">MiB/s</span>
-      <span class="monleg" id="legD"></span></div>
-    <canvas id="monD"></canvas>
+  <div class="mongrid">
+    <div class="monchart tall">
+      <div class="monlab"><span>Utilization</span><span class="unit">%</span>
+        <span class="monleg" id="legU"></span></div>
+      <canvas id="monU"></canvas>
+    </div>
+    <div class="monchart">
+      <div class="monlab"><span>Network</span><span class="unit">MiB/s</span>
+        <span class="monleg" id="legN"></span></div>
+      <canvas id="monN"></canvas>
+    </div>
+    <div class="monchart">
+      <div class="monlab"><span>Disk I/O · all volumes</span><span class="unit">MiB/s</span>
+        <span class="monleg" id="legD"></span></div>
+      <canvas id="monD"></canvas>
+    </div>
   </div>
   <div class="montip" id="monTip" hidden></div>
 </section>
 
 <section id="tablewrap" aria-label="Queue and history">
-<div class="tabs clpshead" role="tablist">
-  <button class="tab" id="tabQueue"  role="tab" aria-selected="true"  aria-controls="paneQueue">Queue</button>
-  <button class="tab" id="tabLedger" role="tab" aria-selected="false" aria-controls="paneLedger">History</button>
-  <button class="tab" id="tabErrors" role="tab" aria-selected="false" aria-controls="paneErrors">Errors</button>
-  <button class="tab" id="tabEvents" role="tab" aria-selected="false" aria-controls="paneEvents">Events</button>
-  <button class="tab" id="tabProcs"  role="tab" aria-selected="false" aria-controls="paneProcs">Processes</button>
-  <button class="tab" id="resetOrder" type="button" hidden>Reset order</button>
+<div class="panehead clpshead">
+  <span class="panetitle" id="paneTitle">Queue</span>
+  <span class="panesub" id="paneSub"></span>
+  <span class="grow"></span>
+  <span class="panenote" id="paneNote"></span>
+  <button class="panebtn" id="resetOrder" type="button" hidden>Reset order</button>
 </div>
 <div class="uinote" id="uiNotice" hidden></div>
-<div class="wrap"><div class="scroll" id="pane">
+<div class="wrap"><div class="scroll" id="pane" role="tabpanel" aria-labelledby="tabQueue">
   <div class="skelwrap" aria-hidden="true" id="bootSkel"><div class="sk-row"><div class="skel sk-cell sk-w34"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w28"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w41"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w24"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w37"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w31"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w45"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div><div class="sk-row"><div class="skel sk-cell sk-w27"></div><div class="skel sk-cell sk-w10"></div><div class="skel sk-cell sk-w9"></div><div class="skel sk-cell sk-w8"></div></div></div>
 </div></div>
 </section>
@@ -110,6 +157,7 @@
 <footer>
   <span id="gen"></span><span id="stopnote"></span><span>__SCOPE__ &middot; writes: skip/reorder, encode start/abort, stage pulls, pause/resume &middot; never judges, syncs or deletes a library original</span>
 </footer>
+</main>
 
 <script nonce="__NONCE__">__APP_JS__</script>
 </body></html>

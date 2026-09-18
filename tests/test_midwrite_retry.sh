@@ -51,8 +51,8 @@ HBR=1
 hb_running() { return "$HBR"; }
 
 pass=0; fail=0
-ck(){ if [ "$2" = "$3" ]; then echo "PASS $1"; pass=$((pass+1))
-      else echo "FAIL $1: got '$2' want '$3'"; fail=$((fail+1)); fi; }
+ck(){ if [ "$2" = "$3" ]; then printf '.'; pass=$((pass+1))
+      else printf '\nFAIL %s: got %s want %s\n' "$1" "'$2'" "'$3'"; exit 1; fi; }
 
 T="Sandbox (2020)"
 SLUG=$(slug_of "$T")
@@ -167,5 +167,5 @@ drop_partial "$T"
 ck "every partial shape is deleted"         "$(haspartial)" no
 ck "the source is untouched"                "$([ -e "$STAGE/$T/$T Remux-2160p.mkv" ] && echo yes || echo no)" yes
 
-echo "$pass passed, $fail failed"
+printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

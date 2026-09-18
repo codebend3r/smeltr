@@ -1,24 +1,30 @@
 :root {
   --r: 10px;
+  /* The shell: a sticky section rail, then everything else. --rail is the one
+     number the collapse toggle moves, and --rlbl the one switch that hides
+     every label with it, so nothing inside either column has to know the
+     layout changed. Layout tokens, not colours -- like --r above. */
+  --rail: 220px;
+  --rlbl: block;
   /* Utility voice for machine-facing text: status chips, tagline, footer.
      Data cells stay proportional + tabular-nums — tnum aligns digits without
      monospace's width penalty, and reads better at 13px. Exception: the
      queue's Src Mb/s / Src size / Src folder columns are mono by request. */
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   color-scheme: dark;
-  --bg: #08090b;
-  --panel: #0f1116;
-  --panel-2: #13161c;
-  --line: #1e232c;
-  --ink: #e8ecf2;
-  --ink-2: #98a2b3;
-  --ink-3: #5f6a7d;
-  --hot: #ff7a2f;
-  --hot-soft: #ff9a5c;
+  --bg: #0e0f14;
+  --panel: #14161d;
+  --panel-2: #1b1e27;
+  --line: #262a35;
+  --ink: #eef0f5;
+  --ink-2: #a0a8b8;
+  --ink-3: #697285;
+  --hot: #8b7cff;
+  --hot-soft: #a89dff;
   --cool: #4cc9f0;
   --good: #3ddc97;
   --warn: #ffc857;
-  --bad: #ff5c5c;
+  --bad: #ff6b6b;
   /* Beacon halo: --warn is a TEXT token (the light theme darkens it for
      contrast), so a blur of it vanishes on a light background. The halo is
      its own per-theme pair, ring-style like the connection dot's. */
@@ -27,29 +33,29 @@
   /* Derived surfaces. Every colour that used to be a hex literal further down
      is named here instead -- a theme cannot override what it cannot name, and
      the dozen inline hexes were exactly the things that stayed dark. */
-  --live-bd: #3a2415;
-  --live-bg: #16110d;
-  --alert-bd: #5a1d1d;
-  --alert-bg: #1c0f0f;
+  --live-bd: #332d5e;
+  --live-bg: #15121f;
+  --alert-bd: #5e2020;
+  --alert-bg: #1d1013;
   --good-bd: #1d4435;
   --warn-bd: #4a3b18;
   --bad-bd: #4a1f1f;
   --cool-bd: #1c3a47;
-  --hot-bd: #4a3018;
-  --bar-bg: #1a1f27;
+  --hot-bd: #332d5e;
+  --bar-bg: #1b1e27;
   --bar-inset: rgba(0, 0, 0, 0.5);
-  --tab-bd: #2c3543;
-  --td-line: #14181f;
-  --row-hover: #12151b;
-  --row-enc: #171208;
-  --row-ready: #0b1712;
-  --thumb: #2a313d;
-  --thumb-hover: #3b4553;
+  --tab-bd: #323848;
+  --td-line: #1b1e27;
+  --row-hover: #1b1e27;
+  --row-enc: #16142a;
+  --row-ready: #0d1b16;
+  --thumb: #2e3343;
+  --thumb-hover: #3f4658;
   /* Motion accents: the molten bar's sheen, tip and heat glow, and the
      status-dot halo. Tokens in BOTH themes, like every other colour. */
   --sheen: rgba(255, 255, 255, 0.3);
-  --tip: #ffe2c4;
-  --glow: rgba(255, 122, 47, 0.4);
+  --tip: #d9d2ff;
+  --glow: rgba(139, 124, 255, 0.4);
   --halo-good: rgba(61, 220, 151, 0.15);
   --halo-good-2: rgba(61, 220, 151, 0.04);
   /* Size-projection band. Ticks only, never a fill -- a filled zone on a
@@ -59,16 +65,16 @@
      nothing until the first SSE frame; a cold build_state() stats three NAS
      roots and measures ~2 s, so that gap used to render as a black screen.
      --skel is the ghost block, --skel-hi the shimmer crest that travels it. */
-  --skel: #161a21;
-  --skel-hi: #222834;
+  --skel: #1b1e27;
+  --skel-hi: #272c39;
   /* The monitor's NO-DATA wash, and the boundary where history begins. Not
      --skel: the boot skeleton is deliberately near-invisible against
      --panel, and reusing it left a 7 d window with 5 minutes of history
      rendering in dark as a flat 0 line with no visible disclaimer -- which
      is exactly what an idle Mac looks like. The zeros drawn under this
      wash are only honest while the wash reads. */
-  --nodata: #1c222d;
-  --nodata-bd: #39424f;
+  --nodata: #1e222c;
+  --nodata-bd: #3a4250;
   /* Resource-monitor chart series. Deliberately DIMMER than the page accents
      (--hot/--cool/--good are tuned for text and badges): line charts want
      OKLCH L 0.48-0.67 on this surface, and the trio is validated for
@@ -80,45 +86,45 @@
 }
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #f5f7fa;
+  --bg: #f4f5f7;
   --panel: #ffffff;
-  --panel-2: #eef1f6;
-  --line: #dde2ea;
+  --panel-2: #eef0f3;
+  --line: #e1e5ea;
   --ink: #141922;
   --ink-2: #4d5768;
-  --ink-3: #646d7e;
+  --ink-3: #6b7585;
   /* Accents darken rather than invert: the same hues, pulled down until they
      carry on white. The 22px stat values only need 3:1, the 11px labels need
      4.5:1, and --ink-3 is the one doing most of the small-text work. */
-  --hot: #c2540f;
-  --hot-soft: #b04e0c;
+  --hot: #5b4bd6;
+  --hot-soft: #4f40c4;
   --cool: #0b6f9e;
   --good: #0f7a55;
   --warn: #8a5a00;
   --bad: #c22f2d;
   --halo-warn: rgba(138, 90, 0, 0.22);
   --halo-warn-2: rgba(138, 90, 0, 0.06);
-  --live-bd: #f0cbab;
-  --live-bg: #fff6ee;
+  --live-bd: #cfc9f2;
+  --live-bg: #f8f7ff;
   --alert-bd: #f0bab8;
   --alert-bg: #fff4f3;
   --good-bd: #a9dcc6;
   --warn-bd: #e4cd97;
   --bad-bd: #f0bab8;
   --cool-bd: #a6d3e6;
-  --hot-bd: #f0cbab;
+  --hot-bd: #cfc9f2;
   --bar-bg: #e3e7ee;
   --bar-inset: rgba(20, 25, 34, 0.12);
   --tab-bd: #c6cedb;
   --td-line: #eff2f6;
   --row-hover: #f4f7fa;
-  --row-enc: #fff6ea;
+  --row-enc: #f5f3ff;
   --row-ready: #edfaf3;
   --thumb: #c8cfda;
   --thumb-hover: #a8b2c1;
   --sheen: rgba(255, 255, 255, 0.6);
-  --tip: #ffd9ae;
-  --glow: rgba(194, 84, 15, 0.3);
+  --tip: #ded8ff;
+  --glow: rgba(91, 75, 214, 0.3);
   --halo-good: rgba(15, 122, 85, 0.18);
   --halo-good-2: rgba(15, 122, 85, 0.05);
   --band-bd: #2f7357;
@@ -151,9 +157,355 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-variant-numeric: tabular-nums;
-  padding: 28px 24px 64px;
-  max-width: 1680px;
-  margin: 0 auto;
+  display: grid;
+  grid-template-columns: var(--rail) minmax(0, 1fr);
+  min-height: 100vh;
+  transition: grid-template-columns 0.2s ease;
+}
+/* The collapse only exists where there IS a rail to collapse. Below 640px the
+   rail lies flat across the top, and an unguarded `body.railed` -- remembered
+   from a wider window, on the same phone -- outranked every flat-rail rule by
+   specificity: the switch stayed on end and hung off the strip, and the nav
+   counts stayed hidden with nothing gained. Guard the whole set. */
+@media (min-width: 641px) {
+  body.railed {
+    --rail: 66px;
+    --rlbl: none;
+  }
+  body.railed .gauges {
+    display: none;
+  }
+  body.railed .railbtn .ic {
+    transform: rotate(180deg);
+  }
+  /* Collapsed, the rail's content box is ~42px. A count, and a three-segment
+     theme switch laid out sideways, are both wider than that and were clipped
+     by the rail's own edge -- so the counts go with the labels and the switch
+     stands on end. The nav icon still carries the error colour, which is the
+     one thing the count was saying that a collapsed rail must keep. */
+  body.railed .nav .navn {
+    display: none;
+  }
+  /* One exception: an open error count is the reason to expand the rail
+     again, so it survives the collapse. Colour alone must never be the
+     carrier -- a red triangle says "something", the number says how much. */
+  body.railed .nav.loud .navn {
+    display: inline;
+    font-size: 10.5px;
+  }
+  body.railed .railfoot {
+    flex-direction: column;
+    gap: 10px;
+  }
+  body.railed .themeseg {
+    flex-direction: column;
+  }
+  body.railed .themebtn + .themebtn {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+}
+/* FULL WIDTH (operator 2026-09-15: "make use of all the space available on
+   large screens"). The 1560px cap used to leave a wide monitor with a river
+   of empty background to the right of a History table that was already
+   truncating titles.
+
+   The width comes from the GRID, not from `100vw`: body is
+   `var(--rail) minmax(0, 1fr)`, so `1fr` is exactly the viewport minus the
+   rail, and it tracks the rail's collapse for free. `100vw` here would be
+   wrong twice over -- it ignores the rail (pushing 66-240px of content off
+   the right edge) and, on every platform with classic overlay-less
+   scrollbars, it counts the scrollbar's width too and guarantees a permanent
+   horizontal scroll. */
+main {
+  min-width: 0;
+  padding: 24px 26px 56px;
+}
+
+/* ---- the rail ------------------------------------------------------------
+   Its labels, counts and gauges all hide together behind --rlbl; the icons
+   and the connection dot never do, because a collapsed rail still has to
+   answer "which tab am I on" and "is the stream alive". ---- */
+.rail {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow: hidden;
+  box-sizing: border-box;
+  padding: 16px 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+}
+.rlbl {
+  display: var(--rlbl);
+}
+.rail .brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 8px 16px;
+  min-width: 0;
+}
+.rail .brand .rlbl {
+  min-width: 0;
+}
+.rail .wordmark {
+  display: block;
+  font-size: 15px;
+  font-weight: 680;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+.rail .tag {
+  display: block;
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.navlist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.nav .ic {
+  width: 15px;
+  height: 15px;
+  color: var(--ink-3);
+}
+.nav .rlbl {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav .navn {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.nav:hover {
+  background: var(--panel-2);
+  color: var(--ink);
+}
+.nav:focus-visible {
+  outline: 2px solid var(--cool);
+  outline-offset: -2px;
+}
+.nav[aria-selected="true"] {
+  background: var(--panel-2);
+  color: var(--ink);
+  font-weight: 560;
+}
+.nav[aria-selected="true"] .ic {
+  color: var(--hot);
+}
+.nav[aria-selected="true"] .navn {
+  color: var(--ink-2);
+}
+/* An open error count is the one nav item allowed to shout; it goes quiet
+   again the moment the count is zero, so a red rail always means work. */
+.nav.loud .ic,
+.nav.loud .navn {
+  color: var(--bad);
+}
+.railsec {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding: 20px 8px 8px;
+}
+.gauges {
+  display: grid;
+  gap: 10px;
+  padding: 0 10px;
+}
+.gauge {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0 8px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.gauge .gk {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gauge .gk .ic {
+  width: 12px;
+  height: 12px;
+  color: var(--ink-3);
+}
+.gauge b {
+  color: var(--ink);
+  font-weight: 500;
+}
+.gauge .gbar {
+  grid-column: 1 / -1;
+  display: block;
+  height: 3px;
+  margin-top: 5px;
+  border-radius: 2px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+.gauge .gbar i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 2px;
+  background: var(--ink-3);
+  transition: width 0.4s linear;
+}
+/* One colour per metric, and the SAME colour the chart below draws it in --
+   CPU is --ch-1 in the rail, in the sparkline and on the axis. */
+.gauge[data-g="cpu"] .gbar i {
+  background: var(--ch-1);
+}
+.gauge[data-g="gpu"] .gbar i {
+  background: var(--ch-2);
+}
+.gauge[data-g="ram"] .gbar i {
+  background: var(--ch-3);
+}
+.gauge[data-g="disk"].low b {
+  color: var(--warn);
+}
+.gauge[data-g="disk"].low .gbar i {
+  background: var(--warn);
+}
+.railfill {
+  flex: 1;
+  min-height: 12px;
+}
+.railfoot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 0 6px;
+}
+.railfoot .conn {
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  color: var(--ink-3);
+  min-width: 0;
+  margin: 0;
+}
+.railfoot .conn .rlbl {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.railbtn {
+  width: 26px;
+  height: 24px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: none;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.railbtn:hover {
+  color: var(--ink);
+}
+.railbtn:focus-visible {
+  outline: 2px solid var(--cool);
+  outline-offset: -2px;
+}
+.railbtn .ic {
+  width: 12px;
+  height: 12px;
+  transition: transform 0.2s ease;
+}
+
+/* ---- the page head -------------------------------------------------------
+   "Overview" over the totals. The design put both on one baseline, but every
+   stat carries a qualifier that is the half keeping its number honest --
+   "115 of 116 encodes measured", "incl. 1 encoding", "library not fully
+   mounted" -- and six of those do not fit beside a heading. They are not
+   optional and they are not a tooltip: a hover-only disclaimer is absent from
+   a screenshot, from a phone, and from a screen reader on a plain div. So the
+   heading takes its own line and the strip keeps all three lines per metric,
+   with the card chrome dropped for the design's flat look. ---- */
+.pagehead {
+  display: block;
+  margin: 0 0 20px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.pagehead h1 {
+  font-size: 18px;
+  font-weight: 640;
+  letter-spacing: -0.01em;
+  margin-bottom: 12px;
+}
+.grow {
+  flex: 1;
+}
+.pagehead #stats {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+.pagehead .statsgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px 24px;
+}
+/* Inline metrics, not cards: label, value, qualifier -- no chrome. */
+.pagehead .stat:not(.skel) {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  min-width: 0;
+}
+.pagehead .stat:not(.skel) .k {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+}
+.pagehead .stat:not(.skel) .v {
+  font-size: 19px;
+  font-weight: 620;
+  margin-top: 2px;
+}
+.pagehead .stat:not(.skel) .s {
+  font-size: 11px;
+  margin-top: 3px;
+  line-height: 1.35;
 }
 .num,
 td.n,
@@ -268,7 +620,6 @@ header {
    margin -- so the chevrons land in one vertical column at the right
    edge instead of three ragged offsets, and a fold reads as folding a
    box rather than as content vanishing off a bare page. */
-#stats,
 #tablewrap {
   position: relative;
   background: var(--panel);
@@ -281,24 +632,6 @@ header {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
   gap: 10px;
-}
-/* Cards inside a card: the inner tier steps to --panel-2 so six bordered
-   stats on a panel of the same colour do not read as one flat field. */
-#stats .stat {
-  background: var(--panel-2);
-}
-/* The totals strip folds like the other cards. Its head carries a live
-   one-line digest that is REVEALED only while collapsed -- a fold that
-   hid every number would make a mounted library and an unmounted one
-   look identical, which is the failure this page refuses everywhere. */
-#stats > .monhead {
-  margin-bottom: 9px;
-}
-#statsSum {
-  display: none;
-}
-#stats.collapsed #statsSum {
-  display: inline;
 }
 .stat {
   background: var(--panel);
@@ -346,19 +679,19 @@ body:not(.booted) .stat:not(.skel),
 body:not(.booted) .card:not(.skel) {
   animation: rise 0.5s cubic-bezier(0.2, 0.7, 0.3, 1) both;
 }
-body:not(.booted) .stats .stat:nth-child(2) {
+body:not(.booted) #stats .stat:nth-child(2) {
   animation-delay: 0.05s;
 }
-body:not(.booted) .stats .stat:nth-child(3) {
+body:not(.booted) #stats .stat:nth-child(3) {
   animation-delay: 0.1s;
 }
-body:not(.booted) .stats .stat:nth-child(4) {
+body:not(.booted) #stats .stat:nth-child(4) {
   animation-delay: 0.15s;
 }
-body:not(.booted) .stats .stat:nth-child(5) {
+body:not(.booted) #stats .stat:nth-child(5) {
   animation-delay: 0.2s;
 }
-body:not(.booted) .stats .stat:nth-child(6) {
+body:not(.booted) #stats .stat:nth-child(6) {
   animation-delay: 0.25s;
 }
 body:not(.booted) #liveWrap .card {
@@ -566,12 +899,11 @@ body:not(.booted) #liveWrap .card {
 /* Heads reserve the chevron's column rather than flowing around it --
    the monitor's zoom slider used to run right up to where it sits. */
 .monhead,
-#tablewrap > .tabs {
+#tablewrap > .panehead {
   padding-right: 26px;
 }
 .card.collapsed,
 #sysmon.collapsed,
-#stats.collapsed,
 #tablewrap.collapsed {
   padding-top: 11px;
   padding-bottom: 11px;
@@ -590,14 +922,21 @@ body:not(.booted) #liveWrap .card {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* The live card's first strip is the chip row: keep the title and the
-   VERDICT chip (always appended last), drop the informational chips — a
-   collapsed DOWNSCALE or TRACK LOSS must not render like a healthy encode,
-   least of all on the phones where the chips wrapped out of the crop. */
+/* The live card's first strip is the head: keep the title and the VERDICT
+   chip (always appended last), drop the informational chips — a collapsed
+   DOWNSCALE or TRACK LOSS must not render like a healthy encode, least of
+   all on the phones where the chips wrapped out of the crop. The pause
+   circle rides in the head, so folding never hides the control. */
+.card.collapsed > .hero-head:first-child,
 .card.collapsed > .live-top:first-child {
   display: flex;
   flex-wrap: nowrap;
   white-space: normal;
+  overflow: hidden;
+}
+.card.collapsed > .hero-head > .live-top {
+  display: flex;
+  flex-wrap: nowrap;
   overflow: hidden;
 }
 .card.collapsed .live-top > .chip {
@@ -615,6 +954,9 @@ body:not(.booted) #liveWrap .card {
   margin: 8px 0 0;
   gap: 12px;
 }
+.card.collapsed > .hero {
+  display: none;
+}
 .card.collapsed > .barrow .pctbig {
   font-size: 15px;
 }
@@ -624,13 +966,6 @@ body:not(.booted) #liveWrap .card {
 #sysmon.collapsed > .monhead {
   display: flex;
 }
-#stats.collapsed > * {
-  display: none;
-}
-#stats.collapsed > .monhead {
-  display: flex;
-  margin-bottom: 0;
-}
 /* The queue/history table folds onto its own tab bar, which already
    carries both row counts -- so the collapsed strip still says how much
    work is queued and how much has landed. A live #uiNotice survives the
@@ -638,7 +973,7 @@ body:not(.booted) #liveWrap .card {
 #tablewrap.collapsed > * {
   display: none;
 }
-#tablewrap.collapsed > .tabs {
+#tablewrap.collapsed > .panehead {
   display: flex;
   margin-bottom: 0;
 }
@@ -739,8 +1074,70 @@ body:not(.booted) #liveWrap .card {
    a sheen flowing along the fill, a white-hot leading tip, and the exact
    percentage beside it. The fill node is persistent across SSE frames (see
    renderLive), so the width transition and the keyframes actually run. */
-.barrow {
+/* ---- the running encode's hero -------------------------------------------
+   A ring on the left, everything the encode is claiming on the right. The
+   linear bar below is the FOLDED card's progress only; open, the ring is the
+   one place the percentage lives. ---- */
+.hero-head {
   display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+.hero-head > .live-top {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
+}
+.hero {
+  display: flex;
+  gap: 26px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+.hero-body {
+  flex: 1 1 360px;
+  min-width: 0;
+}
+.ring {
+  position: relative;
+  flex: none;
+  width: 172px;
+  height: 172px;
+  display: grid;
+  place-items: center;
+  align-self: center;
+}
+.ring svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+  fill: none;
+}
+.ring-track {
+  stroke: var(--bar-bg);
+  stroke-width: 8;
+}
+.ring-arc {
+  stroke: var(--hot);
+  stroke-width: 8;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.4s linear;
+}
+.ring-mid {
+  position: absolute;
+  text-align: center;
+}
+.ring-mid .pctbig {
+  font-size: 30px;
+}
+.ring-sub {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  margin-top: 2px;
+}
+.barrow {
+  display: none;
   align-items: center;
   gap: 16px;
   margin: 14px 0 10px;
@@ -1160,33 +1557,51 @@ body:not(.booted) #liveWrap .card {
   border-top: 1px solid var(--line);
 }
 
-.tabs {
+/* The pane's own head strip. The tabs moved to the rail, so this is what
+   names the table -- and what the fold collapses onto, which is why the
+   sub-line carries the counts the tab bar used to. */
+.panehead {
   display: flex;
-  gap: 6px;
+  align-items: baseline;
+  gap: 10px;
   margin: 0 0 12px;
+  flex-wrap: wrap;
 }
-.tab {
+.panetitle {
+  font-weight: 620;
+  font-size: 13.5px;
+}
+.panesub {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.panenote {
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.panebtn {
   background: var(--panel);
   border: 1px solid var(--line);
   color: var(--ink-2);
-  padding: 6px 13px;
-  border-radius: 8px;
+  padding: 4px 11px;
+  border-radius: 7px;
   font: inherit;
-  font-size: 12.5px;
+  font-size: 11.5px;
   cursor: pointer;
-  transition:
-    color 0.15s,
-    border-color 0.15s,
-    background 0.15s;
 }
-.tab[aria-selected="true"] {
-  background: var(--panel-2);
+.panebtn:hover {
   color: var(--ink);
   border-color: var(--tab-bd);
 }
-.tab:focus-visible {
+.panebtn:focus-visible {
   outline: 2px solid var(--cool);
   outline-offset: 2px;
+}
+/* An open error count colours the pane title too, not only the rail item --
+   the count is the reason the tab is worth opening. */
+.panehead.loud .panesub {
+  color: var(--bad);
 }
 
 .wrap {
@@ -1651,9 +2066,6 @@ tr:focus-within .rowacts,
 /* The tab itself goes red only while something is actually ERRORED. A tab
    counting three hand-skips is information; a red one is an alarm, and an
    alarm that is on for a preference is an alarm nobody reads. */
-.tab.hasErr {
-  color: var(--bad);
-}
 /* Queue control. The grip drags, the button skips; both write only the
    overrides file on the server, nothing else. */
 .grip {
@@ -1883,14 +2295,6 @@ tr.pin-end td {
     height: 44px;
   }
 }
-/* The armed consequence, on the card and not in a tooltip. */
-.ppnote {
-  margin: -2px 0 6px;
-  font-family: var(--mono);
-  font-size: 11.5px;
-  letter-spacing: 0.02em;
-  color: var(--warn);
-}
 /* The ledger's finished stamp: date, then the time set apart so the date
    stays the thing you scan down. nowrap keeps the pair on one line. */
 .nowrap {
@@ -2042,8 +2446,32 @@ footer {
 #sysmon.collapsed .monzoom {
   display: none;
 }
+/* Three charts abreast where there is room, stacked where there is not. The
+   Utilization chart leads and keeps its extra height, so the trio it carries
+   is never the one squeezed. */
+.mongrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 14px;
+  margin-top: 12px;
+}
+.mongrid > .monchart.tall {
+  grid-column: 1 / -1;
+}
+@media (min-width: 1240px) {
+  .mongrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .mongrid > .monchart.tall {
+    grid-column: auto;
+  }
+}
 .monchart {
-  margin-top: 10px;
+  min-width: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 12px 14px;
 }
 .monlab {
   display: flex;
@@ -2139,6 +2567,90 @@ footer {
    an index column carries nothing the row order does not), and any column
    sliced at a boundary is blanked by the seam script rather than clipped.
    Every colour here is an existing token, so both themes are covered. ---- */
+/* ---- the rail, narrowing ------------------------------------------------
+   Below 1080px there is no room for labels, so the rail is icons only and the
+   toggle goes away rather than offering a width the page cannot give. Below
+   640px it stops being a rail at all and lies flat across the top: a 100vh
+   sticky column on a phone is a screen of chrome above the first number. --- */
+@media (max-width: 1080px) {
+  body,
+  body.railed {
+    --rail: 66px;
+    --rlbl: none;
+  }
+  .gauges,
+  .railsec,
+  .nav .navn,
+  #railToggle {
+    display: none;
+  }
+  .nav.loud .navn {
+    display: inline;
+    font-size: 10.5px;
+  }
+  .railfoot {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .themeseg {
+    flex-direction: column;
+  }
+  .themebtn + .themebtn {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+}
+@media (max-width: 640px) {
+  body,
+  body.railed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .rail {
+    position: static;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .rail::-webkit-scrollbar {
+    display: none;
+  }
+  .rail .brand {
+    padding: 0;
+  }
+  .navlist {
+    flex-direction: row;
+    gap: 4px;
+  }
+  .nav {
+    padding: 7px 9px;
+  }
+  /* The flat rail is as wide as the page, so the counts come back -- they
+     were only hidden because a 66px column could not hold them. */
+  .nav .navn {
+    display: inline;
+  }
+  .railfill {
+    min-height: 0;
+  }
+  .railfoot {
+    flex-direction: row;
+    padding: 0;
+  }
+  /* The flat rail is a horizontal strip again, so the switch lies back down. */
+  .themeseg {
+    flex-direction: row;
+  }
+  .themebtn + .themebtn {
+    border-left: 1px solid var(--line);
+    border-top: 0;
+  }
+}
 @media (max-width: 700px) {
   .monmini {
     gap: 10px;
@@ -2146,8 +2658,21 @@ footer {
   .monmini canvas {
     width: 64px;
   }
-  body {
+  main {
     padding: 16px 12px 48px;
+  }
+  .hero {
+    gap: 16px;
+  }
+  .ring {
+    width: 132px;
+    height: 132px;
+  }
+  .ring-mid .pctbig {
+    font-size: 24px;
+  }
+  .pagehead .statsgrid {
+    gap: 8px 18px;
   }
   #monZoom {
     width: 100%;
@@ -2233,8 +2758,8 @@ footer {
     width: 44px;
     height: 44px;
   }
-  .tab {
-    padding: 11px 16px;
+  .nav {
+    padding: 11px 12px;
   }
   /* HTML5 drag-and-drop does not exist on touch; hide the handles rather
      than advertise a gesture that cannot work. Skip buttons stay. */
@@ -2259,4 +2784,57 @@ footer {
     background: var(--panel-2);
     border-color: var(--line);
   }
+}
+
+/* ---- Blacklist tab --------------------------------------------------------
+ One entry per row, the titles it blocks stacked inside the last cell. The
+ stack is a column of its own so a pattern that catches three films does not
+ turn the table into three merged-looking rows; each hit keeps the queue's
+ own mbps/size/NAS ordering so the eye reads it the same way it reads the
+ Queue tab. Colours are tokens, so both themes follow. ---- */
+.blhits {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.blhit {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.blhit .q-mbps {
+  min-width: 4ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 680;
+}
+/* The band colours are written for `td.q-mbps`; these hits are spans inside
+ one cell, so they need their own selectors or every number renders flat and
+ the tab silently loses the ranking cue the Queue tab has. */
+.blhit .q-mbps.mbps-hi {
+  color: var(--hot-soft);
+}
+.blhit .q-mbps.mbps-mid {
+  color: var(--warn);
+}
+.blhit .q-mbps.mbps-lo {
+  color: var(--ink-2);
+}
+.blhit .q-size {
+  min-width: 9ch;
+  text-align: right;
+  color: var(--ink-3);
+}
+
+/* The History tab's encode window: "4:31 pm — 5:32 pm (1h1m)". The duration is
+ the part the eye wants first, so it keeps full ink while the clock times sit
+ back; the cell never wraps, because a window split across two lines reads as
+ two separate times. */
+.enc-win {
+  font-variant-numeric: tabular-nums;
+}
+.enc-win .enc-dur {
+  color: var(--ink-2);
+  font-weight: 560;
 }

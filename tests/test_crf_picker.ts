@@ -128,6 +128,7 @@ function check(name, cond, detail?) {
   } else {
     failed++;
     console.log("\nFAIL [" + section + "] " + name + (detail ? "\n     " + detail : ""));
+    process.exit(1);
   }
 }
 

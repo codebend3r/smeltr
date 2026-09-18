@@ -54,6 +54,39 @@
       return (h % 12 || 12) + ":" + m + (sec || "") + " " + (h < 12 ? "am" : "pm");
     });
   }
+  /* The encode WINDOW: when HandBrake started, when it finished, and the wall
+   time between (operator 2026-09-15). Only `finished_at` and `encode_seconds`
+   are recorded, so the start is derived -- which means a row with no duration
+   has no window at all and gets an em dash. The eight hand-migrated rows and
+   every adopted-by-scan row are exactly that: `encode_seconds` is 0 because
+   nobody timed them, and back-solving a start from a 0 would print the finish
+   twice and call it an instant encode.
+
+   `finished_at` is local wall time as the driver wrote it, so it is parsed
+   FIELD BY FIELD into a local Date. Handing "2026-09-15 20:11:05" to the Date
+   constructor instead would be read as UTC by some engines and shift every
+   start time by the browser's offset -- the same trap that made the monitor
+   labels jump 4h under a TZ=UTC browser on 2026-09-09. */
+  var FIN_RE = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/;
+  function finDate(s) {
+    var m = FIN_RE.exec(String(s || ""));
+    if (!m) return null;
+    return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+  }
+  /* 1h1m / 58m / 42s. Hours never roll into days: a 20h21m encode (Super Mario
+   Bros, 73317 s) reads as one long night, and "0d20h" would not. */
+  function dur(sec) {
+    var h = Math.floor(sec / 3600),
+      m = Math.round((sec % 3600) / 60);
+    if (m === 60) {
+      h += 1;
+      m = 0;
+    }
+    if (h) return h + "h" + m + "m";
+    if (sec >= 60) return Math.round(sec / 60) + "m";
+    return Math.round(sec) + "s";
+  }
+
   /* HandBrake's header reads "Wed Sep  2 21:14:37 2026". The year moves ahead
    of the clock so the am/pm suffix is not stranded in the middle of the
    line; a line that does not match is still clock-converted in place. */
@@ -220,9 +253,40 @@
     return b;
   }
 
-  function renderAlert(s, note) {
+  function renderAlert(s, note, pushes) {
     var host = document.getElementById("alert");
     host.replaceChildren();
+    /* A finished encode the pusher could not send back (no or two library
+     folders, a copy that did not verify). Both copies are kept and the
+     title waits in complete/; nothing else on the page says so. */
+    var failedPushes = Object.keys(pushes || {}).filter(function (k) {
+      return pushes[k].state === "failed";
+    });
+    if (failedPushes.length) {
+      var pc = el("div", "card alert");
+      pc.appendChild(
+        el(
+          "div",
+          "live-title",
+          failedPushes.length +
+            (failedPushes.length === 1 ? " finished encode" : " finished encodes") +
+            " could not be pushed back to the NAS",
+        ),
+      );
+      failedPushes.forEach(function (k) {
+        pc.appendChild(el("div", "verdict", pushes[k].title + " — " + pushes[k].note));
+      });
+      pc.appendChild(
+        el(
+          "div",
+          "muted",
+          "Both copies are kept; nothing on the NAS was touched. Delete " +
+            ".push-failed-<title> on the X9 to retry.",
+        ),
+      );
+      makeCollapsible(pc, "alert-push", true);
+      host.appendChild(pc);
+    }
     /* Outcome of the last start/abort. The slow halves (track parity, the kill
      grace) finish long after their POST returned, so this banner is how they
      report. kind=bad stays until the next action; ok/warn are informational. */
@@ -388,22 +452,6 @@
         " not yet encoded",
     );
     prevStats = seen;
-    /* The collapsed digest. Same values as the cards above, same refusal
-     to print a queue number while a root is offline -- a folded "148
-     queued" read off a partial library is the most dangerous cell on
-     the page whether or not the grid is showing. */
-    var sum = document.getElementById("statsSum");
-    if (sum)
-      sum.textContent =
-        gib(s.reclaimed_bytes) +
-        " reclaimed · " +
-        pct(s.avg_saved_pct) +
-        " average shrink · " +
-        (complete
-          ? s.queue_waiting +
-            " queued · " +
-            (s.job_progress_pct == null ? "progress —" : "~" + pct(s.job_progress_pct) + " done")
-          : "queue unknown — library not fully mounted");
   }
 
   function liveChips(e) {
@@ -891,7 +939,7 @@
       cls: "pause",
       act: "Pause encoding",
       sub: live.length
-        ? "after this encode — " + live[0].title + " still finishes and syncs"
+        ? "after this encode — " + live[0].title + " still finishes and moves to complete/"
         : lowSpace
           ? "waiting: low space on the staging drive — free up space"
           : "nothing new will start",
@@ -916,9 +964,8 @@
   }
   /* The circle. It leads the progress bar inside the live card, so the
    control sits ON the thing it controls instead of in a card above it. The
-   sentence the big card carried becomes its accessible name and tooltip;
-   the ARMED consequence (a sync REPLACES the library original) still renders
-   on the card as .ppnote, because a tooltip never renders on the phones. */
+   sentence the big card carried becomes its accessible name and tooltip,
+   and that is ALL that changes on the card when pause is armed. */
   function circleToggle(paused, driverAlive, live, nextTitle) {
     var t = toggleIntent(paused, driverAlive, live, nextTitle, false);
     var b = el("button", "pp " + t.cls);
@@ -984,10 +1031,16 @@
     if (q != null) top.appendChild(el("span", "chip", qLabel(enc) + " " + q));
     top.appendChild(el("span", "chip", "decoder errors not yet reported"));
     top.appendChild(el("span", "chip", "UNKNOWN"));
-    c.appendChild(top);
+    /* The circle rides the head, exactly as the running card's does. It used
+     to lead the bar inside `.barrow` -- and `.barrow` is now the FOLDED
+     card's progress only, so leaving it there made the one control that
+     restarts the encoder display:none for the whole of a deliberate pause. */
+    var head = el("div", "hero-head");
+    head.appendChild(top);
+    head.appendChild(circleToggle(paused, driverAlive, [], nextRow.title));
+    c.appendChild(head);
     var row = el("div", "barrow"),
       bar = el("div", "bar");
-    row.appendChild(circleToggle(paused, driverAlive, [], nextRow.title));
     bar.setAttribute("role", "progressbar");
     bar.setAttribute("aria-label", "Encode progress");
     bar.setAttribute("aria-valuemin", "0");
@@ -1011,6 +1064,67 @@
     kv.appendChild(disk.node);
     c.appendChild(kv);
     return { node: c, disk: disk };
+  }
+
+  /* The hero ring. A radial track plus an arc, drawn in the SVG namespace like
+   icon() -- never innerHTML. The arc is one stroke-dashoffset away from any
+   percentage, so the live pass writes a number and nothing is rebuilt; it
+   carries the progressbar role and its ARIA value, because the linear bar it
+   replaces is only in the DOM for the folded card. */
+  var RING_R = 52,
+    RING_C = 2 * Math.PI * RING_R;
+  function ringNode() {
+    var NS = "http://www.w3.org/2000/svg";
+    var n = el("div", "ring");
+    var svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 120 120");
+    svg.setAttribute("aria-hidden", "true");
+    function circ(cls) {
+      var c = document.createElementNS(NS, "circle");
+      c.setAttribute("cx", "60");
+      c.setAttribute("cy", "60");
+      c.setAttribute("r", String(RING_R));
+      c.setAttribute("class", cls);
+      return c;
+    }
+    svg.appendChild(circ("ring-track"));
+    var arc = circ("ring-arc");
+    arc.setAttribute("stroke-dasharray", String(RING_C));
+    arc.setAttribute("stroke-dashoffset", String(RING_C));
+    svg.appendChild(arc);
+    n.appendChild(svg);
+    var mid = el("div", "ring-mid");
+    var p = el("div", "pctbig num", "—");
+    var sub = el("div", "ring-sub", "");
+    mid.appendChild(p);
+    mid.appendChild(sub);
+    n.appendChild(mid);
+    n.setAttribute("role", "progressbar");
+    n.setAttribute("aria-label", "Encode progress");
+    n.setAttribute("aria-valuemin", "0");
+    n.setAttribute("aria-valuemax", "100");
+    return { node: n, arc: arc, pct: p, sub: sub };
+  }
+  /* `bar` is the folded card's copy: role=progressbar rides BOTH, because
+   the fold hides the ring and a folded encode that announced no progress at
+   all is the "stalled, never a progress bar" failure in ARIA form. A null
+   percentage DROPS valuenow rather than claiming 0 -- the centre text reads
+   an em dash, and role=progressbar is children-presentational, so valuenow
+   is the whole contract an announcement gets. The reported value is the
+   CLAMPED one: HandBrake can log past 100, and the arc, the attribute and
+   the text must not be three different numbers. */
+  function ringWrite(r, e, bar) {
+    var raw = Number(e.pct);
+    var known = e.pct != null && raw === raw;
+    var v = known ? Math.max(0, Math.min(100, raw)) : 0;
+    r.arc.style.strokeDashoffset = String(RING_C * (1 - v / 100));
+    r.pct.textContent = pctLive(e.pct);
+    r.sub.textContent = e.eta_s == null ? "ETA —" : "ETA " + dur(e.eta_s);
+    [r.node, bar].forEach(function (n) {
+      if (!n) return;
+      if (known) n.setAttribute("aria-valuenow", String(v));
+      else n.removeAttribute("aria-valuenow");
+    });
   }
 
   function renderLive(live, s, driverAlive, nextTitle, nextRow, defs) {
@@ -1128,11 +1242,41 @@
       live.forEach(function (e) {
         var c = el("div", "card live"),
           refs = {};
+        /* Head: the chip row, and the pause circle pinned to its right. The
+         circle used to lead the linear bar; the bar is now only the FOLDED
+         card's progress, and a control that vanished when the card opened
+         would be the one thing on this card you cannot find. */
+        var head = el("div", "hero-head");
         refs.top = liveChips(e);
-        c.appendChild(refs.top);
+        head.appendChild(refs.top);
+        head.appendChild(circleToggle(paused, driverAlive, live, nextTitle));
+        c.appendChild(head);
+        var hero = el("div", "hero");
+        refs.ring = ringNode();
+        hero.appendChild(refs.ring.node);
+        var body = el("div", "hero-body");
+        var pj = projBlock();
+        refs.proj = pj.refs;
+        body.appendChild(pj.node);
+        var kv = el("div", "kv");
+        refs.kv = {};
+        liveFields(e).forEach(function (p) {
+          var cell = kvCell(p[0], p[2], p[3], "—");
+          refs.kv[p[0]] = cell.b;
+          kv.appendChild(cell.node);
+        });
+        refs.disk = diskField();
+        kv.appendChild(refs.disk.node);
+        body.appendChild(kv);
+        refs.verdict = el("div", "verdict", "");
+        body.appendChild(refs.verdict);
+        hero.appendChild(body);
+        c.appendChild(hero);
+        /* The folded card's progress, and only that: a fold that showed a
+         title and a verdict chip alone read as "nothing moving". Same
+         persistent `.bar > i` node, so the width transition still runs. */
         var row = el("div", "barrow"),
           bar = el("div", "bar");
-        row.appendChild(circleToggle(paused, driverAlive, live, nextTitle));
         bar.setAttribute("role", "progressbar");
         bar.setAttribute("aria-label", "Encode progress");
         bar.setAttribute("aria-valuemin", "0");
@@ -1144,39 +1288,15 @@
         refs.pct = el("div", "pctbig num", "—");
         row.appendChild(refs.pct);
         c.appendChild(row);
-        var pj = projBlock();
-        refs.proj = pj.refs;
-        c.appendChild(pj.node);
-        var kv = el("div", "kv");
-        refs.kv = {};
-        liveFields(e).forEach(function (p) {
-          var cell = kvCell(p[0], p[2], p[3], "—");
-          refs.kv[p[0]] = cell.b;
-          kv.appendChild(cell.node);
-        });
-        refs.disk = diskField();
-        kv.appendChild(refs.disk.node);
-        c.appendChild(kv);
-        refs.verdict = el("div", "verdict", "");
-        c.appendChild(refs.verdict);
-        /* Pause-after-current is the circle at the head of the bar. The
-         encode itself is never touched: the flag only stops the NEXT one
-         from starting, which is the difference between this and the abort
-         button on the queue row. The armed label must name the consequence
-         ON the card -- "sync" means the library original is REPLACED, and a
-         tooltip never renders on the phones. */
-        if (paused)
-          c.appendChild(
-            el(
-              "div",
-              "ppnote",
-              "will pause after this encode — " +
-                e.title +
-                " still finishes, syncs, and replaces its " +
-                (e.source_bytes != null ? gib(e.source_bytes) + " " : "") +
-                "library original",
-            ),
-          );
+        /* Pause-after-current is the circle at the head of the bar, and the
+         circle is the ONLY thing on this card that changes when it is armed
+         (operator's pick, 2026-09-11, from screenshots of both options). The
+         encode itself is never touched: the flag only stops the NEXT one from
+         starting, which is the difference between this and the abort button
+         on the queue row. The consequence is the circle's accessible name and
+         tooltip; the amber note line that used to be appended here claimed a
+         sync that no longer happens (finished encodes move to complete/ and
+         are pushed beside their original). */
         /* Distinct key from the idle card — folding "Nothing encoding" must
          not fold the next real encode — and loud verdicts always open. */
         makeCollapsible(c, "live-run", !!PROJ_LOUD[e.verdict]);
@@ -1191,8 +1311,8 @@
       refs.top.replaceWith(top);
       refs.top = top;
       refs.fill.style.width = (e.pct || 0) + "%";
-      refs.bar.setAttribute("aria-valuenow", String(e.pct || 0));
       refs.pct.textContent = pctLive(e.pct);
+      ringWrite(refs.ring, e, refs.bar);
       updateProj(refs.proj, e);
       liveFields(e).forEach(function (p) {
         var b = refs.kv[p[0]];
@@ -1704,6 +1824,17 @@
       r.enc_q == null ? null : r.enc_q,
     ];
   }
+  /* The push-back queue's SHAPE: which titles, in which state, at which
+   position. Bytes are deliberately absent -- a row's structure does not
+   change as a transfer grows; the bar rides updateProgress(). */
+  function pushShape(p) {
+    return Object.keys(p || {})
+      .sort()
+      .map(function (k) {
+        var v = p[k];
+        return [k, v.state, v.pos || 0, v.total || 0, v.nas || ""];
+      });
+  }
   function xShape(t) {
     return [t.title, t.nas, t.src_dir, !!t.stalled, t.total_bytes, t.pct != null];
   }
@@ -2021,8 +2152,9 @@
     });
   }
 
-  function renderLedger(rows, xfers) {
+  function renderLedger(rows, xfers, pushes, pushInfo) {
     progRefs = {};
+    pushInfo = pushInfo || {};
     var pane = document.getElementById("pane");
     pane.replaceChildren();
     if (!rows.length) {
@@ -2050,6 +2182,7 @@
           { label: "Tracks" },
           { label: "NAS" },
           { label: "Moved to" },
+          { label: "Encode time" },
           { label: "Finished" },
         ],
         ordered,
@@ -2103,13 +2236,54 @@
               else destTd.appendChild(el("span", "muted", "—"));
             }
           } else if (r.kept) {
-            /* Kept in place under the no-delete policy: encoded, recorded,
-             nothing moved. Named, never a dash that reads as "unknown". */
-            nasTd.appendChild(el("span", "mark done", "kept"));
+            /* Kept under the no-delete policy: encoded, recorded, the library
+             original never touched. WHERE the encode is now comes from the
+             pusher's markers (ops/push-complete.sh, 2026-09-10): waiting in
+             complete/ for the wire (numbered, largest first), on the wire
+             (the bar rides the row below), refused, or landed on the NAS
+             beside its original. Named, never a dash that reads as
+             "unknown" -- and never "on the X9" for a file that left it. */
             destTd = el("td");
-            var kp = el("span", "muted", "on the X9, beside its source");
-            kp.title = "No-delete policy: nothing was synced or deleted. Move it by hand.";
-            destTd.appendChild(kp);
+            var pk = pushes && pushes[r.title.toLowerCase()];
+            if (pk && pk.state === "pushed") {
+              nasTd.appendChild(nasMark(pk.nas || "?"));
+              if (pk.bucket && pk.nas && pk.nas !== "?")
+                destTd.appendChild(el("span", "mark bucket " + nasClass(pk.nas), pk.bucket));
+              var pd = el("span", "muted", " beside its original");
+              pd.title =
+                (pk.note || "Pushed back to " + pk.dest) +
+                " — the NAS original was NOT deleted; the X9 copy was removed after the NAS copy verified.";
+              destTd.appendChild(pd);
+            } else if (pk && pk.state === "pushing") {
+              nasTd.appendChild(el("span", "mark done", "kept"));
+              var pm = el("span", "muted", "moving to the NAS now");
+              pm.title =
+                "Travelling back to its library folder over SSH. The X9 copy goes only once the NAS copy verifies.";
+              destTd.appendChild(pm);
+            } else if (pk && pk.state === "failed") {
+              nasTd.appendChild(el("span", "mark err", "push failed"));
+              var pf = el("span", "muted", "on the X9 — " + pk.note);
+              pf.title = "Both copies kept. Delete .push-failed-<title> on the X9 to retry.";
+              destTd.appendChild(pf);
+            } else if (pk && pk.state === "queued") {
+              nasTd.appendChild(el("span", "mark done", "kept"));
+              var pq = el("span", "muted", "on the X9 · NAS queue #" + pk.pos + " of " + pk.total);
+              pq.title =
+                "Waiting for the wire: finished encodes go back to the NAS largest first, one at a time.";
+              destTd.appendChild(pq);
+              /* The HEAD of the queue carries the pusher's own reason for
+               waiting, so a stalled queue is never silent. The off switch
+               outranks a hold: nothing moves while it is set. */
+              if (pk.pos === 1 && pushInfo.off)
+                destTd.appendChild(el("span", "mark err", "pusher off (.push-off)"));
+              else if (pk.pos === 1 && pushInfo.hold)
+                destTd.appendChild(el("span", "mark xfer", "waiting — " + pushInfo.hold));
+            } else {
+              nasTd.appendChild(el("span", "mark done", "kept"));
+              var kp = el("span", "muted", "on the X9, beside its source");
+              kp.title = "No-delete policy: nothing was synced or deleted. Move it by hand.";
+              destTd.appendChild(kp);
+            }
           } else {
             nasTd.appendChild(el("span", "muted", "—"));
             destTd = el("td");
@@ -2117,6 +2291,41 @@
           }
           tr.appendChild(nasTd);
           tr.appendChild(destTd);
+          /* Start — end (duration). An encode that crossed midnight prints the
+           DATE on its start ("09-14 11:47 pm — 1:03 am"): a bare "11:47 pm"
+           beside a 1:03 am finish reads as a negative encode. */
+          var win = el("td", "muted nowrap enc-win");
+          var fd = finDate(r.finished_at),
+            secs = r.encode_seconds;
+          if (fd && typeof secs === "number" && secs > 0) {
+            var st = new Date(fd.getTime() - secs * 1000);
+            var sameDay =
+              st.getFullYear() === fd.getFullYear() &&
+              st.getMonth() === fd.getMonth() &&
+              st.getDate() === fd.getDate();
+            var startTxt = sameDay
+              ? hhmm(st.getTime() / 1000)
+              : String(st.getMonth() + 1).padStart(2, "0") +
+                "-" +
+                String(st.getDate()).padStart(2, "0") +
+                " " +
+                hhmm(st.getTime() / 1000);
+            win.appendChild(el("span", null, startTxt + " — " + hhmm(fd.getTime() / 1000)));
+            win.appendChild(el("span", "enc-dur", " (" + dur(secs) + ")"));
+            win.title =
+              "HandBrake ran for " +
+              dur(secs) +
+              ". The start is derived from the recorded finish minus the measured encode time.";
+          } else {
+            /* Never back-solved. A row with no measured duration cannot say
+             when it started, and a start equal to its finish would be a lie
+             dressed as precision. */
+            win.appendChild(el("span", null, "—"));
+            win.title = fd
+              ? "This encode was not timed — adopted by scan or hand-migrated, so no duration was recorded."
+              : "No finish timestamp was recorded for this row.";
+          }
+          tr.appendChild(win);
           /* Date AND time — "2026-08-31" alone could not answer "when did this
          one actually land". Format is the operator's pick (2026-09-01):
          MM-DD-YY h:mm am/pm, minutes precision. finished_at still records
@@ -2227,6 +2436,107 @@
       r.done_note || null,
       !!r.skipped,
     ];
+  }
+
+  /* ---- the Blacklist tab ----------------------------------------------------
+   What the pipeline will NEVER encode, and why. Two mechanisms, one screen
+   (operator 2026-09-15, having gone looking for the hard list in the UI and
+   found nothing -- there was nothing to find: queue() drops a SKIP match
+   before a row exists, so no payload had ever carried it).
+
+   The row is the ENTRY; the titles it blocks are listed underneath it. That
+   split is the whole point of the tab: "lord of the rings" is one line of
+   code and three films, and a view that printed only the pattern would hide
+   the cost of the exclusion. An entry that currently matches nothing says so
+   -- a blacklisted title whose folder has since been deleted is still a live
+   rule, and a silently empty row would read as a bug. ---- */
+  function blShape(rows) {
+    return (rows || []).map(function (e) {
+      return [
+        e.pattern,
+        e.kind,
+        (e.titles || []).map(function (t) {
+          return [t.title, t.mbps, t.bytes, t.location, t.online];
+        }),
+      ];
+    });
+  }
+
+  function renderBlacklist(rows) {
+    var pane = document.getElementById("pane");
+    pane.replaceChildren();
+    if (!rows.length) {
+      pane.appendChild(el("div", "empty", "Nothing is blacklisted."));
+      return;
+    }
+    pane.appendChild(
+      table(
+        [
+          { label: "Kind" },
+          { label: "Entry", cls: "title-cell" },
+          { label: "Blocks", n: true },
+          { label: "Titles it blocks", cls: "title-cell" },
+          { label: "Changed by" },
+        ],
+        rows,
+        function (e) {
+          var titles = e.titles || [];
+          var tr = el("tr", "rowskip");
+          tr.dataset.title = e.pattern;
+
+          var kindTd = el("td");
+          /* The two are not interchangeable and the chip says which: a code
+           entry needs an edit and a deploy, a dashboard entry needs a click.
+           Telling the operator to "just unskip it" for a core.SKIP row would
+           send them hunting for a button that does not exist. */
+          kindTd.appendChild(
+            el(
+              "span",
+              e.kind === "code" ? "mark err" : "mark skip",
+              e.kind === "code" ? "code" : "dashboard",
+            ),
+          );
+          tr.appendChild(kindTd);
+
+          var patTd = el("td", "title-cell");
+          var pc = el("div", "tcell");
+          pc.appendChild(el("span", "tname mono", e.pattern));
+          if (e.kind === "code")
+            pc.appendChild(el("span", "muted", " substring match on the full path"));
+          patTd.appendChild(pc);
+          tr.appendChild(patTd);
+
+          tr.appendChild(el("td", "n mono", String(titles.length)));
+
+          var hitTd = el("td", "title-cell");
+          if (!titles.length) {
+            /* Not an em dash: "—" would read as unknown. The rule is real and
+             currently matches nothing in the library index. */
+            hitTd.appendChild(el("span", "muted", "nothing in the library matches this"));
+          } else {
+            var list = el("div", "blhits");
+            titles.forEach(function (t) {
+              var row = el("div", "blhit");
+              var band = t.mbps >= 90 ? "mbps-hi" : t.mbps >= 80 ? "mbps-mid" : "mbps-lo";
+              row.appendChild(el("span", "mono q-mbps " + band, t.mbps.toFixed(1)));
+              row.appendChild(el("span", "muted mono", "Mb/s"));
+              row.appendChild(el("span", "mono q-size", gib(t.bytes)));
+              row.appendChild(el("span", "tname struck", t.title));
+              row.appendChild(nasMark(t.location));
+              /* An offline root cannot be stat'd, so the size above is an em
+               dash rather than a stale number -- say why, in place. */
+              if (!t.online) row.appendChild(el("span", "muted", "root offline"));
+              list.appendChild(row);
+            });
+            hitTd.appendChild(list);
+          }
+          tr.appendChild(hitTd);
+
+          tr.appendChild(el("td", "mono muted", e.where));
+          return tr;
+        },
+      ),
+    );
   }
 
   function renderErrors(rows) {
@@ -2513,6 +2823,7 @@
     cycle: "good",
     complete: "good",
     done: "good",
+    pushed: "good",
   };
   function renderEvents(x9on) {
     progRefs = {};
@@ -2587,8 +2898,93 @@
       );
   }
 
+  /* ---- the rail -------------------------------------------------------------
+   The section list, its counts, the four gauges, and the collapse. Counts are
+   numbers only: the phrasing they used to carry in the tab labels moved to the
+   pane head, which has the room for it. A count with no data yet is BLANK, not
+   a zero -- "Processes 0" before the first `ps` lands is a claim we cannot
+   make. ---- */
+  function navCount(id, n) {
+    var e = document.getElementById(id);
+    if (e) e.textContent = n == null ? "" : String(n);
+  }
+  /* What the pane's head says per tab: [title, note]. The middle slot (the
+   sub-line) is the live count, written by paint(). */
+  var PANE_HEAD = {
+    queue: ["Queue", "Drag to reorder"],
+    ledger: ["History", "Newest first"],
+    errors: ["Errors", "Cleared by deleting the marker"],
+    events: ["Events", "Newest first"],
+    procs: ["Processes", "Sampled every 5 s"],
+    blacklist: ["Blacklist", "Never staged, never encoded"],
+  };
+  var paneSub = {};
+  function writePaneHead(loud) {
+    var h = PANE_HEAD[tab] || PANE_HEAD.queue;
+    document.getElementById("paneTitle").textContent = h[0];
+    document.getElementById("paneSub").textContent = paneSub[tab] || "";
+    document.getElementById("paneNote").textContent = h[1];
+    document
+      .querySelector("#tablewrap > .panehead")
+      .classList.toggle("loud", tab === "errors" && !!loud);
+  }
+
+  /* CPU / GPU / RAM come from the LAST monitor sample -- the same array the
+   charts draw, so the rail and the chart can never disagree. Free space is
+   the staging drive's, measured against its capacity, and goes amber under
+   the driver's floor exactly as the live card's meter does. A metric with no
+   sample stays an em dash with an empty bar: a 0%-wide bar standing in for
+   "unknown" is the lie this page refuses everywhere else. */
+  var GAUGE_KEYS = ["cpu", "gpu", "ram", "disk"];
+  var gaugeEls = {};
+  GAUGE_KEYS.forEach(function (k) {
+    var n = document.querySelector('.gauge[data-g="' + k + '"]');
+    if (n) gaugeEls[k] = { node: n, b: n.querySelector("b"), fill: n.querySelector(".gbar i") };
+  });
+  function gaugeWrite(k, text, width) {
+    var g = gaugeEls[k];
+    if (!g) return;
+    g.b.textContent = text;
+    g.fill.style.width = width == null ? "0" : Math.max(0, Math.min(100, width)) + "%";
+  }
+  function railGauges(s) {
+    /* The SAME staleness gate the legend and the mini sparklines use: a
+     sampler that has gone quiet must show an em dash, not its last reading
+     forever. Without it the rail froze its pre-sleep numbers while the chart
+     three inches away drew an honest gap -- two readings of one metric,
+     disagreeing, with the frozen one in the louder position. */
+    var fresh = monLast && Math.floor(Date.now() / 1000) - monLast.t <= 5;
+    var v = fresh ? monLast.v : null;
+    ["cpu", "gpu", "ram"].forEach(function (k, i) {
+      var n = v && typeof v[i] === "number" && !isNaN(v[i]) ? v[i] : null;
+      gaugeWrite(k, n == null ? "—" : Math.round(n) + "%", n);
+    });
+    var sum = (s && s.summary) || {};
+    var free = sum.x9_free_bytes == null ? null : sum.x9_free_bytes,
+      total = s ? s.x9_total_bytes : null,
+      floor = sum.low_space_floor_bytes == null ? null : sum.low_space_floor_bytes;
+    var g = gaugeEls.disk;
+    if (g) {
+      g.node.classList.toggle("low", free != null && floor != null && free < floor);
+      g.node.title =
+        free == null
+          ? ""
+          : gib(free) + " free" + (total ? " of " + gib(total) : "") + " on the staging drive";
+    }
+    /* The bar is USED, not free. The three above it all mean "more bar =
+     worse"; a free-fill in the same 3px style, in the same group, meant the
+     opposite -- invisible while the drive sits near half, and a nearly-empty
+     drive reading as a nearly-full one. The VALUE stays free bytes, because
+     free is what the driver's floor is about, and the word says which. */
+    gaugeWrite(
+      "disk",
+      free == null ? "—" : gib(free) + " free",
+      free == null || total == null || total <= 0 ? null : ((total - free) / total) * 100,
+    );
+  }
+
   function paint(s) {
-    renderAlert(s.summary, s.encode_note);
+    renderAlert(s.summary, s.encode_note, s.pushes);
     renderStats(s.summary);
     var nextUp = (s.queue || []).filter(function (r) {
       return r.next_up;
@@ -2647,10 +3043,18 @@
               (s.transfers || []).length,
             ]
           : tab === "ledger"
-            ? [s.ledger, (s.transfers || []).map(xShape)]
+            ? [
+                s.ledger,
+                (s.transfers || []).map(xShape),
+                pushShape(s.pushes),
+                s.push_off,
+                s.push_hold,
+              ]
             : tab === "errors"
               ? [(s.errors || []).map(eShape)]
-              : [evRev, evData === null, evErr],
+              : tab === "blacklist"
+                ? [blShape(s.blacklist)]
+                : [evRev, evData === null, evErr],
       );
     if (last.key !== key) {
       /* An armed confirm or an active drag must survive the 2s SSE repaint. */
@@ -2680,12 +3084,14 @@
               s.live,
             )
           : tab === "ledger"
-            ? renderLedger(s.ledger, s.transfers)
+            ? renderLedger(s.ledger, s.transfers, s.pushes, { off: s.push_off, hold: s.push_hold })
             : tab === "errors"
               ? renderErrors(s.errors || [])
               : tab === "procs"
                 ? renderProcs()
-                : renderEvents(s.summary.x9_online);
+                : tab === "blacklist"
+                  ? renderBlacklist(s.blacklist || [])
+                  : renderEvents(s.summary.x9_online);
       }
     }
     /* EVERY frame, rebuilt or not: this is what keeps the bars moving now that
@@ -2720,30 +3126,63 @@
      that used to ride here has moved to the Errors tab's own label, where
      the rows it counts actually are. */
     var nq = s.summary.queue_count != null ? s.summary.queue_count : s.queue.length;
-    document.getElementById("tabQueue").textContent = "Queue (" + nq + ")";
-    /* Named for the serious half. A tab reading "Errors (0)" while three
-     titles sit skipped would be wrong, so the label counts BOTH and the
-     breakdown rides behind it whenever the two differ. */
+    /* Named for the serious half. A rail reading "Errors 0" while three titles
+     sit skipped would be wrong, so the COUNT is both and the breakdown rides
+     in the pane's sub-line whenever the two differ. */
     var errs = s.errors || [];
     var nerr = errs.filter(function (r) {
       return r.error;
     }).length;
-    document.getElementById("tabErrors").textContent =
-      "Errors (" +
-      errs.length +
-      (nerr && nerr !== errs.length ? " · " + nerr + " errored" : "") +
-      ")";
-    document.getElementById("tabErrors").classList.toggle("hasErr", nerr > 0);
-    document.getElementById("tabLedger").textContent = "History (" + s.ledger.length + ")";
-    /* "(250 of 266)" — a bare "(250)" read as a count of everything that
-     exists, while both a row limit and the log-tail window cut it. */
-    document.getElementById("tabEvents").textContent =
-      "Events" +
-      (evData
-        ? " (" + (evTotal > evData.length ? evData.length + " of " + evTotal : evData.length) + ")"
-        : "");
-    document.getElementById("tabProcs").textContent =
-      "Processes" + (prData ? " (" + prData.procs.length + ")" : "");
+    navCount("nQueue", nq);
+    navCount("nLedger", s.ledger.length);
+    navCount("nErrors", errs.length);
+    navCount("nEvents", evData ? evData.length : null);
+    navCount("nProcs", prData ? prData.procs.length : null);
+    /* ENTRIES, not the titles they block: the tab lists one row per entry and
+     a rail number that counted matches would disagree with the table under
+     it the moment one pattern caught three films. */
+    var bl = s.blacklist || [];
+    navCount("nBlacklist", bl.length);
+    document.getElementById("tabErrors").classList.toggle("loud", nerr > 0);
+    /* The pane head carries the phrasing the tab labels used to -- including
+     "250 of 266", because a bare "250" read as a count of everything that
+     exists while both a row limit and the log-tail window cut it. */
+    paneSub = {
+      queue: nq + (nq === 1 ? " title" : " titles"),
+      ledger: s.ledger.length + " finished",
+      errors: !errs.length
+        ? "none set aside"
+        : nerr === errs.length
+          ? nerr + " errored"
+          : nerr
+            ? errs.length +
+              " set aside · " +
+              nerr +
+              " errored + " +
+              (errs.length - nerr) +
+              " skipped"
+            : errs.length + " skipped",
+      events: evData
+        ? evTotal > evData.length
+          ? evData.length + " of " + evTotal
+          : String(evData.length)
+        : "",
+      procs: prData ? prData.procs.length + " running" : "",
+      blacklist: (function () {
+        if (!bl.length) return "none";
+        var hits = bl.reduce(function (a, e) {
+          return a + (e.titles || []).length;
+        }, 0);
+        return (
+          bl.length +
+          (bl.length === 1 ? " entry · " : " entries · ") +
+          hits +
+          (hits === 1 ? " title blocked" : " titles blocked")
+        );
+      })(),
+    };
+    writePaneHead(nerr > 0);
+    railGauges(s);
     var anyPin = s.queue.some(function (r) {
       return r.pinned && !r.skipped;
     });
@@ -2758,7 +3197,15 @@
    a shared link all land on the same tab. replaceState, not pushState -- a
    tab switch is not a page the back button should walk through. The token
    and anything else in the query survive untouched. */
-  var TABS = { queue: 1, ledger: 1, errors: 1, events: 1, procs: 1 };
+  var TABS = { queue: 1, ledger: 1, errors: 1, events: 1, procs: 1, blacklist: 1 };
+  var TAB_BTN = {
+    queue: "tabQueue",
+    ledger: "tabLedger",
+    errors: "tabErrors",
+    events: "tabEvents",
+    procs: "tabProcs",
+    blacklist: "tabBlacklist",
+  };
   function tabFromUrl() {
     try {
       var v = new URLSearchParams(location.search).get("tab");
@@ -2785,6 +3232,14 @@
     document.getElementById("tabErrors").setAttribute("aria-selected", String(name === "errors"));
     document.getElementById("tabEvents").setAttribute("aria-selected", String(name === "events"));
     document.getElementById("tabProcs").setAttribute("aria-selected", String(name === "procs"));
+    document
+      .getElementById("tabBlacklist")
+      .setAttribute("aria-selected", String(name === "blacklist"));
+    /* The pane is the tabpanel the six rail tabs control; the selected tab
+     is what labels it, so the pointer moves with the selection. */
+    var pane = document.getElementById("pane");
+    if (pane) pane.setAttribute("aria-labelledby", TAB_BTN[name] || "tabQueue");
+    writePaneHead(document.getElementById("tabErrors").classList.contains("loud"));
     /* Opening the tab fetches now, not at the next poll boundary. */
     if (name === "procs") prFetchedAt = 0;
     if (last.state) paint(last.state);
@@ -2803,6 +3258,9 @@
   });
   document.getElementById("tabProcs").addEventListener("click", function () {
     setTab("procs");
+  });
+  document.getElementById("tabBlacklist").addEventListener("click", function () {
+    setTab("blacklist");
   });
   document.getElementById("resetOrder").addEventListener("click", function () {
     api("/api/queue/order", { order: [] });
@@ -2945,6 +3403,36 @@
       localStorage.removeItem(THEME_KEY);
     } catch (e) {}
     applyTheme();
+  });
+
+  /* Rail collapse. The choice is remembered, because a rail is furniture and
+   re-collapsing it on every load is the kind of small insult a dashboard you
+   leave open all day earns forgiveness for exactly once. Below 1080px the
+   media query forces the narrow rail regardless, so the stored value is only
+   ever consulted, never fought. The canvases resize with the column, so the
+   monitor is told to repaint once the transition has run. */
+  var RAIL_KEY = "smeltr.rail";
+  var railBtn = document.getElementById("railToggle");
+  function applyRail(on) {
+    document.body.classList.toggle("railed", on);
+    railBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    railBtn.title = on ? "Expand sidebar" : "Collapse sidebar";
+    railBtn.setAttribute("aria-label", railBtn.title);
+  }
+  (function () {
+    var v = null;
+    try {
+      v = localStorage.getItem(RAIL_KEY);
+    } catch (e) {}
+    applyRail(v === "1");
+  })();
+  railBtn.addEventListener("click", function () {
+    var on = !document.body.classList.contains("railed");
+    try {
+      localStorage.setItem(RAIL_KEY, on ? "1" : "0");
+    } catch (e) {}
+    applyRail(on);
+    setTimeout(monDrawSoon, 240);
   });
 
   function conn(state, text) {
@@ -3250,6 +3738,7 @@
     {
       cv: "monU",
       leg: "legU",
+      axis: true,
       pctAxis: true,
       fmt: monFmtPct,
       scale: 1,
@@ -3262,6 +3751,7 @@
     {
       cv: "monN",
       leg: "legN",
+      axis: true,
       fmt: monFmtMibs,
       scale: MIB,
       series: [
@@ -3570,7 +4060,23 @@
         Math.max(y0 + 4, Math.min(y1 - 4, y)),
       );
     });
+    /* monTicks() picks a step from the SPAN alone. The three charts sit
+     abreast now, so the same 1 d window that spaced its labels comfortably
+     across a full-width card crushed them into an unreadable smear at a third
+     of it. Thin the step until each tick has room — and thin the GRIDLINES
+     with the labels, because a gridline nobody labelled is a line with no
+     meaning.
+
+     The room needed is measured from the label this window actually prints,
+     not from a constant: "8:00 pm" and "Wed 8:00 pm" want very different
+     gaps, and a constant wide enough for the second left a 24 h chart — the
+     stop the page OPENS on — with two labels on it, which cannot locate an
+     event. 10px mono is 0.6em per glyph, so the estimate needs no canvas and
+     is identical under test. */
     var step = monTicks(t1 - t0);
+    var probe = tickLab(Math.ceil(t0 / step) * step, t1 - t0);
+    var need = probe.length * 6 + 14;
+    while (step < t1 - t0 && (step / (t1 - t0)) * (x1 - x0) < need) step *= 2;
     for (var tt = Math.ceil(t0 / step) * step; tt < t1; tt += step) {
       var gx = Math.round(X(tt)) + 0.5;
       ctx.strokeStyle = css.grid;
@@ -3893,7 +4399,6 @@
   /* Static card: fold control attached once at load. The chevron rides in
    .monhead (flex, right edge) so it never overlaps the zoom slider. */
   makeCollapsible(document.getElementById("sysmon"), "mon");
-  makeCollapsible(document.getElementById("stats"), "stats");
   var tableFold = makeCollapsible(document.getElementById("tablewrap"), "table");
 
   function bootSkel() {
@@ -4002,6 +4507,9 @@
   /* The redraw clock is a plain interval, not the SSE frames: the window is
    anchored to now and must keep sliding -- and the legend must go stale --
    even when the sampler or the stream stops feeding it. */
-  setInterval(monDrawSoon, 1000);
+  setInterval(function () {
+    monDrawSoon();
+    railGauges(last.state);
+  }, 1000);
   monLoad(true);
 })();

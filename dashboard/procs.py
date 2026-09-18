@@ -42,6 +42,8 @@ RULES = [
      "One replenish run: picks the next library titles and pulls them into queue/ until it holds 10-18."),
     (r"ops/replenisher\.sh\b", "replenisher", "replenisher",
      "The independent replenisher tick: runs every 60 s so queue/ never drops below 10, whatever the encoder is doing."),
+    (r"ops/push-complete\.sh\b", "pusher", "pusher",
+     "The independent pusher tick: purges the source beside a finished encode and sends the encode back to its library folder over SSH, largest first, one at a time."),
     (r"\.ssh-xfer\.sh pull\b", "pull", "pull",
      "A file coming onto the staging drive from the NAS over SSH (lands as .partial, renamed when the bytes match)."),
     (r"\.ssh-xfer\.sh push\b", "push", "push",
@@ -70,6 +72,7 @@ AGENTS = {
     "com.smeltr.replenish": "Ticks the independent replenisher every 60 s (queue/ holds 10-18).",
     "com.smeltr.heartbeat": "Hourly idle check with email/Slack (disabled 2026-09-08; the brief replaced it).",
     "com.smeltr.brief": "Emails the morning brief at 09:00.",
+    "com.smeltr.push": "Ticks the independent pusher every 60 s (complete/ -> the NAS, beside the original).",
 }
 
 _TITLE = re.compile(r"/([^/]+ \(\d{4}\))(?:/|$)")

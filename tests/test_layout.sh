@@ -33,7 +33,7 @@ source "$TMP/helpers.sh"
 
 pass=0; fail=0
 ck(){ if [ "$2" = "$3" ]; then printf '.'; pass=$((pass+1))
-      else printf '\nFAIL %s: got %s want %s\n' "$1" "'$2'" "'$3'"; fail=$((fail+1)); fi; }
+      else printf '\nFAIL %s: got %s want %s\n' "$1" "'$2'" "'$3'"; exit 1; fi; }
 
 # ---- folder_dir: queue/ first, then the legacy root, else where it WOULD be
 mkdir -p "$STAGE/Alpha (2001)" "$X9/Beta (2002)" "$STAGE/Gamma (2003)" "$X9/Gamma (2003)"

@@ -25,8 +25,8 @@ sed "s|/Volumes/Crucial X9/4K Movies|$TMP/sb|g; s|sleep 60|sleep 1|" "$WE" > "$T
 chmod +x "$TMP/we.sh"
 
 pass=0; fail=0
-ck(){ if [ "$2" = "$3" ]; then echo "PASS $1"; pass=$((pass+1))
-      else echo "FAIL $1: got '$2' want '$3'"; fail=$((fail+1)); fi; }
+ck(){ if [ "$2" = "$3" ]; then printf '.'; pass=$((pass+1))
+      else printf '\nFAIL %s: got %s want %s\n' "$1" "'$2'" "'$3'"; exit 1; fi; }
 
 # 100 MiB "source"; "output" size is what moves the projection.
 dd if=/dev/zero of="$TMP/sb/$FOLDER/src.mkv" bs=1048576 count=100 2>/dev/null
@@ -86,5 +86,5 @@ n=0; while kill -0 "$HB" 2>/dev/null && [ "$n" -lt 40 ]; do n=$((n+1)); sleep 0.
 ck "the encode is killed"         "$(kill -0 "$HB" 2>/dev/null && echo yes || echo no)" no
 ck "the partial is deleted"       "$([ -f "$TMP/sb/$FOLDER/out.mkv" ] && echo yes || echo no)" no
 
-echo "$pass passed, $fail failed"
+printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

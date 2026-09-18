@@ -96,7 +96,12 @@ class TwoSamples(unittest.TestCase):
             return [] if seen["n"] == 1 else [{"pid": 1}]
 
         slept = []
-        with Fake(self, _handbrakes=probe, live_encodes=lambda: []):
+        # The first idle reading runs diagnose() for real. Under `bun run test`
+        # the shell suites run sandboxed copies of autopilot.sh, so the real
+        # _driver_running() sees one and diagnose() walks on to core.queue(),
+        # which stats the NAS mounts -- a wedged SMB share then hangs the run.
+        with Fake(self, _handbrakes=probe, live_encodes=lambda: [],
+                  X9=os.path.dirname(__file__), _driver_running=lambda: False):
             r = heartbeat.check(confirm_seconds=60, sleep=slept.append)
         self.assertTrue(r["ok"])
         self.assertEqual(slept, [60], "the confirming wait must actually happen")

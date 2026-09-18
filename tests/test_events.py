@@ -39,6 +39,16 @@ size guard PASS: 40.83 GB replaces 65.94 GB (frees 25.11 GB)
 2026-09-01 15:35:00  CYCLE COMPLETE Species (1995)
 """
 
+# The independent pusher's lines (ops/push-complete.sh, 2026-09-10).
+PUSH_LOG = """\
+2026-09-01 15:36:00  PURGED SOURCE Big (2001): Big (2001) Remux-2160p.mkv (62.20 GiB freed on the X9; the NAS keeps the original)
+2026-09-01 15:36:01  PUSH Big (2001) -> /Volumes/Vhagar/Media/4K Movies/B/Big (2001) (20.00 GiB over ssh, beside the original; nothing on the NAS is removed)
+2026-09-01 15:36:02    ssh push: Big (2001) 2160p HEVC.mkv (20.00 GB) -> crivas@192.168.50.6:/volume1/Vhagar/Media/4K Movies/B/Big (2001)
+2026-09-01 15:40:00  PUSHED Big (2001) -> /Volumes/Vhagar/Media/4K Movies/B/Big (2001) (20.00 GiB verified on the NAS: 9a/5s; X9 copy removed; NAS original kept)
+2026-09-01 15:41:00  PUSH FAILED Orphan (2003): 0 library folders match, need exactly one - X9 copy kept
+2026-09-01 15:42:00  waiting: push held - NAS unreachable: crivas@192.168.50.6
+"""
+
 WATCH_LOG = """\
 QUARTER|Movie (2000)|25%|current 1 GB|projected 5 GB|original 50 GB|10%|OK|ETA 1h
 COMPLETE|Movie (2000)|2026-08-31 19:33:54|5.46 GB from 56.90 GB (90% smaller)
@@ -133,6 +143,21 @@ class Timeline(unittest.TestCase):
         killed = [e for e in self._evs() if e["kind"] == "killed"][0]
         self.assertIsNone(killed["ts"])
         self.assertFalse(killed["approx"])
+
+    def test_pusher_lines_are_events_with_their_own_kinds(self):
+        # PURGED is a purge, PUSH is a push (its ssh line folds in as detail),
+        # PUSHED is its own green kind, and PUSH FAILED is red like a dead
+        # HandBrake -- the line a person opens the tab to find.
+        with open(os.path.join(self.tmp.name, ".autopilot.log"), "w") as f:
+            f.write(PUSH_LOG)
+        evs = [e for e in self._evs() if e["src"] == "driver"]
+        by = {e["text"].split(" ")[0] + ("F" if e["text"].startswith("PUSH FAILED") else ""): e for e in evs}
+        self.assertEqual(by["PURGED"]["kind"], "purge")
+        self.assertEqual(by["PUSH"]["kind"], "push")
+        self.assertIn("ssh push: Big (2001)", by["PUSH"]["detail"] or "")
+        self.assertEqual(by["PUSHED"]["kind"], "pushed")
+        self.assertEqual(by["PUSHF"]["kind"], "failed")
+        self.assertEqual(by["waiting:"]["kind"], "info")
 
     def test_a_dead_handbrake_is_an_event_not_silence(self):
         # .watch-encode.sh emits FAILED when HandBrake dies — the single most

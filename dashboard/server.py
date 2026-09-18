@@ -47,10 +47,12 @@ from urllib.parse import urlparse, parse_qs
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pipeline import core
 from dashboard import auth
+from dashboard import blacklist as blacklist_mod
 from dashboard import events as events_mod
 from dashboard import procs as procs_mod
 from dashboard import manual as manual_mod
 from dashboard import notify
+from dashboard import pushes
 from dashboard import sysmon
 
 # Token persists across restarts in a 0600 file, so LAN devices survive the
@@ -373,6 +375,29 @@ _xfer_track: dict = {}
 RATE_HOLD_SECONDS = 60
 
 
+def _xfer_dirs() -> list:
+    """(folder, dir) for every place a finished encode can be travelling
+    FROM: a staged folder (queue/ or a legacy root folder -- the driver's own
+    sync) and every folder in complete/ (the independent pusher, since
+    2026-09-10). complete/ is listed here and nowhere else in this function's
+    callers: a finished title is not queue work."""
+    out = [(f, core.folder_dir(f)) for f in core.staged_folders()]
+    # complete/ is unbounded under no-delete and every folder here costs an
+    # SMB destination lookup per 2 s frame -- so only the title a live
+    # `.pushing-` marker names is looked at, which is the only one that can
+    # have a .partial travelling.
+    comp = core.complete_dir()
+    for low in sorted(pushes.on_wire()):
+        try:
+            names = os.listdir(comp)
+        except OSError:
+            break
+        for n in names:
+            if n.lower() == low and os.path.isdir(os.path.join(comp, n)):
+                out.append((n, os.path.join(comp, n)))
+    return out
+
+
 def _transfers() -> list:
     """In-flight pushes back to the library, observed through the SMB mount.
 
@@ -388,8 +413,8 @@ def _transfers() -> list:
     rows = []
     now = time.monotonic()
     seen = set()
-    for folder in core.staged_folders():
-        stage = core.folder_dir(folder)
+    buckets_of: dict = {}  # root -> its bucket dirs, scanned once per call
+    for folder, stage in _xfer_dirs():
         try:
             names = [
                 n
@@ -411,11 +436,12 @@ def _transfers() -> list:
             continue
         dests = []
         for root in core.LIBRARY_ROOTS:
-            try:
-                buckets = [e.path for e in os.scandir(root) if e.is_dir()]
-            except OSError:
-                continue
-            for b in buckets:
+            if root not in buckets_of:
+                try:
+                    buckets_of[root] = [e.path for e in os.scandir(root) if e.is_dir()]
+                except OSError:
+                    buckets_of[root] = []
+            for b in buckets_of[root]:
                 d = os.path.join(b, folder)
                 if os.path.isdir(d):
                     dests.append((root, d))
@@ -739,8 +765,21 @@ def build_state() -> dict:
             "ledger": hist,
             "queue": active,
             "errors": errors,
+            # What the pipeline will NEVER encode, both mechanisms in one
+            # list (2026-09-15). The hard `core.SKIP` half had no route to
+            # the page at all before this: queue() drops a match before a
+            # row exists, so "why is Bloodsport not in the queue" was only
+            # answerable by reading pipeline/core.py.
+            "blacklist": blacklist_mod.rows(),
             "transfers": _transfers(),
             "syncing": _sync_in_flight(),
+            # The push-back queue (ops/push-complete.sh): which finished
+            # titles are waiting for the wire, in the order they will take
+            # it, which one is on it, which failed and which already landed
+            # on the NAS. Read off the pusher's markers, never re-derived.
+            "pushes": pushes.pushes(),
+            "push_off": pushes.push_off(),
+            "push_hold": pushes.push_hold(),
             "encode_note": note,
             "crf_choices": list(CRF_CHOICES),
             # The picker's "auto" option is labelled with this, so a moved

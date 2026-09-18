@@ -49,7 +49,8 @@ json.dump({"files": files}, open(sys.argv[1], "w"))
 PY
 
 pass=0; fail=0
-ck(){ if [ "$2" = "$3" ]; then echo "PASS $1"; pass=$((pass+1)); else echo "FAIL $1: got '$2' want '$3'"; fail=$((fail+1)); fi; }
+ck(){ if [ "$2" = "$3" ]; then printf '.'; pass=$((pass+1))
+      else printf '\nFAIL %s: got %s want %s\n' "$1" "'$2'" "'$3'"; exit 1; fi; }
 run(){ rm -rf "$X9/queue"/* "$X9/.replenish.lock"; "$TMP/rq.sh" > "$TMP/out.txt" 2>&1; echo $?; }
 
 # --- 1. no budget file: every pick lands, nothing aborts ------------------
@@ -82,4 +83,18 @@ ck "no room: nothing landed in queue/"            "$(ls "$X9/queue" | wc -l | tr
 ck "no room: every pick says why"                 "$(grep -c 'SKIPPING' "$TMP/out.txt")" 3
 echo 838860800 > "$FREE_KB"
 
-echo "$pass passed, $fail failed"; [ "$fail" -eq 0 ]
+# --- 4. a FINISHED title never comes back (2026-09-10) ---------------------
+# The pusher removes a finished folder from the X9 once its encode is on the
+# NAS, but the library index still lists the ORIGINAL at full bitrate. The
+# .done-/.pushed- markers and the ledger are what keep it out.
+touch "$X9/.done-Title 1 (2001)"
+touch "$X9/.pushed-Title 2 (2002)"
+echo '{"title": "Title 3 (2003)", "finished_at": "2026-09-10 12:00:00"}' > "$SMELTR_DIR/ledger.jsonl"
+rc=$(run)
+ck "a done-marked title is not pulled again"      "$(grep -c 'Title 1' "$TMP/out.txt")" 0
+ck "a pushed title is not pulled again"           "$(grep -c 'Title 2' "$TMP/out.txt")" 0
+ck "a ledger-recorded title is not pulled again"  "$(grep -c 'Title 3' "$TMP/out.txt")" 0
+ck "nothing landed"                               "$(ls "$X9/queue" | wc -l | tr -d ' ')" 0
+rm -f "$X9/.done-Title 1 (2001)" "$X9/.pushed-Title 2 (2002)" "$SMELTR_DIR/ledger.jsonl"
+
+printf '\n%d passed, %d failed\n' "$pass" "$fail"; [ "$fail" -eq 0 ]

@@ -51,7 +51,7 @@
     "status": "./smeltr status",
     "stop": "./smeltr stop",
     "system-check": "bun run --sequential format:js:check lint test",
-    "test": "bun run --sequential --no-exit-on-error test:py 'test:sh:*' 'test:js:*'",
+    "test": "bun run --parallel test:py 'test:sh:*' 'test:js:*'",
     "test:js:crf": "bun tests/test_crf_picker.ts",
     "test:js:low-space": "bun tests/test_low_space_ui.ts",
     "test:js:pause": "bun tests/test_pause_toggle.ts",
@@ -59,12 +59,13 @@
     "test:js:repaint": "bun tests/test_repaint_key.ts",
     "test:js:sysmon-render": "bun tests/test_sysmon_render.ts",
     "test:js:sysmon-ui": "bun tests/test_sysmon_ui.ts",
-    "test:py": "python3 -W error::ResourceWarning -m unittest discover -s tests",
+    "test:py": "python3 tests/run_unittests.py",
     "test:sh:autopilot": "bash tests/test_autopilot_helpers.sh",
     "test:sh:drift": "bash tests/test_staging_in_sync.sh",
     "test:sh:launcher": "bash tests/test_launcher_pids.sh",
     "test:sh:layout": "bash tests/test_layout.sh",
     "test:sh:midwrite": "bash tests/test_midwrite_retry.sh",
+    "test:sh:pusher": "bash tests/test_push_complete.sh",
     "test:sh:replenisher": "bash tests/test_replenisher.sh",
     "test:sh:replenish-loop": "bash tests/test_replenish_loop.sh",
     "test:sh:watch-finish": "bash tests/test_watch_finish.sh",
@@ -75,7 +76,8 @@
     "verify": "bun run --sequential lint test build",
     "visual": "bun tests/visual/shoot.mts",
     "watchdog": "bash ops/watchdog.sh --supervise",
-    "replenisher": "bash ops/replenisher.sh --supervise"
+    "replenisher": "bash ops/replenisher.sh --supervise",
+    "pusher": "bash ops/push-complete.sh --supervise"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

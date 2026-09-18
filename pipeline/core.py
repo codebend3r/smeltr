@@ -101,11 +101,20 @@ SKIP = (
     "skyscraper (2018)",
     "timecop (1994)",
     "mechanic resurrection (2016)",
-    "bloodsport (1988)",  # blacklisted 2026-09-06, mid-pull
+    # Bloodsport (1988) was blacklisted here 2026-09-06 mid-pull and
+    # UN-blacklisted 2026-09-15 at the operator's request -- it is the
+    # joint-fattest title in the library at 82.1 Mb/s and had never been
+    # encoded. It is already pinned in queue_overrides.json, so it stages
+    # first. Removed from BOTH copies (here and replenish-queue.sh).
 )
 
 # The stop condition: encoding pauses once nothing above this remains.
-STOP_MBPS = 70.0
+# Operator's call: 70.0 -> 60.0 on 2026-09-15, which opens the queue up.
+# THREE hand-synced copies of this number: here, STOP_MBPS in
+# staging/autopilot.sh (passed to `smeltr next`), and MIN_BPS in
+# staging/replenish-queue.sh. Move all three or the replenisher stages
+# what the driver will not encode. No test holds them together yet.
+STOP_MBPS = 60.0
 
 # The TARGET BAND, % of source (operator's call, 2026-09-06: 10-70, was 30-80).
 # Three consumers must agree on it: .watch-encode.sh kills a projection that

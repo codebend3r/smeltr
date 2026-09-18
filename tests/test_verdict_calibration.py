@@ -283,7 +283,17 @@ class Band(unittest.TestCase):
         self.assertEqual(self.v(core.BAND_HI - 10), "thin")
 
     def test_summary_carries_the_band(self):
-        s = core.summary()
+        # summary() walks core.LIBRARY_ROOTS with os.path.isdir even when
+        # handed its inputs. A wedged SMB mount turns that stat into an
+        # uninterruptible wait and the whole `bun run test` hangs, so the two
+        # readings that touch the live machine are stubbed like test_low_space.
+        saved = (core.offline_roots, core.live_encodes)
+        core.offline_roots = lambda: []
+        core.live_encodes = lambda: []
+        try:
+            s = core.summary(hist=[], q=[])
+        finally:
+            core.offline_roots, core.live_encodes = saved
         self.assertEqual((s["band_lo"], s["band_hi"]), (core.BAND_LO, core.BAND_HI))
 
     def test_blowup(self):

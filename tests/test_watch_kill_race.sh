@@ -37,8 +37,8 @@ sed "s|/Volumes/Crucial X9/4K Movies|$TMP/sb|g; s|sleep 60|sleep 1|" "$WE" > "$T
 chmod +x "$TMP/we.sh"
 
 pass=0; fail=0
-ck(){ if [ "$2" = "$3" ]; then echo "PASS $1"; pass=$((pass+1))
-      else echo "FAIL $1: got '$2' want '$3'"; fail=$((fail+1)); fi; }
+ck(){ if [ "$2" = "$3" ]; then printf '.'; pass=$((pass+1))
+      else printf '\nFAIL %s: got %s want %s\n' "$1" "'$2'" "'$3'"; exit 1; fi; }
 
 # 100 MiB "source", 60 MiB "output" at 12% progress -> 500% of source, a
 # blowup, and CRF 16 has a real up-rung (18) so this KILLS rather than FINALs.
@@ -94,5 +94,5 @@ ck "the partial is deleted"      "$([ -e "$TMP/sb/$FOLDER/out.mkv" ] && echo yes
 ck "the renamed partial is deleted too" \
    "$([ -e "$TMP/sb/$FOLDER/out.mkv.killing" ] && echo yes || echo no)" no
 
-echo "$pass passed, $fail failed"
+printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -10,7 +10,7 @@ export SMELTR_X9="$X9" SMELTR_REPLENISH_LOG="$TMP/replenish.log" SMELTR_REPLENIS
 R="$(dirname "$0")/../ops/replenisher.sh"
 pass=0; fail=0
 ck(){ if [ "$2" = "$3" ]; then printf '.'; pass=$((pass+1))
-      else printf '\nFAIL %s: got %s want %s\n' "$1" "'$2'" "'$3'"; fail=$((fail+1)); fi; }
+      else printf '\nFAIL %s: got %s want %s\n' "$1" "'$2'" "'$3'"; exit 1; fi; }
 
 # blind drive: mounted, zero entries
 rmdir "$X9/queue"
