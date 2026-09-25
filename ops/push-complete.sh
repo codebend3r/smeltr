@@ -181,10 +181,19 @@ purge_sources() {
     dir="${dir%/}"; [ -d "$dir" ] || continue
     title=$(basename "$dir")
     case "$title" in .*) continue ;; esac
-    hevc=$(one_hevc "$dir") || continue
     in_flux "$dir" && continue
-    settled "$hevc" || continue
     [ -f "$X9/.push-failed-$title" ] && continue
+    # A folder whose encode already went out (the .pushed- marker) still
+    # owes its source: a title that settled while another push held the
+    # wire was pushed before any purge saw it. The encode was verified on
+    # the NAS at push time, so only the size check below remains.
+    if hevc=$(one_hevc "$dir"); then
+      settled "$hevc" || continue
+    elif [ -f "$X9/.pushed-$title" ]; then
+      hevc=""
+    else
+      continue
+    fi
     while IFS= read -r src; do
       [ -n "$src" ] || continue
       # The X9 source may go ONLY once the NAS is proven to hold the same
@@ -195,13 +204,15 @@ purge_sources() {
       dest=$(printf '%s\n' "$matches" | head -1)
       map=$(remote_for "$dest"); host="${map%%|*}"; rdir="${map#*|}"
       [ "$host" = "UNMAPPED" ] && { plog "  $title: source kept - $dest maps to no SSH host"; break; }
-      if ! probe_ok "$hevc"; then plog "  $title: the encode does not probe - source kept"; break; fi
-      # A truncated encode can carry a full-length header (the corpse shape
-      # watchdog.sh triages): the encode must run the source's length.
-      sd=$(dur_of "$src"); ed=$(dur_of "$hevc")
-      if [ -n "$sd" ] && [ -n "$ed" ] && awk -v s="$sd" -v e="$ed" 'BEGIN{exit !(e < s*0.98)}'; then
-        fail_out "$title" "the encode runs short of the source (${ed%.*} s vs ${sd%.*} s)" || return 1
-        break
+      if [ -n "$hevc" ]; then
+        if ! probe_ok "$hevc"; then plog "  $title: the encode does not probe - source kept"; break; fi
+        # A truncated encode can carry a full-length header (the corpse shape
+        # watchdog.sh triages): the encode must run the source's length.
+        sd=$(dur_of "$src"); ed=$(dur_of "$hevc")
+        if [ -n "$sd" ] && [ -n "$ed" ] && awk -v s="$sd" -v e="$ed" 'BEGIN{exit !(e < s*0.98)}'; then
+          fail_out "$title" "the encode runs short of the source (${ed%.*} s vs ${sd%.*} s)" || return 1
+          break
+        fi
       fi
       sz=$(stat -f%z "$src" 2>/dev/null || echo 0)
       if ! rsz=$(nas_size "$host" "$rdir/$(basename "$src")"); then hold "NAS unreachable: $host"; return 1; fi
@@ -212,6 +223,11 @@ purge_sources() {
       rm -f -- "$src" "$dir/._$(basename "$src")"
       dlog "PURGED SOURCE $title: $(basename "$src") ($(gib "$sz") GiB freed on the X9; the NAS holds the same $sz bytes)"
     done < <(find "$dir" -maxdepth 1 -type f \( -iname '*.mkv' -o -iname '*.mp4' -o -iname '*.m2ts' \) ! -name '._*' ! -name '*2160p HEVC*' 2>/dev/null)
+    # An already-pushed folder left holding only junk goes with its source.
+    if [ -z "$hevc" ]; then
+      find "$dir" -maxdepth 1 -type f \( -name '._*' -o -name '.DS_Store' \) -delete 2>/dev/null
+      rmdir "$dir" 2>/dev/null && rm -f -- "$COMPLETE/._$title"
+    fi
   done
   return 0
 }
@@ -333,6 +349,9 @@ push_all() {
   local pick title tried="|"
   while :; do
     if pgrep -f "$XFER push" >/dev/null 2>&1; then hold "a push from this drive is already on the wire"; return 0; fi
+    # Purge before EVERY push, not once per tick: a push holds the wire for
+    # up to an hour, and a title that settles meanwhile owes its source first.
+    purge_sources || return 0
     pick=$(pending_largest); [ -n "$pick" ] || { clear_hold; return 0; }
     title="${pick#*$'\t'}"
     # Progress guarantee: a title that was already tried this tick and is
@@ -362,7 +381,7 @@ tick() {
   elif ! roots_mounted; then
     : # hold() already named the root
   else
-    purge_sources && push_all
+    push_all
   fi
   release_lock
   return 0

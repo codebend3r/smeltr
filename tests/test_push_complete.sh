@@ -149,6 +149,24 @@ wait "$SLP" 2>/dev/null
 bash "$P" --tick
 ck "the queue drains once the wire frees up"          "$([ -d "$X9/complete/Waiting (2007)" ] && echo held || echo pushed)" pushed
 
+# --- a source stranded beside an already-pushed encode (it settled while
+# another push held the wire) is purged on a later tick, junk and all
+mkdir -p "$X9/complete/Stranded (2011)" "$LIB/S/Stranded (2011)" "$NAS/Vhagar/Media/4K Movies/S/Stranded (2011)"
+head -c 5000 /dev/zero > "$X9/complete/Stranded (2011)/Stranded (2011) Remux-2160p.mkv"
+: > "$X9/complete/Stranded (2011)/._Stranded (2011) Remux-2160p.mkv"; : > "$X9/complete/._Stranded (2011)"
+head -c 5000 /dev/zero > "$NAS/Vhagar/Media/4K Movies/S/Stranded (2011)/Stranded (2011) Remux-2160p.mkv"
+echo "Stranded (2011): pushed" > "$X9/.pushed-Stranded (2011)"
+mkdir -p "$X9/complete/StrandDiff (2012)" "$LIB/S/StrandDiff (2012)" "$NAS/Vhagar/Media/4K Movies/S/StrandDiff (2012)"
+head -c 5000 /dev/zero > "$X9/complete/StrandDiff (2012)/StrandDiff (2012) Remux-2160p.mkv"
+head -c 4000 /dev/zero > "$NAS/Vhagar/Media/4K Movies/S/StrandDiff (2012)/StrandDiff (2012) Remux-2160p.mkv"
+echo "StrandDiff (2012): pushed" > "$X9/.pushed-StrandDiff (2012)"
+bash "$P" --tick
+ck "a stranded source beside a pushed title is purged" "$([ -d "$X9/complete/Stranded (2011)" ] && echo kept || echo gone)" gone
+ck "...its AppleDouble twin goes with it"             "$([ -e "$X9/complete/._Stranded (2011)" ] && echo kept || echo gone)" gone
+ck "...and the NAS original is untouched"             "$(stat -f%z "$NAS/Vhagar/Media/4K Movies/S/Stranded (2011)/Stranded (2011) Remux-2160p.mkv")" 5000
+ck "a stranded source whose NAS size differs is kept" "$([ -e "$X9/complete/StrandDiff (2012)/StrandDiff (2012) Remux-2160p.mkv" ] && echo kept || echo gone)" kept
+ck "a source with no encode and no pushed marker stays" "$([ -e "$X9/complete/NoEncode (2004)/NoEncode (2004) Remux-2160p.mkv" ] && echo kept || echo gone)" kept
+
 # --- off switch, unknown args
 title "Off (2008)" 1 O; touch "$X9/.push-off"
 bash "$P" --tick
