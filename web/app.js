@@ -4394,13 +4394,16 @@
     return null;
   }
   var MON_NAMES = ["CPU", "GPU", "RAM", "net in", "net out", "disk read", "disk write"];
-  /* Where the tooltip box goes, relative to the monitor card. 180x150 is the
-   box's outer size. It sits right-and-below the cursor, flips left when that
-   would run off the card, and on a phone -- where the card is narrower than
-   two boxes -- it is clamped inside on both axes rather than flipped. */
-  function monTipPos(cx, cy, cr) {
-    var W = 180,
-      H = 150;
+  /* Where the tooltip box goes, relative to the monitor card. w/h are the
+   box's actual rendered size (measured from the live element -- content can
+   make it taller than the nominal 180x150, which are fallbacks only for a
+   caller that has not measured). It sits right-and-below the cursor, flips
+   left when that would run off the card, and on a phone -- where the card
+   is narrower than two boxes -- it is clamped inside on both axes rather
+   than flipped. */
+  function monTipPos(cx, cy, cr, w, h) {
+    var W = w > 0 ? w : 180,
+      H = h > 0 ? h : 150;
     var lx = cx - cr.left + 14,
       ly = cy - cr.top + 10;
     if (lx + W > cr.width) lx = cx - cr.left - W - 14;
@@ -4441,12 +4444,10 @@
       monTipEl.appendChild(row);
     }
     var cr = monCard.getBoundingClientRect();
-    var pos = monTipPos(monHover.cx, monHover.cy, cr);
-    var lx = pos.lx,
-      ly = pos.ly;
-    monTipEl.style.left = lx + "px";
-    monTipEl.style.top = ly + "px";
     monTipEl.hidden = false;
+    var pos = monTipPos(monHover.cx, monHover.cy, cr, monTipEl.offsetWidth, monTipEl.offsetHeight);
+    monTipEl.style.left = pos.lx + "px";
+    monTipEl.style.top = pos.ly + "px";
   }
   function monHoverEnd() {
     if (!monHover) return;
