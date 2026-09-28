@@ -3067,6 +3067,11 @@ footer {
     white-space: normal;
     max-width: 32ch;
   }
+  /* The folder wraps between its pills, never inside one: a squeezed column
+     split "4K Movies" over two lines with the pill border broken across both. */
+  td.src-dir .mark {
+    white-space: nowrap;
+  }
 }
 @media (pointer: coarse) {
   .themebtn {
