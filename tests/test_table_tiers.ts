@@ -90,7 +90,7 @@ const code = [
   src.match(/var openRows = [^;]+;/)[0],
   fn("applyOpen"),
   fn("table"),
-  "return {table:table,applyOpen:applyOpen,openRows:openRows};",
+  "return {table:table,applyOpen:applyOpen,openRows:openRows," + "setTab:function(v){tab=v;}};",
 ].join("\n");
 const api = new Function("el", code)(el);
 
@@ -139,13 +139,13 @@ check(
 );
 check("td secondary class", tr0.children[1].classList.contains("c-s"));
 check("td primary keeps its classes", tr0.children[0].className === "n");
-check("row key", tr0.dataset.key === "a");
+check("row key carries the tab", tr0.dataset.key === "queue\u0000a", tr0.dataset.key);
 
 /* 2. A column without tier defaults to primary (Review Focus 4). */
 check("untiered column is primary", !tr0.children[2].classList.contains("c-s"));
 
 /* 3. Open state survives a rebuild (Review Focus 2). */
-api.openRows["b"] = true;
+api.openRows["queue\u0000b"] = true;
 t = api.table(COLS, rows, build, (r) => r.k);
 check("open row re-opened after rebuild", t.children[1].children[1].classList.contains("open"));
 check("other row closed", !t.children[1].children[0].classList.contains("open"));
@@ -159,7 +159,7 @@ const buildPair = (r) => {
   x.appendChild(td);
   return [tr, x];
 };
-api.openRows["a"] = true;
+api.openRows["queue\u0000a"] = true;
 t = api.table(COLS, rows, buildPair, (r) => r.k);
 const xrow = t.children[1].children[1];
 check(
@@ -282,6 +282,46 @@ tr = keyedRow("k7");
 const td7 = cellWith(tr, null);
 d.rowToggle({ target: td7 });
 check("no-op above the phone width", !tr.classList.contains("open"));
+
+/* 9. A unit column's cell carries .unit beside .c-s, so the revealed label
+   can keep the header's case ("SRC Mb/s", never "SRC MB/S"). */
+const UCOLS = [
+  { label: "Title", cls: "title-cell" },
+  { label: "SRC Mb/s", n: true, cls: "unit", tier: "s" },
+  { label: "Src size", n: true, tier: "s" },
+];
+const ubuild = (r) => {
+  const tr = el("tr");
+  tr.appendChild(el("td", "title-cell", r.t));
+  tr.appendChild(el("td", "n mono", "90.1"));
+  tr.appendChild(el("td", "n mono", "10 GiB"));
+  return tr;
+};
+t = api.table(UCOLS, rows, ubuild, (r) => r.k);
+const ucell = t.children[1].children[0].children[1];
+check(
+  "unit secondary td has c-s and unit",
+  ucell.classList.contains("c-s") && ucell.classList.contains("unit"),
+  ucell.className,
+);
+check(
+  "non-unit td has no unit class",
+  !t.children[1].children[0].children[2].classList.contains("unit"),
+);
+
+/* 10. Open state is per tab: a row open on Queue arrives closed on Errors
+   under the same keyOf value, and is open again back on Queue. */
+api.openRows["queue\u0000a"] = true;
+api.setTab("errors");
+t = api.table(COLS, rows, build, (r) => r.k);
+check(
+  "queue-open key closed on another tab",
+  !t.children[1].children[0].classList.contains("open") &&
+    t.children[1].children[0].dataset.key === "errors\u0000a",
+);
+api.setTab("queue");
+t = api.table(COLS, rows, build, (r) => r.k);
+check("open again back on its own tab", t.children[1].children[0].classList.contains("open"));
 
 console.log(failed ? "\n" + failed + " failed" : "\nok");
 process.exit(failed ? 1 : 0);

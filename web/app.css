@@ -2852,10 +2852,18 @@ footer {
   }
   /* A Blacklist hit is a title-cell too, but its name shares a line with the
      rate and size, not with row actions; flex-basis 0 squeezed it to a
-     word per line beside them. 60% cannot fit after the numbers, so the name
-     drops to its own line and keeps the NAS pill beside it. */
+     word per line beside them. The name leads on a line of its own and its
+     numbers (and NAS pill) follow under it: left in DOM order, each hit's
+     numbers sat ABOVE its name and read as the previous hit's. A rule
+     between hits keeps one hit from running into the next. */
   td.title-cell .blhit .tname {
-    flex: 1 1 60%;
+    order: -1;
+    flex: 1 1 100%;
+  }
+  .blhit + .blhit {
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px solid var(--td-line);
   }
   /* The header sticks under the tab strip (--strip from Task 2). It is the
      thead that sticks: a sticky thead tr could never travel, its containing
@@ -2944,6 +2952,11 @@ footer {
     letter-spacing: 0.06em;
     color: var(--ink-3);
   }
+  /* th.unit's exemption, for the revealed label: "SRC Mb/s" uppercased is
+     "SRC MB/S", an 8x unit lie. table() puts .unit on the td. */
+  tr.open td.c-s.unit::before {
+    text-transform: none;
+  }
   /* The first revealed line gets breathing room from the primary line. */
   tr.open td.c-s:nth-child(1 of .c-s) {
     padding-top: 8px;
@@ -2973,23 +2986,58 @@ footer {
   .t-errors tr {
     --cols: 9ch minmax(0, 1.5fr) minmax(0, 1fr);
   }
+  /* Process, PID, Purpose, CPU %. The PID is primary: two `dashboard`
+     or two `caffeinate` rows are otherwise twins at a glance. 7ch holds
+     the "CPU %" header on one line. The process chip breaks between
+     words only ("caffeinat|e" read as a typo); 1.35fr holds the longest
+     one-word label, "replenisher", at 390px. */
   .t-procs tr {
-    --cols: minmax(0, 1fr) minmax(0, 1fr) 6ch;
+    --cols: minmax(0, 1.35fr) 7ch minmax(0, 1fr) 7ch;
+  }
+  .t-procs:has(.c-s) td:first-child {
+    overflow-wrap: normal;
   }
   /* The launchd agents table shares the procs tab but has no secondary
-     columns, and its third column is a state phrase, not a CPU number. */
+     columns, and its third column is a state phrase, not a CPU number.
+     An agent label is one dotted word, so its track is the widest: 1.8fr
+     holds a 16-character label whole at 390px (com.smeltr.b|rief broke
+     at 1.2fr). A longer one (com.smeltr.replenish) still wraps at the
+     card edge -- kept, because a label run into the Purpose column is
+     worse than one split. */
   .t-procs:not(:has(.c-s)) tr {
-    --cols: minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(0, 1fr);
+    --cols: minmax(0, 1.8fr) minmax(0, 1.2fr) minmax(0, 1fr);
   }
   .t-blacklist tr {
     --cols: minmax(0, 1fr) 7ch;
   }
+  /* 12ch: the whole-second clock ("12:36:21 pm", 11 mono glyphs) holds
+     its line with room for a wider phone mono face. */
   .t-events tr {
-    --cols: 10ch minmax(0, 1fr);
+    --cols: 12ch minmax(0, 1fr);
   }
-  /* The stamp wraps date over clock rather than running under the event. */
+  /* The stamp wraps date over clock rather than running under the event;
+     each half stays whole, so the meridiem never takes a line alone. */
   .t-events td.evtime {
     white-space: normal;
+  }
+  .t-events td.evtime span {
+    white-space: nowrap;
+  }
+  /* The same for History's Finished: .nowrap (0,1,0) outranks the phone's
+     `th, td` wrap, so the clock ran out of its 10ch track and was clipped.
+     Date over clock, neither split. The space between them sits INSIDE
+     the nowrap clock span, so it is no break point; inline-block puts one
+     before the clock (else the date broke at its hyphens, "08-28-|26"),
+     and flush under the date, without the desktop's 6px gap. */
+  .t-ledger td.nowrap {
+    white-space: normal;
+  }
+  .t-ledger td.nowrap span {
+    white-space: nowrap;
+  }
+  .t-ledger td.nowrap .fin-t {
+    display: inline-block;
+    margin-left: 0;
   }
 }
 

@@ -1014,6 +1014,28 @@ class ResponsiveTiers(unittest.TestCase):
         dense = re.sub(r"\s*([{}:;>,])\s*", r"\1", css)
         self.assertIn("#tablewrap.can-right>.wrap::after", dense)
 
+    def test_revealed_labels_are_written_only_by_table(self):
+        # The phone prints a revealed value's label from data-l. Only
+        # table() may write it, from its static column list, so no renderer
+        # can ever feed a server string into a label -- and only table()
+        # decides which cells are secondary.
+        js = read("web/app.js")
+        start = js.index("function table(")
+        end = js.index("\n  function ", start)
+        writes = [m.start() for m in re.finditer(r"dataset\.l\s*=", js)]
+        self.assertEqual(len(writes), 1, f"dataset.l assigned {len(writes)} times")
+        self.assertTrue(start < writes[0] < end, "dataset.l written outside table()")
+        # Any quoted string naming the class or attribute, alone or among
+        # others ("mark c-s" as much as "c-s").
+        for name in ("data-l", "c-s"):
+            pat = r"[\"'][^\"'\n]*(?<![\w-])" + name + r"(?![\w-])[^\"'\n]*[\"']"
+            for m in re.finditer(pat, js):
+                self.assertTrue(
+                    start < m.start() < end,
+                    f"{m.group(0)} at offset {m.start()} lies outside table()",
+                )
+        self.assertRegex(js[start:end], r"[\"']c-s[\"']")
+
 
 class ThemeTokens(unittest.TestCase):
     """Both themes are token sets with the same names.

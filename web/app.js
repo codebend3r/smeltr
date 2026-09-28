@@ -1396,6 +1396,10 @@
    cannot fold a row the operator just opened. No prototype, so a title
    named `constructor` or `toString` never reads as open. */
   var openRows = Object.create(null);
+  /* The phone tier, as the CSS defines it. One MediaQueryList shared by the
+   queue's drag rows, the row disclosure and the seam script so the three can
+   never disagree. Declared up here, ahead of every renderer that reads it. */
+  var PHONE = window.matchMedia ? window.matchMedia("(max-width: 639px)") : { matches: false };
   function applyOpen(tr) {
     var k = tr.dataset.key;
     if (k != null && openRows[k]) tr.classList.add("open");
@@ -1425,9 +1429,15 @@
         var td = row.cells[i];
         td.dataset.l = cols[i].label;
         if (cols[i].tier === "s") td.classList.add("c-s");
+        /* The unit column's header keeps its case (th.unit); its revealed
+           label is printed from data-l and needs the same exemption, or
+           "SRC Mb/s" reads as "SRC MB/S" -- an 8x unit lie. */
+        if (/\bunit\b/.test(cols[i].cls || "")) td.classList.add("unit");
       }
+      /* Keyed per tab: a title open on Queue must not arrive open on
+         Errors, nor a recycled PID on Processes inherit an old row's state. */
       if (keyOf) {
-        row.dataset.key = keyOf(r);
+        row.dataset.key = tab + "\u0000" + keyOf(r);
         applyOpen(row);
       }
     }
@@ -1958,7 +1968,9 @@
             var g = el("span", "grip", "⋮⋮");
             g.title = "Drag to reorder";
             grip.appendChild(g);
-            tr.draggable = true;
+            /* The grip is hidden on the phone; a draggable row with no
+               handle would still reorder the queue under a narrow mouse. */
+            if (!PHONE.matches) tr.draggable = true;
           }
           tr.appendChild(grip);
           tr.appendChild(el("td", "n q-rank", ranks[i] == null ? "—" : String(ranks[i])));
@@ -2740,7 +2752,7 @@
         table(
           [
             { label: "Process" },
-            { label: "PID", n: true, tier: "s" },
+            { label: "PID", n: true },
             { label: "Purpose" },
             { label: "Working on", tier: "s" },
             { label: "Running for", n: true, tier: "s" },
@@ -2875,6 +2887,14 @@
     done: "good",
     pushed: "good",
   };
+  /* Date and clock as two spans with a real space between: the cell may
+     wrap BETWEEN them (date over clock on the phone), never inside the
+     clock, which once left "pm" alone on a line. */
+  function evStamp(td, date, clock) {
+    td.appendChild(el("span", null, date));
+    td.appendChild(document.createTextNode(" "));
+    td.appendChild(el("span", null, clock));
+  }
   function renderEvents(x9on) {
     progRefs = {};
     var pane = document.getElementById("pane");
@@ -2910,12 +2930,12 @@
         } else if (e.approx) {
           /* Inferred from the watch log's mtime, so it wears the page's
            estimate marker and claims minutes, never seconds. */
-          td.textContent = "~" + d + " " + clock12(e.ts.slice(11, 16));
+          evStamp(td, "~" + d, clock12(e.ts.slice(11, 16)));
           td.title =
             "time inferred from the watch log's file mtime — " +
             "the watcher wrote this line and exited";
         } else {
-          td.textContent = d + " " + clock12(e.ts.slice(11, 19));
+          evStamp(td, d, clock12(e.ts.slice(11, 19)));
         }
         tr.appendChild(td);
         var ev = el("td");
@@ -3321,9 +3341,17 @@
     if (t0 && t0 !== tab) setTab(t0);
   })();
 
-  /* The phone tier, as the CSS defines it. One MediaQueryList shared by the
-   seam script and the row disclosure so the two can never disagree. */
-  var PHONE = window.matchMedia ? window.matchMedia("(max-width: 639px)") : { matches: false };
+  /* Crossing the phone width changes whether a queue row drags, which no
+   repaint key carries. Flip the drawn rows in place rather than repaint:
+   a gripped row is exactly one renderQueue made draggable. */
+  function phoneFlip() {
+    var tb = document.querySelector("#pane .t-queue tbody");
+    if (!tb) return;
+    tb.querySelectorAll("tr").forEach(function (tr) {
+      if (tr.querySelector(".grip")) tr.draggable = !PHONE.matches;
+    });
+  }
+  if ("addEventListener" in PHONE) PHONE.addEventListener("change", phoneFlip);
 
   /* Row disclosure (phone tier only). A tap anywhere on a row that is not a
    control toggles its secondary cells. Controls keep their own meaning: a
