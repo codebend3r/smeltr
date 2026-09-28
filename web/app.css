@@ -2850,6 +2850,13 @@ footer {
     flex: 1 1 0;
     min-width: 6ch;
   }
+  /* The row actions wrap under the name here, so the negative margin that
+     tucks a button into a desktop row (-10px on a coarse pointer) only
+     lifted the 44px button over the title's last line. Specific enough to
+     beat the coarse block, which comes later in the sheet. */
+  td.title-cell .tcell .act {
+    margin: 0;
+  }
   /* A Blacklist hit is a title-cell too, but its name shares a line with the
      rate and size, not with row actions; flex-basis 0 squeezed it to a
      word per line beside them. The name leads on a line of its own and its

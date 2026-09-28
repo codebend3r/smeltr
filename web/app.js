@@ -4201,6 +4201,7 @@
     var probe = tickLab(Math.ceil(t0 / step) * step, t1 - t0);
     var need = probe.length * 6 + 14;
     while (step < t1 - t0 && (step / (t1 - t0)) * (x1 - x0) < need) step *= 2;
+    var labRight = -Infinity; /* right edge of the last label drawn */
     for (var tt = Math.ceil(t0 / step) * step; tt < t1; tt += step) {
       var gx = Math.round(X(tt)) + 0.5;
       ctx.strokeStyle = css.grid;
@@ -4209,21 +4210,27 @@
       ctx.lineTo(gx, y1);
       ctx.stroke();
       if (ch.axis) {
-        /* A centred label on the last tick can run past the plot's right
-           edge and be cut by the canvas ("Sun 8:00 pr" on a phone); that
-           one is right-aligned to the edge instead. The test recorder has
-           no measureText, so it falls back to the 0.6em-per-glyph estimate
-           the thinning above uses. */
+        /* A centred label on the last tick can run past the canvas edge
+           and be cut ("Sun 8:00 pr" on a phone); only a label that would
+           actually be cut is right-aligned to the edge, so every label the
+           canvas holds keeps its place under its gridline. Pulled left, it
+           may meet the label before it; then it is dropped rather than
+           printed over its neighbour. The test recorder has no measureText,
+           so it falls back to the 0.6em-per-glyph estimate the thinning
+           above uses. */
         var lab = tickLab(tt, t1 - t0),
           lw = ctx.measureText ? ctx.measureText(lab).width : lab.length * 6;
         ctx.fillStyle = css.ink;
         ctx.textBaseline = "top";
-        if (gx + lw / 2 > x1) {
+        if (gx + lw / 2 > w) {
+          if (w - lw < labRight + 6) continue;
           ctx.textAlign = "right";
-          ctx.fillText(lab, x1, y1 + 4);
+          ctx.fillText(lab, w, y1 + 4);
+          labRight = w;
         } else {
           ctx.textAlign = "center";
           ctx.fillText(lab, gx, y1 + 4);
+          labRight = gx + lw / 2;
         }
       }
     }
