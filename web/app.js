@@ -4394,6 +4394,20 @@
     return null;
   }
   var MON_NAMES = ["CPU", "GPU", "RAM", "net in", "net out", "disk read", "disk write"];
+  /* Where the tooltip box goes, relative to the monitor card. 180x150 is the
+   box's outer size. It sits right-and-below the cursor, flips left when that
+   would run off the card, and on a phone -- where the card is narrower than
+   two boxes -- it is clamped inside on both axes rather than flipped. */
+  function monTipPos(cx, cy, cr) {
+    var W = 180,
+      H = 150;
+    var lx = cx - cr.left + 14,
+      ly = cy - cr.top + 10;
+    if (lx + W > cr.width) lx = cx - cr.left - W - 14;
+    if (lx < 4) lx = Math.max(4, Math.min(cx - cr.left - W / 2, cr.width - W - 4));
+    if (ly + H > cr.height) ly = Math.max(4, cr.height - H - 4);
+    return { lx: lx, ly: ly };
+  }
   function monTipDraw(t0, t1) {
     if (!monHover) {
       monTipEl.hidden = true;
@@ -4427,9 +4441,9 @@
       monTipEl.appendChild(row);
     }
     var cr = monCard.getBoundingClientRect();
-    var lx = monHover.cx - cr.left + 14,
-      ly = monHover.cy - cr.top + 10;
-    if (lx + 180 > cr.width) lx = Math.max(4, monHover.cx - cr.left - 194);
+    var pos = monTipPos(monHover.cx, monHover.cy, cr);
+    var lx = pos.lx,
+      ly = pos.ly;
     monTipEl.style.left = lx + "px";
     monTipEl.style.top = ly + "px";
     monTipEl.hidden = false;

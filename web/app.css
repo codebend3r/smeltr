@@ -2743,7 +2743,7 @@ footer {
     gap: 10px;
   }
   .monmini canvas {
-    width: 64px;
+    width: 48px;
   }
   main {
     padding: 16px max(12px, env(safe-area-inset-right)) calc(48px + env(safe-area-inset-bottom))
@@ -2752,12 +2752,15 @@ footer {
   .hero {
     gap: 16px;
   }
+  .hero-body {
+    flex-basis: 100%;
+  }
   .ring {
-    width: 132px;
-    height: 132px;
+    width: 112px;
+    height: 112px;
   }
   .ring-mid .pctbig {
-    font-size: 24px;
+    font-size: 22px;
   }
   #monZoom {
     width: 100%;
@@ -2777,7 +2780,7 @@ footer {
     height: 132px;
   }
   .kv {
-    grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   th,
   td {
@@ -3075,6 +3078,14 @@ footer {
   td.q-crf .crfcell {
     background: var(--panel-2);
     border-color: var(--line);
+  }
+  .act,
+  .panebtn,
+  .crfsel {
+    min-height: 44px;
+  }
+  tbody tr:not(.xrow) > td:first-child {
+    min-height: 44px;
   }
 }
 
