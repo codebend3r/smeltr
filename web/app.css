@@ -162,12 +162,13 @@ body {
   min-height: 100vh;
   transition: grid-template-columns 0.2s ease;
 }
-/* The collapse only exists where there IS a rail to collapse. Below 640px the
-   rail lies flat across the top, and an unguarded `body.railed` -- remembered
-   from a wider window, on the same phone -- outranked every flat-rail rule by
-   specificity: the switch stayed on end and hung off the strip, and the nav
-   counts stayed hidden with nothing gained. Guard the whole set. */
-@media (min-width: 641px) {
+/* The collapse only exists where there IS a rail to collapse. At 639px and
+   below the rail lies flat across the top, and an unguarded `body.railed` --
+   remembered from a wider window, on the same phone -- outranked every
+   flat-rail rule by specificity: the switch stayed on end and hung off the
+   strip, and the nav counts stayed hidden with nothing gained. Guard the
+   whole set. */
+@media (min-width: 640px) {
   body.railed {
     --rail: 66px;
     --rlbl: none;
@@ -1742,9 +1743,9 @@ th.unit {
 tr.rowmoving td {
   border-bottom: 0;
 }
-/* Tinted on the tr, not the td: below 700px the pinned .title-cell takes
-   background:inherit, and a tint painted on the cells would leave that one
-   cell the plain panel colour. */
+/* Tinted on the tr, not the td: in the tablet tier the pinned .title-cell
+   takes background:inherit, and a tint painted on the cells would leave
+   that one cell the plain panel colour. */
 tr.rowmoving,
 tr.xrow {
   background: var(--row-hover);
@@ -2562,16 +2563,18 @@ footer {
   }
 }
 
-/* ---- Responsive. Below 700px the tables keep scrolling sideways: the
-   title column pins to the left edge (the title is the identity of a row --
-   an index column carries nothing the row order does not), and any column
-   sliced at a boundary is blanked by the seam script rather than clipped.
-   Every colour here is an existing token, so both themes are covered. ---- */
+/* ---- Responsive. Between 640 and 1080px the tables keep scrolling
+   sideways: the title column pins to the left edge (the title is the
+   identity of a row -- an index column carries nothing the row order does
+   not), and any column sliced at a boundary is blanked by the seam script
+   rather than clipped. Every colour here is an existing token, so both
+   themes are covered. ---- */
 /* ---- the rail, narrowing ------------------------------------------------
    Below 1080px there is no room for labels, so the rail is icons only and the
-   toggle goes away rather than offering a width the page cannot give. Below
-   640px it stops being a rail at all and lies flat across the top: a 100vh
-   sticky column on a phone is a screen of chrome above the first number. --- */
+   toggle goes away rather than offering a width the page cannot give. At
+   639px and below it stops being a rail at all and lies flat across the top:
+   a 100vh sticky column on a phone is a screen of chrome above the first
+   number. --- */
 @media (max-width: 1080px) {
   body,
   body.railed {
@@ -2600,7 +2603,7 @@ footer {
     border-top: 1px solid var(--line);
   }
 }
-@media (max-width: 640px) {
+@media (max-width: 639px) {
   body,
   body.railed {
     grid-template-columns: minmax(0, 1fr);
@@ -2651,7 +2654,10 @@ footer {
     border-top: 0;
   }
 }
-@media (max-width: 700px) {
+/* ==== PHONE (<=639px) ====================================================
+   Compaction only. The table becomes grid rows in Task 3; the shell in
+   Task 2. Anything here must not exist above 639px. */
+@media (max-width: 639px) {
   .monmini {
     gap: 10px;
   }
@@ -2694,8 +2700,18 @@ footer {
   .kv {
     grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
   }
-  /* 60vh, floored so portrait phones keep a useful table, capped so the
-     floor cannot exceed a short landscape viewport. */
+  th,
+  td {
+    padding: 7px 9px;
+  }
+}
+
+/* ==== TABLET (640-1080px) ================================================
+   The full table with the title column pinned left while the rest scrolls,
+   and seam blanking for a column sliced at an edge. A 1024px iPad landscape
+   still shows all twelve History columns, so the pin earns its place here;
+   on the phone (Task 3) rows are grids and nothing scrolls sideways. */
+@media (min-width: 640px) and (max-width: 1080px) {
   .scroll {
     max-height: min(max(60vh, 340px), 72dvh);
   }
@@ -2717,10 +2733,6 @@ footer {
   .rowenc {
     background: var(--row-enc);
   }
-  /* Both tables mark the title th and td with .title-cell, so no per-table
-     column arithmetic is needed and left:0 is the only constant. Until the
-     scroll reaches it the title sits in its natural column; from then on it
-     docks at the left edge and the rest slides beneath it. */
   /* Both halves are named so this outranks `td.title-cell{position:relative}`
      above; a bare `.title-cell` here loses to it on the td and the pinned
      column stops pinning. */
@@ -2733,7 +2745,6 @@ footer {
     background: inherit;
     border-right: 1px solid var(--line);
   }
-  /* Headers float above the pinned title cells; the pinned corner above both. */
   th {
     z-index: 2;
   }
@@ -2742,8 +2753,8 @@ footer {
   }
   /* A column sliced at a boundary renders EMPTY, not clipped. Clipped on its
      left, a right-aligned "70.64 GiB" still parses -- as "0.64 GiB"; clipped
-     on its right it loses its unit and "78.24" bare could be Mb/s or GiB.
-     The .cut class is applied by the seam script at the bottom of the page. */
+     on its right it loses its unit. The .cut class is applied by the seam
+     script at the bottom of app.js. */
   td.cut,
   th.cut {
     color: transparent;

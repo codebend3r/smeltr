@@ -925,9 +925,9 @@ class StickyHeaderOutranksTheTitleColumn(unittest.TestCase):
 
     def test_no_bare_title_cell_sets_position(self):
         css = re.sub(r"/\*.*?\*/", " ", read("web/app.css"), flags=re.S)
-        # Drop every @media block: inside the <=700px one `.title-cell`
-        # legitimately pins, and both halves are named there so the td rule
-        # cannot outrank it.
+        # Drop every @media block: inside the tablet (640-1080px) one
+        # `.title-cell` legitimately pins, and both halves are named there
+        # so the td rule cannot outrank it.
         while "@media" in css:
             i = css.index("@media")
             j = css.index("{", i)
@@ -953,6 +953,34 @@ class StickyHeaderOutranksTheTitleColumn(unittest.TestCase):
 
     def test_the_rule_it_protects_still_exists(self):
         self.assertIn("th{position:sticky;top:0;z-index:1", DENSE)
+
+
+class ResponsiveTiers(unittest.TestCase):
+    """Three tiers, two breakpoints (spec 2026-09-27).
+
+    Phone is <=639px, tablet 640-1080px, desktop above. The old 700px block
+    disagreed with the 640px rail flip, so between the two the rail was a
+    column while main was already in phone compaction. Any width outside
+    the allowed set is a fourth breakpoint sneaking back in.
+    """
+
+    ALLOWED = {"639", "640", "641", "1080", "1081", "1240"}
+
+    def _media_widths(self):
+        css = re.sub(r"/\*.*?\*/", " ", read("web/app.css"), flags=re.S)
+        widths = []
+        for prelude in re.findall(r"@media([^{]*)\{", css):
+            widths.extend(re.findall(r"(?:min|max)-width:\s*(\d+)px", prelude))
+        return widths
+
+    def test_only_the_named_breakpoints_exist(self):
+        widths = self._media_widths()
+        self.assertTrue(widths, "no width media queries found; regex has rotted")
+        stray = sorted({w for w in widths if w not in self.ALLOWED})
+        self.assertEqual(stray, [], f"media-query widths outside the tier set: {stray}")
+
+    def test_the_700px_block_is_gone(self):
+        self.assertNotIn("700px", read("web/app.css"))
 
 
 class ThemeTokens(unittest.TestCase):

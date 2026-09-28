@@ -3271,11 +3271,12 @@
     if (t0 && t0 !== tab) setTab(t0);
   })();
 
-  /* Seam blanking. Below 700px the title column pins while the rest scrolls,
-   and a cell HALF hidden is worse than one fully hidden: sliced at the pane's
-   left edge or the pinned title's edge, a right-aligned size keeps its
-   trailing digits and still parses as a plausible size; sliced at the right
-   edge it keeps its digits but loses its unit. Whichever column straddles a
+  /* Seam blanking. Between 640px and 1080px (the tablet tier) the title
+   column pins while the rest scrolls, and a cell HALF hidden is worse than
+   one fully hidden: sliced at the pane's left edge or the pinned title's
+   edge, a right-aligned size keeps its trailing digits and still parses as
+   a plausible size; sliced at the right edge it keeps its digits but loses
+   its unit. Whichever column straddles a
    boundary gets .cut (blank but layout-stable) until it is fully clear. The
    straddle test uses the text box (cell inset by its padding), so a value
    whose glyphs are fully visible is never blanked. Title cells are never
@@ -3317,7 +3318,7 @@
       }
       var next = [];
       if (pinnedRight != null) {
-        /* the pinned title exists only below 700px */
+        /* the pinned title exists only in the tablet tier (640-1080px) */
         var pr = pane.getBoundingClientRect();
         var bounds = [pr.left, pinnedRight, pr.left + pane.clientWidth];
         for (i = 0; i < head.cells.length; i++) {
