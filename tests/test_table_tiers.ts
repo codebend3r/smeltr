@@ -42,6 +42,7 @@ function node(tag, cls?, text?) {
     dataset: {},
     children: [],
     appendChild(c) {
+      c.parentNode = this;
       this.children.push(c);
       return c;
     },
@@ -64,6 +65,21 @@ function node(tag, cls?, text?) {
     contains: (c) => n.className.split(/\s+/).indexOf(c) >= 0,
   };
   Object.defineProperty(n, "cells", { get: () => n.children });
+  /* A real (if minimal) Element.closest: walks the node itself, then each
+     parentNode, matching a bare tag name or a .class against a
+     comma-separated selector list. Dropping a selector from the real code's
+     `closest()` call must fail a test here, not just look like it works. */
+  n.closest = (selectorList) => {
+    const sels = selectorList.split(",").map((s) => s.trim());
+    const matches = (node, sel) =>
+      sel[0] === "." ? node.classList.contains(sel.slice(1)) : node.tagName.toLowerCase() === sel;
+    let cur = n;
+    while (cur) {
+      if (sels.some((sel) => matches(cur, sel))) return cur;
+      cur = cur.parentNode;
+    }
+    return null;
+  };
   return n;
 }
 const el = node;
@@ -196,7 +212,11 @@ check("cell node identity", t.children[1].children[0].children[1] === built[0].t
 t = api.table(COLS, [{ t: "C", k: "constructor" }], build, (r) => r.k);
 check("constructor title not open", !t.children[1].children[0].classList.contains("open"));
 
-/* 6. The disclosure handler (Review Focus 1 and 3). */
+/* 8. The disclosure handler (Review Focus 1 and 3). The fake DOM's
+   closest() above is a REAL minimal implementation -- tag or .class,
+   walking parentNode -- so dropping a selector from the real
+   rowToggle()'s guard would fail a case here, not just look like it
+   works. */
 const code2 = [
   'var tab="queue"; var openRows=Object.create(null); var PHONE={matches:true};',
   fn("applyOpen"),
@@ -205,40 +225,62 @@ const code2 = [
 ].join("\n");
 const d = new Function("el", code2)(el);
 
-function fakeRow(cls, key) {
-  const tr = node("tr", cls);
-  if (key != null) tr.dataset.key = key;
+function keyedRow(key) {
+  const tr = node("tr");
+  tr.dataset.key = key;
   return tr;
 }
-function fakeEvent(target, tr) {
-  /* closest() walks target -> tr; the interactive test puts a button
-     between them. */
-  return {
-    target: {
-      closest(sel) {
-        if (sel === "tr") return tr;
-        return target.interactive && sel.indexOf("button") >= 0 ? target : null;
-      },
-    },
-  };
+function cellWith(tr, child) {
+  const td = node("td");
+  tr.appendChild(td);
+  if (child) td.appendChild(child);
+  return child || td;
 }
-let tr = fakeRow("", "k1");
-d.rowToggle(fakeEvent({}, tr));
-check("tap opens the row", tr.classList.contains("open") && d.openRows["k1"] === true);
-d.rowToggle(fakeEvent({}, tr));
-check("second tap closes it", !tr.classList.contains("open") && !d.openRows["k1"]);
 
-tr = fakeRow("", "k2");
-d.rowToggle(fakeEvent({ interactive: true }, tr));
-check("a click on a control does not toggle", !tr.classList.contains("open"));
+let tr = keyedRow("k1");
+const td1 = cellWith(tr, null);
+d.rowToggle({ target: td1 });
+check(
+  "a click on a td directly opens the row",
+  tr.classList.contains("open") && d.openRows["k1"] === true,
+);
+d.rowToggle({ target: td1 });
+check("second tap on the td closes it", !tr.classList.contains("open") && !d.openRows["k1"]);
 
-const x = fakeRow("xrow", null);
-d.rowToggle(fakeEvent({}, x));
+tr = keyedRow("k2");
+const btn = cellWith(tr, node("button"));
+d.rowToggle({ target: btn });
+check("a click on a button does not toggle", !tr.classList.contains("open"));
+
+tr = keyedRow("k3");
+const sel = cellWith(tr, node("select"));
+d.rowToggle({ target: sel });
+check("a click on a select does not toggle", !tr.classList.contains("open"));
+
+tr = keyedRow("k4");
+const crfcell = cellWith(tr, node("span", "crfcell"));
+d.rowToggle({ target: crfcell });
+check("a click on .crfcell does not toggle", !tr.classList.contains("open"));
+
+tr = keyedRow("k5");
+const inp = cellWith(tr, node("input"));
+d.rowToggle({ target: inp });
+check("a click on an input does not toggle", !tr.classList.contains("open"));
+
+tr = keyedRow("k6");
+const span = cellWith(tr, node("span"));
+d.rowToggle({ target: span });
+check("a click on a plain span still opens the row", tr.classList.contains("open"));
+
+const x = node("tr", "xrow");
+const xtd = cellWith(x, null);
+d.rowToggle({ target: xtd });
 check("xrow never opens", !x.classList.contains("open"));
 
 d.PHONE.matches = false;
-tr = fakeRow("", "k3");
-d.rowToggle(fakeEvent({}, tr));
+tr = keyedRow("k7");
+const td7 = cellWith(tr, null);
+d.rowToggle({ target: td7 });
 check("no-op above the phone width", !tr.classList.contains("open"));
 
 console.log(failed ? "\n" + failed + " failed" : "\nok");

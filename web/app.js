@@ -3327,9 +3327,9 @@
 
   /* Row disclosure (phone tier only). A tap anywhere on a row that is not a
    control toggles its secondary cells. Controls keep their own meaning: a
-   tap on the CRF picker, a skip button or the Source-folder link must never
-   also fold the row underneath it. The transfer .xrow has nothing to
-   reveal. Open rows are remembered by key so the repaint keeps them. */
+   tap on the CRF picker or a skip button must never also fold the row
+   underneath it. The transfer .xrow has nothing to reveal. Open rows are
+   remembered by key so the repaint keeps them. */
   function rowToggle(ev) {
     if (!PHONE.matches) return;
     var t = ev.target;
