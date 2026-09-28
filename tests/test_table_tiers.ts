@@ -69,7 +69,9 @@ function node(tag, cls?, text?) {
 const el = node;
 
 const code = [
-  'var tab="queue"; var openRows={};',
+  'var tab="queue";',
+  /* The real declaration, so test 7 pins the page's own set, not a stand-in. */
+  src.match(/var openRows = [^;]+;/)[0],
   fn("applyOpen"),
   fn("table"),
   "return {table:table,applyOpen:applyOpen,openRows:openRows};",
@@ -152,9 +154,47 @@ check(
 );
 check("xrow has no key", xrow.dataset.key === undefined);
 
+/* 4b. The class alone skips an .xrow, even one with a full set of cells. */
+const buildFull = (r) => {
+  const tr = build(r);
+  const x = el("tr", "xrow");
+  x.appendChild(el("td", null, "a"));
+  x.appendChild(el("td", null, "b"));
+  x.appendChild(el("td", null, "c"));
+  return [tr, x];
+};
+t = api.table(COLS, rows, buildFull, (r) => r.k);
+const xfull = t.children[1].children[1];
+check(
+  "full-width xrow skipped by class",
+  xfull.children[1].dataset.l === undefined &&
+    !xfull.children[1].classList.contains("c-s") &&
+    xfull.dataset.key === undefined,
+);
+
 /* 5. Without keyOf nothing crashes and no key is written. */
 t = api.table(COLS, rows, build);
 check("no keyOf, no key", t.children[1].children[0].dataset.key === undefined);
+
+/* 6. The row build() returned is the very node in the tbody, cells and all:
+   progRefs holds references into these cells, so a clone or rebuild inside
+   table() would leave every in-place progress update writing to a ghost. */
+const built = [];
+const buildKeep = (r) => {
+  const tr = build(r);
+  built.push({ tr: tr, td: tr.children[1] });
+  return tr;
+};
+t = api.table(COLS, rows, buildKeep, (r) => r.k);
+check(
+  "row node identity",
+  t.children[1].children[0] === built[0].tr && t.children[1].children[1] === built[1].tr,
+);
+check("cell node identity", t.children[1].children[0].children[1] === built[0].td);
+
+/* 7. A prototype key is not an open row. */
+t = api.table(COLS, [{ t: "C", k: "constructor" }], build, (r) => r.k);
+check("constructor title not open", !t.children[1].children[0].classList.contains("open"));
 
 console.log(failed ? "\n" + failed + " failed" : "\nok");
 process.exit(failed ? 1 : 0);

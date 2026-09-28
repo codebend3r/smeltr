@@ -2771,7 +2771,10 @@ footer {
      row is .open and then take a full-width line each with their header
      printed from data-l. Nothing scrolls sideways, so the seam script exits
      early at this width. Per-table templates below name the PRIMARY cells
-     in DOM order; ::before is the chevron and is the first grid item. */
+     in DOM order; ::before is the first grid item (a spacer, and the
+     chevron on a row that can open). Every row is its own grid, so tracks
+     are fixed lengths only -- an auto track resolves per row and the header
+     would never line up with the cells under it. */
   table,
   thead,
   tbody {
@@ -2780,11 +2783,6 @@ footer {
   tr {
     display: grid;
     grid-template-columns: 18px var(--cols, minmax(0, 1fr));
-    /* dense: a revealed .c-s line sits BETWEEN primary cells in DOM order,
-       and sparse placement would push every primary cell after it off the
-       first line. dense backfills the first line and keeps the revealed
-       lines in DOM order beneath it. */
-    grid-auto-flow: row dense;
     align-items: baseline;
     column-gap: 8px;
     border-bottom: 1px solid var(--td-line);
@@ -2792,34 +2790,62 @@ footer {
   tbody tr:last-child {
     border-bottom: 0;
   }
+  /* Narrow side padding so a ch track's content box holds its digits; the
+     column-gap does the separating. */
   th,
   td {
+    padding: 7px 5px;
     border-bottom: 0;
     white-space: normal;
     overflow-wrap: anywhere;
+  }
+  /* A number never splits digit over digit. */
+  th.n,
+  td.n {
+    overflow-wrap: normal;
   }
   td.title-cell,
   th.title-cell {
     min-width: 0;
   }
-  /* The header row sticks under the tab strip (--strip from Task 2); the
-     individual th cells give up their own stickiness inside a grid row. */
-  thead tr {
-    background: var(--panel-2);
+  /* A title cell's row actions (visible on touch) would otherwise squeeze the
+     name to one glyph per line; they wrap under the name instead. */
+  td.title-cell .tcell {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  td.title-cell .tname {
+    flex: 1 1 0;
+    min-width: 6ch;
+  }
+  /* The header sticks under the tab strip (--strip from Task 2). It is the
+     thead that sticks: a sticky thead tr could never travel, its containing
+     block being the one-row block thead. The th cells give up their own
+     stickiness inside a grid row. */
+  /* clip, not hidden: hidden makes .wrap a scroll container, and a sticky
+     thead then sticks to a box that never scrolls. clip keeps the rounded
+     corners without that. */
+  .wrap {
+    overflow: clip;
+  }
+  thead {
     position: sticky;
     top: var(--strip);
     z-index: 2;
+    background: var(--panel-2);
   }
-  thead tr::before {
+  thead tr::before,
+  tbody tr:not(.xrow)::before {
     content: "";
   }
   th {
     position: static;
     top: auto;
   }
-  /* The chevron. A 6px square rotated; turns down when the row is open. */
-  tbody tr:not(.xrow)::before {
-    content: "";
+  /* The chevron, only on a row that can open -- data-key is exactly that
+     (table() writes it only when the tab passes keyOf). A 6px square
+     rotated; turns down when the row is open. */
+  tbody tr[data-key]::before {
     width: 6px;
     height: 6px;
     margin: 6px 0 0 5px;
@@ -2828,14 +2854,23 @@ footer {
     transform: rotate(-45deg);
     transition: transform 0.15s;
   }
-  tbody tr.open::before {
+  tbody tr[data-key].open::before {
     transform: rotate(45deg);
   }
-  tbody tr:not(.xrow) {
+  tbody tr[data-key] {
     cursor: pointer;
   }
   .c-s {
     display: none;
+  }
+  /* In an open row the primary cells are locked to the first line, so the
+     grid places them before any revealed .c-s cell -- a secondary column
+     that comes first in DOM order (Blacklist's Kind, Queue's Src size
+     before Title) would otherwise take the first line and push the primary
+     cells after it down. The revealed lines follow in DOM order. */
+  tbody tr.open::before,
+  tr.open > td:not(.c-s) {
+    grid-row: 1;
   }
   tr.open td.c-s {
     display: flex;
@@ -2855,8 +2890,11 @@ footer {
     color: var(--ink-3);
   }
   /* The first revealed line gets breathing room from the primary line. */
-  tr.open td.c-s:first-of-type {
+  tr.open td.c-s:nth-child(1 of .c-s) {
     padding-top: 8px;
+  }
+  tr.open {
+    padding-bottom: 4px;
   }
   /* Transfer rows span the whole width, chevron column included. */
   tr.xrow {
@@ -2872,30 +2910,31 @@ footer {
   }
   /* Per-table primary templates, DOM order of the primary cells. */
   .t-queue tr {
-    --cols: 3ch 5ch minmax(0, 1fr) auto;
+    --cols: 4ch 6ch minmax(0, 1fr) 9ch;
   }
   .t-ledger tr {
-    --cols: 3ch minmax(0, 1fr) 9ch 8ch;
+    --cols: 4ch minmax(0, 1fr) 10ch 9ch;
   }
   .t-errors tr {
-    --cols: auto minmax(0, 1fr) minmax(0, 1.2fr);
+    --cols: 9ch minmax(0, 1.5fr) minmax(0, 1fr);
   }
   .t-procs tr {
     --cols: minmax(0, 1fr) minmax(0, 1fr) 6ch;
   }
+  /* The launchd agents table shares the procs tab but has no secondary
+     columns, and its third column is a state phrase, not a CPU number. */
+  .t-procs:not(:has(.c-s)) tr {
+    --cols: minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(0, 1fr);
+  }
   .t-blacklist tr {
-    --cols: minmax(0, 1fr) 6ch;
+    --cols: minmax(0, 1fr) 7ch;
   }
   .t-events tr {
-    --cols: 8ch minmax(0, 1fr);
+    --cols: 10ch minmax(0, 1fr);
   }
-  /* Events has no secondary columns and no key: nothing to open, so no
-     chevron and no pointer. */
-  .t-events tbody tr::before {
-    content: none;
-  }
-  .t-events tbody tr {
-    cursor: default;
+  /* The stamp wraps date over clock rather than running under the event. */
+  .t-events td.evtime {
+    white-space: normal;
   }
 }
 

@@ -1393,8 +1393,9 @@
    open, keyed by the row's data-key. A plain object as a set, in memory
    only, and deliberately OUTSIDE every repaint key -- open is a view fact,
    not a shape. table() re-applies it on every rebuild so the 2 s repaint
-   cannot fold a row the operator just opened. */
-  var openRows = {};
+   cannot fold a row the operator just opened. No prototype, so a title
+   named `constructor` or `toString` never reads as open. */
+  var openRows = Object.create(null);
   function applyOpen(tr) {
     var k = tr.dataset.key;
     if (k != null && openRows[k]) tr.classList.add("open");
