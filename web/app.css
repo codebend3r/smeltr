@@ -10,6 +10,9 @@
      so a var(--strip) reference resolves even where the phone block never
      touches it. */
   --strip: 48px;
+  /* Phone brand/foot row height (<=639px). The rail's sticky top offset is
+     computed from this, so the two can never drift apart. */
+  --brand: 44px;
   /* Phone grid-row tracks after the chevron (<=639px). The default is one
      flexible track; each .t-<tab> tr in the phone block names its own
      primary cells. Only a phone tr consumes it. */
@@ -2616,11 +2619,17 @@ footer {
   body.railed {
     grid-template-columns: minmax(0, 1fr);
   }
-  /* Two rows: brand + foot on the first, the six tabs on the second. The
-     tab row is sticky so the section switch stays under the thumb while a
-     long History scrolls; the brand row scrolls away. */
+  /* Two rows: brand + foot on the first, the six tabs on the second. A
+     sticky box can't outrun its own containing block, so the rail itself
+     (tall enough to hold both rows) is what sticks, pulled up by exactly
+     the brand row's height so only the tab strip stays visible at top: 0
+     while a long History scrolls; the brand row scrolls away above it.
+     The negative offset is padding-top (8px) + --brand + the row gap
+     (6px) -- keep those three numbers in sync with the rule below. */
   .rail {
-    position: static;
+    position: sticky;
+    top: calc(-1 * (8px + var(--brand) + 6px));
+    z-index: 5;
     height: auto;
     display: grid;
     grid-template-columns: 1fr auto;
@@ -2635,6 +2644,10 @@ footer {
     border-right: 0;
     border-bottom: 0;
     overflow: visible;
+  }
+  .railtop,
+  .railfoot {
+    height: var(--brand);
   }
   .railtop {
     grid-area: brand;
@@ -2667,8 +2680,6 @@ footer {
   }
   .navlist {
     grid-area: tabs;
-    position: sticky;
-    top: 0;
     z-index: 5;
     display: grid;
     grid-template-columns: repeat(6, minmax(0, 1fr));
