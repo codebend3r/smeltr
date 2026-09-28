@@ -3325,6 +3325,24 @@
    seam script and the row disclosure so the two can never disagree. */
   var PHONE = window.matchMedia ? window.matchMedia("(max-width: 639px)") : { matches: false };
 
+  /* Row disclosure (phone tier only). A tap anywhere on a row that is not a
+   control toggles its secondary cells. Controls keep their own meaning: a
+   tap on the CRF picker, a skip button or the Source-folder link must never
+   also fold the row underneath it. The transfer .xrow has nothing to
+   reveal. Open rows are remembered by key so the repaint keeps them. */
+  function rowToggle(ev) {
+    if (!PHONE.matches) return;
+    var t = ev.target;
+    if (t.closest("button, select, a, input, label, .crfcell")) return;
+    var tr = t.closest("tr");
+    if (!tr || tr.classList.contains("xrow") || tr.dataset.key == null) return;
+    var on = !tr.classList.contains("open");
+    tr.classList.toggle("open", on);
+    if (on) openRows[tr.dataset.key] = true;
+    else delete openRows[tr.dataset.key];
+  }
+  document.getElementById("pane").addEventListener("click", rowToggle);
+
   /* Seam blanking. Between 640px and 1080px (the tablet tier) the title
    column pins while the rest scrolls, and a cell HALF hidden is worse than
    one fully hidden: sliced at the pane's left edge or the pinned title's

@@ -196,5 +196,50 @@ check("cell node identity", t.children[1].children[0].children[1] === built[0].t
 t = api.table(COLS, [{ t: "C", k: "constructor" }], build, (r) => r.k);
 check("constructor title not open", !t.children[1].children[0].classList.contains("open"));
 
+/* 6. The disclosure handler (Review Focus 1 and 3). */
+const code2 = [
+  'var tab="queue"; var openRows=Object.create(null); var PHONE={matches:true};',
+  fn("applyOpen"),
+  fn("rowToggle"),
+  "return {rowToggle:rowToggle,openRows:openRows,PHONE:PHONE};",
+].join("\n");
+const d = new Function("el", code2)(el);
+
+function fakeRow(cls, key) {
+  const tr = node("tr", cls);
+  if (key != null) tr.dataset.key = key;
+  return tr;
+}
+function fakeEvent(target, tr) {
+  /* closest() walks target -> tr; the interactive test puts a button
+     between them. */
+  return {
+    target: {
+      closest(sel) {
+        if (sel === "tr") return tr;
+        return target.interactive && sel.indexOf("button") >= 0 ? target : null;
+      },
+    },
+  };
+}
+let tr = fakeRow("", "k1");
+d.rowToggle(fakeEvent({}, tr));
+check("tap opens the row", tr.classList.contains("open") && d.openRows["k1"] === true);
+d.rowToggle(fakeEvent({}, tr));
+check("second tap closes it", !tr.classList.contains("open") && !d.openRows["k1"]);
+
+tr = fakeRow("", "k2");
+d.rowToggle(fakeEvent({ interactive: true }, tr));
+check("a click on a control does not toggle", !tr.classList.contains("open"));
+
+const x = fakeRow("xrow", null);
+d.rowToggle(fakeEvent({}, x));
+check("xrow never opens", !x.classList.contains("open"));
+
+d.PHONE.matches = false;
+tr = fakeRow("", "k3");
+d.rowToggle(fakeEvent({}, tr));
+check("no-op above the phone width", !tr.classList.contains("open"));
+
 console.log(failed ? "\n" + failed + " failed" : "\nok");
 process.exit(failed ? 1 : 0);
