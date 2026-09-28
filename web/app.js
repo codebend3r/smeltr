@@ -3351,8 +3351,10 @@
    its unit. Whichever column straddles a
    boundary gets .cut (blank but layout-stable) until it is fully clear. The
    straddle test uses the text box (cell inset by its padding), so a value
-   whose glyphs are fully visible is never blanked. Title cells are never
-   cut: a clipped title misleads no one, a missing one identifies nothing.
+   whose glyphs are fully visible is never blanked. The PINNED title is never
+   cut: it never scrolls, so it never straddles. A second, scrolling
+   title-style column (Blacklist's hit list, which carries rates and sizes)
+   is cut like any other -- sliced at the pinned edge its sizes misread.
    Geometry only -- reads no data, writes no text. */
   (function () {
     var pane = document.getElementById("pane"),
@@ -3412,7 +3414,7 @@
         var pr = pane.getBoundingClientRect();
         var bounds = [pr.left, pinnedRight, pr.left + pane.clientWidth];
         for (i = 0; i < head.cells.length; i++) {
-          if (sticky[i] || head.cells[i].classList.contains("title-cell")) continue;
+          if (sticky[i]) continue;
           rc = head.cells[i].getBoundingClientRect();
           var L = rc.left + parseFloat(styles[i].paddingLeft),
             R = rc.right - parseFloat(styles[i].paddingRight);
