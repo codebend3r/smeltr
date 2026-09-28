@@ -982,6 +982,15 @@ class ResponsiveTiers(unittest.TestCase):
     def test_the_700px_block_is_gone(self):
         self.assertNotIn("700px", read("web/app.css"))
 
+    def test_phone_has_one_scroll_surface(self):
+        # Inside the phone block .scroll must drop its own scrolling so the
+        # page is the only thing that scrolls under a thumb.
+        css = re.sub(r"/\*.*?\*/", " ", read("web/app.css"), flags=re.S)
+        i = css.index("@media (max-width: 639px)")
+        phone = css[i : css.index("@media (min-width: 640px)", i)]
+        dense = re.sub(r"\s*([{}:;>,])\s*", r"\1", phone)
+        self.assertIn(".scroll{max-height:none;overflow:visible", dense)
+
 
 class ThemeTokens(unittest.TestCase):
     """Both themes are token sets with the same names.

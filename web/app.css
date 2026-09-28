@@ -6,6 +6,10 @@
      layout changed. Layout tokens, not colours -- like --r above. */
   --rail: 220px;
   --rlbl: block;
+  /* Phone tab-strip height (<=639px). Declared globally, like --rail above,
+     so a var(--strip) reference resolves even where the phone block never
+     touches it. */
+  --strip: 48px;
   /* Utility voice for machine-facing text: status chips, tagline, footer.
      Data cells stay proportional + tabular-nums — tnum aligns digits without
      monospace's width penalty, and reads better at 13px. Exception: the
@@ -2608,50 +2612,110 @@ footer {
   body.railed {
     grid-template-columns: minmax(0, 1fr);
   }
+  /* Two rows: brand + foot on the first, the six tabs on the second. The
+     tab row is sticky so the section switch stays under the thumb while a
+     long History scrolls; the brand row scrolls away. */
   .rail {
     position: static;
     height: auto;
-    flex-direction: row;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "brand foot"
+      "tabs tabs";
     align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
+    gap: 6px 8px;
+    padding: 8px 12px 0;
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
     border-right: 0;
-    border-bottom: 1px solid var(--line);
-    overflow-x: auto;
-    scrollbar-width: none;
+    border-bottom: 0;
+    overflow: visible;
   }
-  .rail::-webkit-scrollbar {
-    display: none;
+  .railtop {
+    grid-area: brand;
+    min-width: 0;
   }
   .rail .brand {
     padding: 0;
   }
-  .navlist {
-    flex-direction: row;
-    gap: 4px;
-  }
-  .nav {
-    padding: 7px 9px;
-  }
-  /* The flat rail is as wide as the page, so the counts come back -- they
-     were only hidden because a 66px column could not hold them. */
-  .nav .navn {
-    display: inline;
-  }
   .railfill {
-    min-height: 0;
+    display: none;
   }
   .railfoot {
+    grid-area: foot;
     flex-direction: row;
     padding: 0;
+    gap: 8px;
   }
-  /* The flat rail is a horizontal strip again, so the switch lies back down. */
+  .railfoot .conn .rlbl {
+    display: none;
+  }
   .themeseg {
     flex-direction: row;
   }
   .themebtn + .themebtn {
     border-left: 1px solid var(--line);
     border-top: 0;
+  }
+  #railToggle {
+    display: none;
+  }
+  .navlist {
+    grid-area: tabs;
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 0;
+    height: var(--strip);
+    margin: 0 -12px;
+    padding: 0 max(12px, env(safe-area-inset-left)) 0 max(12px, env(safe-area-inset-right));
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  .nav {
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    padding: 4px 0;
+    border-radius: 0;
+    width: auto;
+  }
+  .nav .rlbl {
+    display: none;
+  }
+  .nav .navn {
+    display: inline;
+    font-size: 10.5px;
+  }
+  .nav[aria-selected="true"] {
+    box-shadow: inset 0 -2px 0 var(--ink);
+  }
+  main {
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+    padding-bottom: calc(48px + env(safe-area-inset-bottom));
+  }
+  /* One scroll surface. */
+  .scroll {
+    max-height: none;
+    overflow: visible;
+  }
+  .pagehead h1 {
+    margin-bottom: 10px;
+  }
+  .pagehead .statsgrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 12px;
+  }
+  .pagehead .stat:not(.skel) .v {
+    padding: 10px 12px;
+    margin-bottom: 0;
+  }
+  footer {
+    gap: 8px 14px;
   }
 }
 /* ==== PHONE (<=639px) ====================================================
