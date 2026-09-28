@@ -3472,6 +3472,9 @@
     }
     pane.addEventListener("scroll", schedule, { passive: true });
     window.addEventListener("resize", schedule);
+    /* The pane changes width without the window doing so (the table card
+       expanded, the rail toggled); the fades and cuts follow it. */
+    if (window.ResizeObserver) new ResizeObserver(schedule).observe(pane);
     new MutationObserver(function () {
       cuts = [];
       schedule();

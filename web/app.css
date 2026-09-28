@@ -3089,11 +3089,38 @@ footer {
   /* Only the first title column pins. Blacklist's "Titles it blocks" shares
      the class for its look; pinned too, it slid over the pinned Entry column
      on a scroll and painted on top of it. Its header keeps the vertical stick. */
+  /* It also wraps, so the table can fit an 820px tablet without the
+     hit list pushing it wider. */
   td.title-cell ~ td.title-cell {
     position: relative;
     left: auto;
     z-index: auto;
     border-right: 0;
+    white-space: normal;
+    max-width: 36ch;
+    min-width: 0;
+  }
+  /* Wrapped, a hit's numbers fell ABOVE its name, where they read as the
+     previous hit's -- the phone's fix: name first, numbers under it, a rule
+     between hits. */
+  td.title-cell .blhit .tname {
+    order: -1;
+    flex: 1 1 100%;
+  }
+  .blhit + .blhit {
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px solid var(--td-line);
+  }
+  /* Processes' "Working on" wears title-cell for its look, but its header
+     does not: pinned, the body cells slid over Process, PID and Purpose on
+     a scroll while the header stayed put. It scrolls with its row. */
+  td.title-cell.what {
+    position: relative;
+    left: auto;
+    z-index: auto;
+    border-right: 0;
+    min-width: 0;
   }
   th.title-cell ~ th.title-cell {
     left: auto;
@@ -3103,13 +3130,13 @@ footer {
   /* A column sliced at a boundary renders EMPTY, not clipped. Clipped on its
      left, a right-aligned "70.64 GiB" still parses -- as "0.64 GiB"; clipped
      on its right it loses its unit. The .cut class is applied by the seam
-     script at the bottom of app.js. */
-  td.cut,
-  th.cut {
+     script at the bottom of app.js. Only the body blanks: a header is words,
+     never a number, and a sliced word misleads no one -- while a blank
+     header made the blanked column read as empty padding. */
+  td.cut {
     color: transparent;
   }
-  td.cut *,
-  th.cut * {
+  td.cut * {
     visibility: hidden;
   }
   /* Overflow cue. The scrollbar is hidden on purpose (see .scroll), so a
@@ -3125,17 +3152,19 @@ footer {
     position: absolute;
     top: 0;
     bottom: 0;
-    width: 28px;
+    width: 44px;
     pointer-events: none;
     z-index: 4;
   }
+  /* A solid quarter, then the fade: the edge reads as a margin fading in,
+     visible in the light theme where a plain two-stop fade was not. */
   #tablewrap.can-right > .wrap::after {
     right: 0;
-    background: linear-gradient(to left, var(--fade-from), var(--fade-to));
+    background: linear-gradient(to left, var(--fade-from) 0, var(--fade-from) 25%, var(--fade-to));
   }
   #tablewrap.can-left > .wrap::before {
     left: 190px; /* clear of the pinned title column */
-    background: linear-gradient(to right, var(--fade-from), var(--fade-to));
+    background: linear-gradient(to right, var(--fade-from) 0, var(--fade-from) 25%, var(--fade-to));
   }
   /* Long text columns wrap on a tablet rather than pushing the table wider. */
   td.src-dir,
