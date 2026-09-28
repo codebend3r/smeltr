@@ -2843,6 +2843,13 @@ footer {
     flex: 1 1 0;
     min-width: 6ch;
   }
+  /* A Blacklist hit is a title-cell too, but its name shares a line with the
+     rate and size, not with row actions; flex-basis 0 squeezed it to a
+     word per line beside them. 60% cannot fit after the numbers, so the name
+     drops to its own line and keeps the NAS pill beside it. */
+  td.title-cell .blhit .tname {
+    flex: 1 1 60%;
+  }
   /* The header sticks under the tab strip (--strip from Task 2). It is the
      thead that sticks: a sticky thead tr could never travel, its containing
      block being the one-row block thead. The th cells give up their own
