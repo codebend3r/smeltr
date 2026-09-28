@@ -2831,9 +2831,13 @@ footer {
   }
   /* A title cell's row actions (visible on touch) would otherwise squeeze the
      name to one glyph per line; they wrap under the name instead. */
+  /* baseline, not the desktop's center: the tcell's baseline is the row's,
+     and a centred first item (the errored title's emoji) put it halfway down
+     a wrapped title, dropping every other cell in the row to the middle. */
   td.title-cell .tcell {
     flex-wrap: wrap;
     row-gap: 4px;
+    align-items: baseline;
   }
   td.title-cell .tname {
     flex: 1 1 0;
@@ -2893,10 +2897,16 @@ footer {
   tr.open > td:not(.c-s) {
     grid-row: 1;
   }
+  /* The label is pushed left by its auto margin and the value's pieces pack
+     together at the right, wrapping under themselves when they run out of
+     room. space-between here spread a two-pill "Moved to" to opposite ends
+     and pushed a nowrap encode window past the card edge. */
   tr.open td.c-s {
     display: flex;
-    justify-content: space-between;
-    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    align-items: baseline;
+    gap: 4px 8px;
     grid-column: 2 / -1;
     padding-top: 3px;
     padding-bottom: 3px;
@@ -2905,6 +2915,16 @@ footer {
   tr.open td.c-s::before {
     content: attr(data-l);
     flex: none;
+    margin-right: auto;
+    padding-right: 4px;
+    /* The label is the header's words, so it takes the header's face: the
+       cell's own mono/bold (Src Mb/s, Moved to) must not leak into it. */
+    font-family:
+      ui-sans-serif,
+      -apple-system,
+      system-ui,
+      sans-serif;
+    font-weight: 400;
     font-size: 10.5px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
