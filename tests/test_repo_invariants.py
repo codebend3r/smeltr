@@ -1004,6 +1004,16 @@ class ResponsiveTiers(unittest.TestCase):
                 "tr{display:grid} outside the phone block breaks every desktop table",
             )
 
+    def test_tablet_edge_fade_tokens_exist_in_both_themes(self):
+        css = read("web/app.css")
+        dark = css[: css.index('[data-theme="light"]')]
+        light = css[css.index('[data-theme="light"]') :]
+        for tok in ("--fade-from:", "--fade-to:"):
+            self.assertIn(tok, dark, tok + " missing from the dark theme")
+            self.assertIn(tok, light, tok + " missing from the light theme")
+        dense = re.sub(r"\s*([{}:;>,])\s*", r"\1", css)
+        self.assertIn("#tablewrap.can-right>.wrap::after", dense)
+
 
 class ThemeTokens(unittest.TestCase):
     """Both themes are token sets with the same names.

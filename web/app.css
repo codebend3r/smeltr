@@ -27,6 +27,11 @@
   --panel: #14161d;
   --panel-2: #1b1e27;
   --line: #262a35;
+  /* Tablet edge fade (640-1080px). A gradient can't take a hex token and an
+     alpha separately, so --panel is split into an opaque stop and a
+     transparent one. */
+  --fade-from: rgba(20, 22, 29, 1);
+  --fade-to: rgba(20, 22, 29, 0);
   --ink: #eef0f5;
   --ink-2: #a0a8b8;
   --ink-3: #697285;
@@ -101,6 +106,8 @@
   --panel: #ffffff;
   --panel-2: #eef0f3;
   --line: #e1e5ea;
+  --fade-from: rgba(255, 255, 255, 1);
+  --fade-to: rgba(255, 255, 255, 0);
   --ink: #141922;
   --ink-2: #4d5768;
   --ink-3: #6b7585;
@@ -3005,6 +3012,37 @@ footer {
   td.cut *,
   th.cut * {
     visibility: hidden;
+  }
+  /* Overflow cue. The scrollbar is hidden on purpose (see .scroll), so a
+     table wider than the pane needs another way to say "there is more":
+     a fade over whichever edge still has room to scroll. The seam script
+     already measures the pane on scroll and resize and sets these classes. */
+  #tablewrap > .wrap {
+    position: relative;
+  }
+  #tablewrap.can-right > .wrap::after,
+  #tablewrap.can-left > .wrap::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 28px;
+    pointer-events: none;
+    z-index: 4;
+  }
+  #tablewrap.can-right > .wrap::after {
+    right: 0;
+    background: linear-gradient(to left, var(--fade-from), var(--fade-to));
+  }
+  #tablewrap.can-left > .wrap::before {
+    left: 190px; /* clear of the pinned title column */
+    background: linear-gradient(to right, var(--fade-from), var(--fade-to));
+  }
+  /* Long text columns wrap on a tablet rather than pushing the table wider. */
+  td.src-dir,
+  td.what {
+    white-space: normal;
+    max-width: 32ch;
   }
 }
 @media (pointer: coarse) {

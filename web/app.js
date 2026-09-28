@@ -2642,7 +2642,7 @@
            vocabulary for a thing that is not a failure. */
           var why = el(
             "td",
-            "err-note",
+            "err-note what",
             r.error
               ? trimNote(r.error_note, r.title)
               : r.done
@@ -2761,7 +2761,7 @@
             tr.appendChild(td);
             tr.appendChild(el("td", "n mono", String(p.pid)));
             tr.appendChild(el("td", "muted", p.purpose));
-            tr.appendChild(el("td", "title-cell", p.detail || "—"));
+            tr.appendChild(el("td", "title-cell what", p.detail || "—"));
             tr.appendChild(el("td", "n mono", p.elapsed));
             tr.appendChild(el("td", "n mono", p.cpu));
             return tr;
@@ -3380,6 +3380,12 @@
         }
         cuts = [];
         return;
+      }
+      var tw = document.getElementById("tablewrap");
+      if (tw) {
+        var over = pane.scrollWidth - pane.clientWidth;
+        tw.classList.toggle("can-left", over > 1 && pane.scrollLeft > 1);
+        tw.classList.toggle("can-right", over > 1 && pane.scrollLeft < over - 1);
       }
       var tbl = pane.querySelector("table");
       if (!tbl || !tbl.rows.length) {
