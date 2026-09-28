@@ -152,7 +152,10 @@ const depth = arg("--depth-seconds", String(604800));
 const onlyStop = arg("--stop", null);
 
 /* The three tiers the CSS draws. Tablet and phone are `mobile` so the page's
- * viewport meta and coarse-pointer rules apply as they would on the device. */
+ * viewport meta applies as it would on the device. `mobile` alone does NOT
+ * make `(pointer: coarse)` match -- that takes touch emulation, switched on
+ * below for every mobile viewport, so the coarse-pointer rules are on trial
+ * too. */
 type Viewport = { width: number; height: number; deviceScaleFactor: number; mobile: boolean };
 const VIEWPORTS: Record<string, Viewport> = {
   desktop: { width: 1280, height: 1400, deviceScaleFactor: 2, mobile: false },
@@ -213,7 +216,16 @@ fs.copyFileSync(
 
 /* 2. A throwaway dashboard on loopback, bound to that directory. */
 const server = spawn("python3", [path.join(REPO, "dashboard", "server.py")], {
-  env: { ...process.env, SMELTR_DIR: smeltrDir, SMELTR_BIND: "127.0.0.1" },
+  /* SMELTR_X9 points at a path that does not exist, on purpose. Left
+   * unset, the throwaway server resolves the operator's live staging drive,
+   * and its start-up orphan-pull sweep could rmtree a real half-pull there.
+   * Never create this directory. */
+  env: {
+    ...process.env,
+    SMELTR_DIR: smeltrDir,
+    SMELTR_BIND: "127.0.0.1",
+    SMELTR_X9: path.join(work, "no-x9"),
+  },
   stdio: ["ignore", "pipe", "pipe"],
 });
 cleanups.push(() => server.kill("SIGTERM"));
@@ -277,6 +289,14 @@ const { sessionId } = await cdp.send<{ sessionId: string }>("Target.attachToTarg
 await cdp.send("Page.enable", {}, sessionId);
 await cdp.send("Runtime.enable", {}, sessionId);
 await cdp.send("Emulation.setDeviceMetricsOverride", { ...viewport }, sessionId);
+/* A phone and a tablet are touch devices: without this `(pointer: coarse)`
+ * stays false and every coarse-pointer rule is skipped in the shot. */
+if (viewport.mobile)
+  await cdp.send(
+    "Emulation.setTouchEmulationEnabled",
+    { enabled: true, maxTouchPoints: 5 },
+    sessionId,
+  );
 
 /* The url file carries `?t=<token>` only when the server wants one; a
  * loopback bind writes a bare url, so the tab goes in through URL, never a
@@ -294,6 +314,9 @@ await waitFor(
   "the first state frame",
 );
 await waitFor(cdp, sessionId, '!!document.getElementById("monZoom")', "the monitor card");
+console.log(
+  "coarse=" + (await evaluate(cdp, sessionId, 'matchMedia("(pointer: coarse)").matches')),
+);
 
 /* web/app.js is an IIFE, so the page exposes no globals to poke at. The
  * slider itself is the source of truth for how many stops there are, and
@@ -312,6 +335,44 @@ async function checkScrollWidth(when) {
   const ok = sw <= viewport.width;
   if (!ok) overflowed = true;
   console.log(`  width ${sw} <= ${viewport.width} ${ok ? "ok" : "FAIL"} (${when})`);
+}
+
+/* `overflow: clip` on the phone's .wrap hides a clipped cell from the page's
+ * scrollWidth, so each table cell is measured too: it must sit inside the
+ * card and hold its own content. Hidden revealed-line cells (.c-s) and
+ * display:none cells (the phone's grip column) are skipped. The containment
+ * half runs only where nothing may scroll sideways -- on the tablet the
+ * table scrolls inside its card by design, so a cell past the card edge is
+ * the fade's business, not a failure. */
+async function checkCells(when) {
+  const bad = await evaluate(
+    cdp,
+    sessionId,
+    `(function(){
+    var w=document.querySelector("#tablewrap > .wrap");
+    if(!w)return null;
+    var wr=w.getBoundingClientRect();
+    var L=wr.left+w.clientLeft,R=L+w.clientWidth,T=wr.top+w.clientTop,B=T+w.clientHeight;
+    var contain=${JSON.stringify(viewportName === "phone")};
+    var cells=document.querySelectorAll("#pane td:not(.c-s), #pane th:not(.c-s)");
+    for(var i=0;i<cells.length;i++){
+      var c=cells[i];
+      if(!c.getClientRects().length)continue;
+      var r=c.getBoundingClientRect();
+      var out=contain&&(r.left<L-1||r.right>R+1||r.top<T-1||r.bottom>B+1);
+      if(out||c.scrollWidth>c.clientWidth+1)
+        return {tag:c.tagName.toLowerCase(),cls:c.className,text:c.textContent.trim().slice(0,60),
+          rect:[Math.round(r.left),Math.round(r.top),Math.round(r.right),Math.round(r.bottom)],
+          card:[Math.round(L),Math.round(T),Math.round(R),Math.round(B)],
+          sw:c.scrollWidth,cw:c.clientWidth};
+    }
+    return null;
+  })()`,
+  );
+  if (bad) {
+    overflowed = true;
+    console.log(`  cells FAIL (${when}) first offender ${JSON.stringify(bad)}`);
+  } else console.log(`  cells ok (${when})`);
 }
 
 /* A tab has settled when its table is drawn or its empty state is final.
@@ -369,6 +430,7 @@ for (const theme of ["dark", "light"]) {
     await waitFor(cdp, sessionId, TAB_SETTLED, "the " + onlyTab + " tab");
     await sleep(300);
     await checkScrollWidth(theme + " " + onlyTab);
+    await checkCells(theme + " " + onlyTab);
     await shootTarget(theme, "");
     /* The phone folds each row to its primary cells; a tap opens it. Shoot
      * the first openable row open (the same `tr[data-key]` predicate the
@@ -382,6 +444,7 @@ for (const theme of ["dark", "light"]) {
       if (opened) {
         await sleep(200);
         await checkScrollWidth(theme + " " + onlyTab + " open");
+        await checkCells(theme + " " + onlyTab + " open");
         await shootTarget(theme, "-open");
         await evaluate(
           cdp,
@@ -472,5 +535,5 @@ for (const theme of ["dark", "light"]) {
 
 console.log(`\n${shots.length} shots in ${outDir}`);
 cleanup();
-if (overflowed) console.log("FAIL the page scrolls sideways at " + viewportName);
+if (overflowed) console.log("FAIL the page or a table cell overflows at " + viewportName);
 process.exit(overflowed ? 1 : 0);
