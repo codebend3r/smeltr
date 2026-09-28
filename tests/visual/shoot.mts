@@ -1,6 +1,16 @@
-/* Screenshot the resource monitor at every zoom stop, in both themes.
+/* Screenshot the resource monitor at every zoom stop, in both themes --
+ * or, with --tab, one tab's table card at a device width.
  *
- *   bun tests/visual/shoot.mjs [--out DIR] [--depth-seconds N] [--stop N]
+ *   bun tests/visual/shoot.mts [--out DIR] [--depth-seconds N] [--stop N]
+ *                              [--viewport desktop|tablet|phone]
+ *                              [--tab queue|ledger|errors|procs|blacklist|events]
+ *                              [--target ELEMENT_ID|viewport]
+ *
+ * --target names the element to clip (default `tablewrap` with --tab,
+ * `sysmon` without). `viewport` scrolls the table card to the top and shoots
+ * the screen as a person holding the phone sees it: the sticky tab strip and
+ * table header stacked above the rows. On the phone every --tab shot is
+ * taken twice, the second time with the first openable row tapped open.
  *
  * This is the EYEBALL half of the monitor's coverage. tests/test_sysmon_render.js
  * asserts what drawMon() emits; this renders the real page in a real browser,
@@ -141,6 +151,23 @@ fs.mkdirSync(outDir, { recursive: true });
 const depth = arg("--depth-seconds", String(604800));
 const onlyStop = arg("--stop", null);
 
+/* The three tiers the CSS draws. Tablet and phone are `mobile` so the page's
+ * viewport meta and coarse-pointer rules apply as they would on the device. */
+type Viewport = { width: number; height: number; deviceScaleFactor: number; mobile: boolean };
+const VIEWPORTS: Record<string, Viewport> = {
+  desktop: { width: 1280, height: 1400, deviceScaleFactor: 2, mobile: false },
+  tablet: { width: 820, height: 1180, deviceScaleFactor: 2, mobile: true },
+  phone: { width: 390, height: 844, deviceScaleFactor: 3, mobile: true },
+};
+const viewportName = arg("--viewport", "desktop");
+const viewport = VIEWPORTS[viewportName];
+if (!viewport) die("--viewport must be one of " + Object.keys(VIEWPORTS).join(", "));
+/* --tab shoots the table section of one tab instead of the monitor stops. */
+const TABS = ["queue", "ledger", "errors", "procs", "blacklist", "events"];
+const onlyTab = arg("--tab", null);
+if (onlyTab && !TABS.includes(onlyTab)) die("--tab must be one of " + TABS.join(", "));
+const target = arg("--target", onlyTab ? "tablewrap" : "sysmon");
+
 const work = fs.mkdtempSync(path.join(os.tmpdir(), "smeltr-shoot-"));
 const smeltrDir = path.join(work, "smeltr");
 const profile = path.join(work, "chrome");
@@ -176,6 +203,13 @@ const seed = spawnSync(
 );
 if (seed.status !== 0) die("seed_ring.py failed:\n" + (seed.stderr || seed.stdout));
 console.log("seeded  " + seed.stdout.trim());
+
+/* The tables need rows. The calibration ledger is the fixture with the
+ * most shapes (exact and estimated sizes, notes, several destinations). */
+fs.copyFileSync(
+  path.join(REPO, "tests", "fixtures", "ledger-calibration.jsonl"),
+  path.join(smeltrDir, "ledger.jsonl"),
+);
 
 /* 2. A throwaway dashboard on loopback, bound to that directory. */
 const server = spawn("python3", [path.join(REPO, "dashboard", "server.py")], {
@@ -242,18 +276,14 @@ const { sessionId } = await cdp.send<{ sessionId: string }>("Target.attachToTarg
 });
 await cdp.send("Page.enable", {}, sessionId);
 await cdp.send("Runtime.enable", {}, sessionId);
-await cdp.send(
-  "Emulation.setDeviceMetricsOverride",
-  {
-    width: 1280,
-    height: 1400,
-    deviceScaleFactor: 2,
-    mobile: false,
-  },
-  sessionId,
-);
+await cdp.send("Emulation.setDeviceMetricsOverride", { ...viewport }, sessionId);
 
-await cdp.send("Page.navigate", { url: pageUrl }, sessionId);
+/* The url file carries `?t=<token>` only when the server wants one; a
+ * loopback bind writes a bare url, so the tab goes in through URL, never a
+ * hand-glued `&`. */
+const navUrl = new URL(pageUrl);
+if (onlyTab) navUrl.searchParams.set("tab", onlyTab);
+await cdp.send("Page.navigate", { url: navUrl.toString() }, sessionId);
 await waitFor(cdp, sessionId, 'document.readyState==="complete"', "the page to load");
 /* The skeleton is replaced only when the first SSE frame lands. Shooting
  * before that photographs the boot skeleton, not the charts. */
@@ -273,12 +303,96 @@ await waitFor(cdp, sessionId, '!!document.getElementById("monZoom")', "the monit
 const nStops = 1 + (await evaluate(cdp, sessionId, '+document.getElementById("monZoom").max'));
 const shots = [];
 
+/* No tier may scroll the PAGE sideways; a wide table scrolls inside its own
+ * card. Checked on every shot, printed, and failed at the end so one bad
+ * cell of a matrix run does not hide the shots after it. */
+let overflowed = false;
+async function checkScrollWidth(when) {
+  const sw = await evaluate(cdp, sessionId, "document.documentElement.scrollWidth");
+  const ok = sw <= viewport.width;
+  if (!ok) overflowed = true;
+  console.log(`  width ${sw} <= ${viewport.width} ${ok ? "ok" : "FAIL"} (${when})`);
+}
+
+/* A tab has settled when its table is drawn or its empty state is final.
+ * "Loading events…" and "Listing processes…" are the fetch still in flight;
+ * an empty Queue or Errors on this throwaway server is a real, final state. */
+const TAB_SETTLED = `(function(){
+  var p=document.getElementById("pane");
+  if(!p)return false;
+  if(p.querySelector("table"))return true;
+  var e=p.querySelector(".empty");
+  return !!e && !/^(Loading|Listing)/.test(e.textContent);
+})()`;
+
+async function shootTarget(theme, suffix) {
+  let clip = null;
+  if (target === "viewport") {
+    await evaluate(
+      cdp,
+      sessionId,
+      'document.getElementById("tablewrap").scrollIntoView({block:"start"}),true',
+    );
+    await sleep(200);
+  } else {
+    const box = await evaluate(
+      cdp,
+      sessionId,
+      `(function(){var el=document.getElementById(${JSON.stringify(target)});if(!el)return null;var r=el.getBoundingClientRect();return {x:r.x+scrollX,y:r.y+scrollY,width:r.width,height:r.height};})()`,
+    );
+    if (!box) die("--target: no element with id " + target);
+    clip = { ...box, scale: 1 };
+  }
+  const shot = await cdp.send<{ data: string }>(
+    "Page.captureScreenshot",
+    clip ? { format: "png", captureBeyondViewport: true, clip } : { format: "png" },
+    sessionId,
+  );
+  const tgt = target === (onlyTab ? "tablewrap" : "sysmon") ? "" : "-" + target;
+  const name = `${theme}-${viewportName}-${onlyTab}${tgt}${suffix}.png`;
+  fs.writeFileSync(path.join(outDir, name), Buffer.from(shot.data, "base64"));
+  shots.push({
+    theme,
+    label: `${viewportName} ${onlyTab}${tgt}${suffix}`,
+    file: path.join(outDir, name),
+  });
+  console.log("  shot  " + name);
+}
+
 for (const theme of ["dark", "light"]) {
   await evaluate(
     cdp,
     sessionId,
     `document.documentElement.setAttribute("data-theme",${JSON.stringify(theme)})`,
   );
+  if (onlyTab) {
+    await waitFor(cdp, sessionId, TAB_SETTLED, "the " + onlyTab + " tab");
+    await sleep(300);
+    await checkScrollWidth(theme + " " + onlyTab);
+    await shootTarget(theme, "");
+    /* The phone folds each row to its primary cells; a tap opens it. Shoot
+     * the first openable row open (the same `tr[data-key]` predicate the
+     * page's disclosure handler uses), then close it for the next theme. */
+    if (viewportName === "phone") {
+      const opened = await evaluate(
+        cdp,
+        sessionId,
+        '(function(){var r=document.querySelector("#pane tbody tr[data-key]");if(!r)return false;r.click();return r.classList.contains("open");})()',
+      );
+      if (opened) {
+        await sleep(200);
+        await checkScrollWidth(theme + " " + onlyTab + " open");
+        await shootTarget(theme, "-open");
+        await evaluate(
+          cdp,
+          sessionId,
+          '(function(){var r=document.querySelector("#pane tbody tr[data-key].open");if(r)r.click();return true;})()',
+        );
+      } else console.log("  (no openable row on " + onlyTab + ")");
+    }
+    continue;
+  }
+  await checkScrollWidth(theme + " monitor");
   for (let i = 0; i < nStops; i++) {
     if (onlyStop != null && String(i) !== onlyStop) continue;
     const label = await evaluate(
@@ -358,4 +472,5 @@ for (const theme of ["dark", "light"]) {
 
 console.log(`\n${shots.length} shots in ${outDir}`);
 cleanup();
-process.exit(0);
+if (overflowed) console.log("FAIL the page scrolls sideways at " + viewportName);
+process.exit(overflowed ? 1 : 0);
