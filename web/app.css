@@ -3024,6 +3024,20 @@ footer {
   th.title-cell {
     z-index: 3;
   }
+  /* Only the first title column pins. Blacklist's "Titles it blocks" shares
+     the class for its look; pinned too, it slid over the pinned Entry column
+     on a scroll and painted on top of it. Its header keeps the vertical stick. */
+  td.title-cell ~ td.title-cell {
+    position: relative;
+    left: auto;
+    z-index: auto;
+    border-right: 0;
+  }
+  th.title-cell ~ th.title-cell {
+    left: auto;
+    z-index: 2;
+    border-right: 0;
+  }
   /* A column sliced at a boundary renders EMPTY, not clipped. Clipped on its
      left, a right-aligned "70.64 GiB" still parses -- as "0.64 GiB"; clipped
      on its right it loses its unit. The .cut class is applied by the seam
