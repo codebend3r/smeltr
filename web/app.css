@@ -10,6 +10,10 @@
      so a var(--strip) reference resolves even where the phone block never
      touches it. */
   --strip: 48px;
+  /* Phone grid-row tracks after the chevron (<=639px). The default is one
+     flexible track; each .t-<tab> tr in the phone block names its own
+     primary cells. Only a phone tr consumes it. */
+  --cols: minmax(0, 1fr);
   /* Utility voice for machine-facing text: status chips, tagline, footer.
      Data cells stay proportional + tabular-nums — tnum aligns digits without
      monospace's width penalty, and reads better at 13px. Exception: the
@@ -2714,8 +2718,8 @@ footer {
   }
 }
 /* ==== PHONE (<=639px) ====================================================
-   Compaction only. The table becomes grid rows in Task 3; the shell in
-   Task 2. Anything here must not exist above 639px. */
+   Compaction and the grid-row tables; the shell lives in the block above.
+   Anything here must not exist above 639px. */
 @media (max-width: 639px) {
   .monmini {
     gap: 10px;
@@ -2760,6 +2764,138 @@ footer {
   th,
   td {
     padding: 7px 9px;
+  }
+  /* ---- tables as grid rows ------------------------------------------------
+     One DOM node per cell, same as the desktop: the row is a grid, primary
+     cells fill the first line, secondary cells (.c-s) stay hidden until the
+     row is .open and then take a full-width line each with their header
+     printed from data-l. Nothing scrolls sideways, so the seam script exits
+     early at this width. Per-table templates below name the PRIMARY cells
+     in DOM order; ::before is the chevron and is the first grid item. */
+  table,
+  thead,
+  tbody {
+    display: block;
+  }
+  tr {
+    display: grid;
+    grid-template-columns: 18px var(--cols, minmax(0, 1fr));
+    /* dense: a revealed .c-s line sits BETWEEN primary cells in DOM order,
+       and sparse placement would push every primary cell after it off the
+       first line. dense backfills the first line and keeps the revealed
+       lines in DOM order beneath it. */
+    grid-auto-flow: row dense;
+    align-items: baseline;
+    column-gap: 8px;
+    border-bottom: 1px solid var(--td-line);
+  }
+  tbody tr:last-child {
+    border-bottom: 0;
+  }
+  th,
+  td {
+    border-bottom: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  td.title-cell,
+  th.title-cell {
+    min-width: 0;
+  }
+  /* The header row sticks under the tab strip (--strip from Task 2); the
+     individual th cells give up their own stickiness inside a grid row. */
+  thead tr {
+    background: var(--panel-2);
+    position: sticky;
+    top: var(--strip);
+    z-index: 2;
+  }
+  thead tr::before {
+    content: "";
+  }
+  th {
+    position: static;
+    top: auto;
+  }
+  /* The chevron. A 6px square rotated; turns down when the row is open. */
+  tbody tr:not(.xrow)::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    margin: 6px 0 0 5px;
+    border-right: 1.5px solid var(--ink-3);
+    border-bottom: 1.5px solid var(--ink-3);
+    transform: rotate(-45deg);
+    transition: transform 0.15s;
+  }
+  tbody tr.open::before {
+    transform: rotate(45deg);
+  }
+  tbody tr:not(.xrow) {
+    cursor: pointer;
+  }
+  .c-s {
+    display: none;
+  }
+  tr.open td.c-s {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    grid-column: 2 / -1;
+    padding-top: 3px;
+    padding-bottom: 3px;
+    text-align: left;
+  }
+  tr.open td.c-s::before {
+    content: attr(data-l);
+    flex: none;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-3);
+  }
+  /* The first revealed line gets breathing room from the primary line. */
+  tr.open td.c-s:first-of-type {
+    padding-top: 8px;
+  }
+  /* Transfer rows span the whole width, chevron column included. */
+  tr.xrow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  tr.xrow td {
+    grid-column: 1 / -1;
+  }
+  /* Drag handles are meaningless on a phone whatever the pointer. */
+  th.gripcol,
+  td.gripcol {
+    display: none;
+  }
+  /* Per-table primary templates, DOM order of the primary cells. */
+  .t-queue tr {
+    --cols: 3ch 5ch minmax(0, 1fr) auto;
+  }
+  .t-ledger tr {
+    --cols: 3ch minmax(0, 1fr) 9ch 8ch;
+  }
+  .t-errors tr {
+    --cols: auto minmax(0, 1fr) minmax(0, 1.2fr);
+  }
+  .t-procs tr {
+    --cols: minmax(0, 1fr) minmax(0, 1fr) 6ch;
+  }
+  .t-blacklist tr {
+    --cols: minmax(0, 1fr) 6ch;
+  }
+  .t-events tr {
+    --cols: 8ch minmax(0, 1fr);
+  }
+  /* Events has no secondary columns and no key: nothing to open, so no
+     chevron and no pointer. */
+  .t-events tbody tr::before {
+    content: none;
+  }
+  .t-events tbody tr {
+    cursor: default;
   }
 }
 

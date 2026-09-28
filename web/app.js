@@ -1389,26 +1389,60 @@
     box.appendChild(tip);
   }
 
-  function table(cols, rows, build) {
-    var t = el("table"),
+  /* Row-open state for the phone tier: which rows the operator has tapped
+   open, keyed by the row's data-key. A plain object as a set, in memory
+   only, and deliberately OUTSIDE every repaint key -- open is a view fact,
+   not a shape. table() re-applies it on every rebuild so the 2 s repaint
+   cannot fold a row the operator just opened. */
+  var openRows = {};
+  function applyOpen(tr) {
+    var k = tr.dataset.key;
+    if (k != null && openRows[k]) tr.classList.add("open");
+  }
+
+  /* cols[i] = { label, n?, cls?, tier? }. tier "s" marks a SECONDARY column:
+   hidden on the phone until the row is opened. Every cell gets data-l (its
+   header text) so the phone can print a label beside a revealed value, and
+   secondary cells get .c-s. Rows are tagged here, positionally, so no
+   renderer has to know about tiers. A row whose cell count differs from
+   the column count (a full-width .xrow with one colspan cell) is left
+   alone. keyOf(row) names the row for open-state persistence. */
+  function table(cols, rows, build, keyOf) {
+    var t = el("table", "t-" + tab),
       thead = el("thead"),
       tr = el("tr");
     cols.forEach(function (c) {
-      var th = el("th", [c.n ? "n" : "", c.cls || ""].join(" ").trim() || null, c.label);
-      tr.appendChild(th);
+      var cls = [c.n ? "n" : "", c.cls || "", c.tier === "s" ? "c-s" : ""].join(" ").trim();
+      tr.appendChild(el("th", cls || null, c.label));
     });
     thead.appendChild(tr);
     t.appendChild(thead);
     var tb = el("tbody");
+    function tag(row, r) {
+      if (row.classList.contains("xrow") || row.cells.length !== cols.length) return;
+      for (var i = 0; i < cols.length; i++) {
+        var td = row.cells[i];
+        td.dataset.l = cols[i].label;
+        if (cols[i].tier === "s") td.classList.add("c-s");
+      }
+      if (keyOf) {
+        row.dataset.key = keyOf(r);
+        applyOpen(row);
+      }
+    }
     /* build() may return one <tr> or an ARRAY of them -- the History tab gives a
      title whose file is still travelling a second, full-width row. */
     rows.forEach(function (r, i) {
       var out = build(r, i);
       if (Array.isArray(out))
         out.forEach(function (n) {
+          tag(n, r);
           tb.appendChild(n);
         });
-      else tb.appendChild(out);
+      else {
+        tag(out, r);
+        tb.appendChild(out);
+      }
     });
     t.appendChild(tb);
     return t;
@@ -1898,11 +1932,11 @@
           { label: "", cls: "gripcol" },
           { label: "Rank", n: true },
           { label: "SRC Mb/s", n: true, cls: "unit" },
-          { label: "Src size", n: true },
-          { label: "Quality", n: true },
+          { label: "Src size", n: true, tier: "s" },
+          { label: "Quality", n: true, tier: "s" },
           { label: "Title", cls: "title-cell" },
-          { label: "NAS" },
-          { label: "Src folder" },
+          { label: "NAS", tier: "s" },
+          { label: "Src folder", tier: "s" },
           { label: "Status" },
         ],
         q,
@@ -2050,6 +2084,9 @@
           }
           return tr;
         },
+        function (r) {
+          return r.title;
+        },
       ),
     );
     /* A recorded title has LEFT the queue — its push renders on the History
@@ -2174,15 +2211,15 @@
         [
           { label: "#", n: true },
           { label: "Title", cls: "title-cell" },
-          { label: "Original", n: true },
-          { label: "Output", n: true },
+          { label: "Original", n: true, tier: "s" },
+          { label: "Output", n: true, tier: "s" },
           { label: "Saved", n: true },
-          { label: "Shrink", n: true },
-          { label: "Quality", n: true },
-          { label: "Tracks" },
-          { label: "NAS" },
-          { label: "Moved to" },
-          { label: "Encode time" },
+          { label: "Shrink", n: true, tier: "s" },
+          { label: "Quality", n: true, tier: "s" },
+          { label: "Tracks", tier: "s" },
+          { label: "NAS", tier: "s" },
+          { label: "Moved to", tier: "s" },
+          { label: "Encode time", tier: "s" },
           { label: "Finished" },
         ],
         ordered,
@@ -2374,6 +2411,9 @@
           xtr.appendChild(xtd);
           return [tr, xtr];
         },
+        function (r) {
+          return r.title + "\u0000" + (r.finished_at || "");
+        },
       ),
     );
     var noted = [];
@@ -2472,11 +2512,11 @@
     pane.appendChild(
       table(
         [
-          { label: "Kind" },
+          { label: "Kind", tier: "s" },
           { label: "Entry", cls: "title-cell" },
           { label: "Blocks", n: true },
-          { label: "Titles it blocks", cls: "title-cell" },
-          { label: "Changed by" },
+          { label: "Titles it blocks", cls: "title-cell", tier: "s" },
+          { label: "Changed by", tier: "s" },
         ],
         rows,
         function (e) {
@@ -2535,6 +2575,9 @@
           tr.appendChild(el("td", "mono muted", e.where));
           return tr;
         },
+        function (e) {
+          return e.pattern;
+        },
       ),
     );
   }
@@ -2550,11 +2593,11 @@
       table(
         [
           { label: "State" },
-          { label: "SRC Mb/s", n: true, cls: "unit" },
-          { label: "Src size", n: true },
+          { label: "SRC Mb/s", n: true, cls: "unit", tier: "s" },
+          { label: "Src size", n: true, tier: "s" },
           { label: "Title", cls: "title-cell" },
-          { label: "NAS" },
-          { label: "Src folder" },
+          { label: "NAS", tier: "s" },
+          { label: "Src folder", tier: "s" },
           { label: "What happened" },
         ],
         rows,
@@ -2618,6 +2661,9 @@
               " marker on the staging drive.";
           tr.appendChild(why);
           return tr;
+        },
+        function (r) {
+          return r.title;
         },
       ),
     );
@@ -2693,10 +2739,10 @@
         table(
           [
             { label: "Process" },
-            { label: "PID", n: true },
+            { label: "PID", n: true, tier: "s" },
             { label: "Purpose" },
-            { label: "Working on" },
-            { label: "Running for", n: true },
+            { label: "Working on", tier: "s" },
+            { label: "Running for", n: true, tier: "s" },
             { label: "CPU %", n: true, cls: "unit" },
           ],
           procs,
@@ -2718,6 +2764,9 @@
             tr.appendChild(el("td", "n mono", p.elapsed));
             tr.appendChild(el("td", "n mono", p.cpu));
             return tr;
+          },
+          function (p) {
+            return String(p.pid);
           },
         ),
       );
@@ -3271,6 +3320,10 @@
     if (t0 && t0 !== tab) setTab(t0);
   })();
 
+  /* The phone tier, as the CSS defines it. One MediaQueryList shared by the
+   seam script and the row disclosure so the two can never disagree. */
+  var PHONE = window.matchMedia ? window.matchMedia("(max-width: 639px)") : { matches: false };
+
   /* Seam blanking. Between 640px and 1080px (the tablet tier) the title
    column pins while the rest scrolls, and a cell HALF hidden is worse than
    one fully hidden: sliced at the pane's left edge or the pinned title's
@@ -3297,6 +3350,18 @@
       }
     }
     function recut() {
+      /* Phone rows are grids; nothing scrolls sideways and nothing straddles. */
+      if (PHONE.matches) {
+        if (cuts.length) {
+          var tb0 = pane.querySelector("table");
+          if (tb0)
+            cuts.forEach(function (c) {
+              applyCut(tb0, c, false);
+            });
+        }
+        cuts = [];
+        return;
+      }
       var tbl = pane.querySelector("table");
       if (!tbl || !tbl.rows.length) {
         cuts = [];

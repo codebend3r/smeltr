@@ -991,6 +991,19 @@ class ResponsiveTiers(unittest.TestCase):
         dense = re.sub(r"\s*([{}:;>,])\s*", r"\1", phone)
         self.assertIn(".scroll{max-height:none;overflow:visible", dense)
 
+    def test_grid_rows_live_only_in_the_phone_block(self):
+        css = re.sub(r"/\*.*?\*/", " ", read("web/app.css"), flags=re.S)
+        dense = re.sub(r"\s*([{}:;>,])\s*", r"\1", css).replace("@media (", "@media(")
+        hits = [m.start() for m in re.finditer(r"(^|[}\s;])tr\{display:grid", dense)]
+        self.assertTrue(hits, "phone grid-row rule missing")
+        start = dense.index("@media(max-width:639px)")
+        end = dense.index("@media(min-width:640px)", start)
+        for h in hits:
+            self.assertTrue(
+                start < h < end,
+                "tr{display:grid} outside the phone block breaks every desktop table",
+            )
+
 
 class ThemeTokens(unittest.TestCase):
     """Both themes are token sets with the same names.
