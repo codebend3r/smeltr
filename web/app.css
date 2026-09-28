@@ -2626,6 +2626,13 @@ footer {
   body.railed {
     grid-template-columns: minmax(0, 1fr);
   }
+  /* The phone body is one column, so it need not be a grid at all -- and
+     should not be: a spec-literal engine holds a sticky grid item inside
+     its own grid area, where Chromium lets it travel the whole body, so a
+     grid body risks the rail (and the tab strip riding it) not sticking. */
+  body {
+    display: block;
+  }
   /* Two rows: brand + foot on the first, the six tabs on the second. A
      sticky box can't outrun its own containing block, so the rail itself
      (tall enough to hold both rows) is what sticks, pulled up by exactly
@@ -3099,9 +3106,6 @@ footer {
     width: 44px;
     height: 44px;
   }
-  .nav {
-    padding: 11px 12px;
-  }
   /* HTML5 drag-and-drop does not exist on touch; hide the handles rather
      than advertise a gesture that cannot work. Skip buttons stay. */
   th.gripcol,
@@ -3130,8 +3134,20 @@ footer {
   .crfsel {
     min-height: 44px;
   }
-  tbody tr:not(.xrow) > td:first-child {
+  /* The row is the target (a tap opens it), and its first td is a hidden
+     grip or revealed-line cell on Queue and Blacklist, so the row carries
+     the height. */
+  tbody tr[data-key] {
     min-height: 44px;
+  }
+}
+/* A finger-sized rail tab, but not on the phone: there the tabs share a
+   48px strip, and this padding (equal specificity, later in the sheet)
+   outran the phone's own and hung the selected underline over the sticky
+   table header. */
+@media (pointer: coarse) and (min-width: 640px) {
+  .nav {
+    padding: 11px 12px;
   }
 }
 
