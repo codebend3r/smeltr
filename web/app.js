@@ -4209,10 +4209,22 @@
       ctx.lineTo(gx, y1);
       ctx.stroke();
       if (ch.axis) {
+        /* A centred label on the last tick can run past the plot's right
+           edge and be cut by the canvas ("Sun 8:00 pr" on a phone); that
+           one is right-aligned to the edge instead. The test recorder has
+           no measureText, so it falls back to the 0.6em-per-glyph estimate
+           the thinning above uses. */
+        var lab = tickLab(tt, t1 - t0),
+          lw = ctx.measureText ? ctx.measureText(lab).width : lab.length * 6;
         ctx.fillStyle = css.ink;
-        ctx.textAlign = "center";
         ctx.textBaseline = "top";
-        ctx.fillText(tickLab(tt, t1 - t0), gx, y1 + 4);
+        if (gx + lw / 2 > x1) {
+          ctx.textAlign = "right";
+          ctx.fillText(lab, x1, y1 + 4);
+        } else {
+          ctx.textAlign = "center";
+          ctx.fillText(lab, gx, y1 + 4);
+        }
       }
     }
     ch.series.forEach(function (se, si) {
