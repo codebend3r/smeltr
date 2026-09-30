@@ -925,9 +925,9 @@ class StickyHeaderOutranksTheTitleColumn(unittest.TestCase):
 
     def test_no_bare_title_cell_sets_position(self):
         css = re.sub(r"/\*.*?\*/", " ", read("web/app.css"), flags=re.S)
-        # Drop every @media block: inside the <=700px one `.title-cell`
-        # legitimately pins, and both halves are named there so the td rule
-        # cannot outrank it.
+        # Drop every @media block: inside the tablet (640-1080px) one
+        # `.title-cell` legitimately pins, and both halves are named there
+        # so the td rule cannot outrank it.
         while "@media" in css:
             i = css.index("@media")
             j = css.index("{", i)
@@ -953,6 +953,88 @@ class StickyHeaderOutranksTheTitleColumn(unittest.TestCase):
 
     def test_the_rule_it_protects_still_exists(self):
         self.assertIn("th{position:sticky;top:0;z-index:1", DENSE)
+
+
+class ResponsiveTiers(unittest.TestCase):
+    """Three tiers, two breakpoints (spec 2026-09-27).
+
+    Phone is <=639px, tablet 640-1080px, desktop above. The old 700px block
+    disagreed with the 640px rail flip, so between the two the rail was a
+    column while main was already in phone compaction. Any width outside
+    the allowed set is a fourth breakpoint sneaking back in.
+    """
+
+    ALLOWED = {"639", "640", "641", "1080", "1081", "1240"}
+
+    def _media_widths(self):
+        css = re.sub(r"/\*.*?\*/", " ", read("web/app.css"), flags=re.S)
+        widths = []
+        for prelude in re.findall(r"@media([^{]*)\{", css):
+            widths.extend(re.findall(r"(?:min|max)-width:\s*(\d+)px", prelude))
+        return widths
+
+    def test_only_the_named_breakpoints_exist(self):
+        widths = self._media_widths()
+        self.assertTrue(widths, "no width media queries found; regex has rotted")
+        stray = sorted({w for w in widths if w not in self.ALLOWED})
+        self.assertEqual(stray, [], f"media-query widths outside the tier set: {stray}")
+
+    def test_the_700px_block_is_gone(self):
+        self.assertNotIn("700px", read("web/app.css"))
+
+    def test_phone_has_one_scroll_surface(self):
+        # Inside the phone block .scroll must drop its own scrolling so the
+        # page is the only thing that scrolls under a thumb.
+        css = re.sub(r"/\*.*?\*/", " ", read("web/app.css"), flags=re.S)
+        i = css.index("@media (max-width: 639px)")
+        phone = css[i : css.index("@media (min-width: 640px)", i)]
+        dense = re.sub(r"\s*([{}:;>,])\s*", r"\1", phone)
+        self.assertIn(".scroll{max-height:none;overflow:visible", dense)
+
+    def test_grid_rows_live_only_in_the_phone_block(self):
+        css = re.sub(r"/\*.*?\*/", " ", read("web/app.css"), flags=re.S)
+        dense = re.sub(r"\s*([{}:;>,])\s*", r"\1", css).replace("@media (", "@media(")
+        hits = [m.start() for m in re.finditer(r"(^|[}\s;])tr\{display:grid", dense)]
+        self.assertTrue(hits, "phone grid-row rule missing")
+        start = dense.index("@media(max-width:639px)")
+        end = dense.index("@media(min-width:640px)", start)
+        for h in hits:
+            self.assertTrue(
+                start < h < end,
+                "tr{display:grid} outside the phone block breaks every desktop table",
+            )
+
+    def test_tablet_edge_fade_tokens_exist_in_both_themes(self):
+        css = read("web/app.css")
+        dark = css[: css.index('[data-theme="light"]')]
+        light = css[css.index('[data-theme="light"]') :]
+        for tok in ("--fade-from:", "--fade-to:"):
+            self.assertIn(tok, dark, tok + " missing from the dark theme")
+            self.assertIn(tok, light, tok + " missing from the light theme")
+        dense = re.sub(r"\s*([{}:;>,])\s*", r"\1", css)
+        self.assertIn("#tablewrap.can-right>.wrap::after", dense)
+
+    def test_revealed_labels_are_written_only_by_table(self):
+        # The phone prints a revealed value's label from data-l. Only
+        # table() may write it, from its static column list, so no renderer
+        # can ever feed a server string into a label -- and only table()
+        # decides which cells are secondary.
+        js = read("web/app.js")
+        start = js.index("function table(")
+        end = js.index("\n  function ", start)
+        writes = [m.start() for m in re.finditer(r"dataset\.l\s*=", js)]
+        self.assertEqual(len(writes), 1, f"dataset.l assigned {len(writes)} times")
+        self.assertTrue(start < writes[0] < end, "dataset.l written outside table()")
+        # Any quoted string naming the class or attribute, alone or among
+        # others ("mark c-s" as much as "c-s").
+        for name in ("data-l", "c-s"):
+            pat = r"[\"'][^\"'\n]*(?<![\w-])" + name + r"(?![\w-])[^\"'\n]*[\"']"
+            for m in re.finditer(pat, js):
+                self.assertTrue(
+                    start < m.start() < end,
+                    f"{m.group(0)} at offset {m.start()} lies outside table()",
+                )
+        self.assertRegex(js[start:end], r"[\"']c-s[\"']")
 
 
 class ThemeTokens(unittest.TestCase):

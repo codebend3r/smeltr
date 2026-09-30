@@ -6,6 +6,17 @@
      layout changed. Layout tokens, not colours -- like --r above. */
   --rail: 220px;
   --rlbl: block;
+  /* Phone tab-strip height (<=639px). Declared globally, like --rail above,
+     so a var(--strip) reference resolves even where the phone block never
+     touches it. */
+  --strip: 48px;
+  /* Phone brand/foot row height (<=639px). The rail's sticky top offset is
+     computed from this, so the two can never drift apart. */
+  --brand: 44px;
+  /* Phone grid-row tracks after the chevron (<=639px). The default is one
+     flexible track; each .t-<tab> tr in the phone block names its own
+     primary cells. Only a phone tr consumes it. */
+  --cols: minmax(0, 1fr);
   /* Utility voice for machine-facing text: status chips, tagline, footer.
      Data cells stay proportional + tabular-nums — tnum aligns digits without
      monospace's width penalty, and reads better at 13px. Exception: the
@@ -16,6 +27,11 @@
   --panel: #14161d;
   --panel-2: #1b1e27;
   --line: #262a35;
+  /* Tablet edge fade (640-1080px). A gradient can't take a hex token and an
+     alpha separately, so --panel is split into an opaque stop and a
+     transparent one. */
+  --fade-from: rgba(20, 22, 29, 1);
+  --fade-to: rgba(20, 22, 29, 0);
   --ink: #eef0f5;
   --ink-2: #a0a8b8;
   --ink-3: #697285;
@@ -90,6 +106,8 @@
   --panel: #ffffff;
   --panel-2: #eef0f3;
   --line: #e1e5ea;
+  --fade-from: rgba(255, 255, 255, 1);
+  --fade-to: rgba(255, 255, 255, 0);
   --ink: #141922;
   --ink-2: #4d5768;
   --ink-3: #6b7585;
@@ -162,12 +180,13 @@ body {
   min-height: 100vh;
   transition: grid-template-columns 0.2s ease;
 }
-/* The collapse only exists where there IS a rail to collapse. Below 640px the
-   rail lies flat across the top, and an unguarded `body.railed` -- remembered
-   from a wider window, on the same phone -- outranked every flat-rail rule by
-   specificity: the switch stayed on end and hung off the strip, and the nav
-   counts stayed hidden with nothing gained. Guard the whole set. */
-@media (min-width: 641px) {
+/* The collapse only exists where there IS a rail to collapse. At 639px and
+   below the rail lies flat across the top, and an unguarded `body.railed` --
+   remembered from a wider window, on the same phone -- outranked every
+   flat-rail rule by specificity: the switch stayed on end and hung off the
+   strip, and the nav counts stayed hidden with nothing gained. Guard the
+   whole set. */
+@media (min-width: 640px) {
   body.railed {
     --rail: 66px;
     --rlbl: none;
@@ -1742,9 +1761,9 @@ th.unit {
 tr.rowmoving td {
   border-bottom: 0;
 }
-/* Tinted on the tr, not the td: below 700px the pinned .title-cell takes
-   background:inherit, and a tint painted on the cells would leave that one
-   cell the plain panel colour. */
+/* Tinted on the tr, not the td: in the tablet tier the pinned .title-cell
+   takes background:inherit, and a tint painted on the cells would leave
+   that one cell the plain panel colour. */
 tr.rowmoving,
 tr.xrow {
   background: var(--row-hover);
@@ -2562,16 +2581,18 @@ footer {
   }
 }
 
-/* ---- Responsive. Below 700px the tables keep scrolling sideways: the
-   title column pins to the left edge (the title is the identity of a row --
-   an index column carries nothing the row order does not), and any column
-   sliced at a boundary is blanked by the seam script rather than clipped.
-   Every colour here is an existing token, so both themes are covered. ---- */
+/* ---- Responsive. Between 640 and 1080px the tables keep scrolling
+   sideways: the title column pins to the left edge (the title is the
+   identity of a row -- an index column carries nothing the row order does
+   not), and any column sliced at a boundary is blanked by the seam script
+   rather than clipped. Every colour here is an existing token, so both
+   themes are covered. ---- */
 /* ---- the rail, narrowing ------------------------------------------------
    Below 1080px there is no room for labels, so the rail is icons only and the
-   toggle goes away rather than offering a width the page cannot give. Below
-   640px it stops being a rail at all and lies flat across the top: a 100vh
-   sticky column on a phone is a screen of chrome above the first number. --- */
+   toggle goes away rather than offering a width the page cannot give. At
+   639px and below it stops being a rail at all and lies flat across the top:
+   a 100vh sticky column on a phone is a screen of chrome above the first
+   number. --- */
 @media (max-width: 1080px) {
   body,
   body.railed {
@@ -2600,49 +2621,67 @@ footer {
     border-top: 1px solid var(--line);
   }
 }
-@media (max-width: 640px) {
+@media (max-width: 639px) {
   body,
   body.railed {
     grid-template-columns: minmax(0, 1fr);
   }
-  .rail {
-    position: static;
-    height: auto;
-    flex-direction: row;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-    overflow-x: auto;
-    scrollbar-width: none;
+  /* The phone body is one column, so it need not be a grid at all -- and
+     should not be: a spec-literal engine holds a sticky grid item inside
+     its own grid area, where Chromium lets it travel the whole body, so a
+     grid body risks the rail (and the tab strip riding it) not sticking. */
+  body {
+    display: block;
   }
-  .rail::-webkit-scrollbar {
-    display: none;
+  /* Two rows: brand + foot on the first, the six tabs on the second. A
+     sticky box can't outrun its own containing block, so the rail itself
+     (tall enough to hold both rows) is what sticks, pulled up by exactly
+     the brand row's height so only the tab strip stays visible at top: 0
+     while a long History scrolls; the brand row scrolls away above it.
+     The negative offset is padding-top (8px) + --brand + the row gap
+     (6px) -- keep those three numbers in sync with the rule below. */
+  .rail {
+    position: sticky;
+    top: calc(-1 * (8px + var(--brand) + 6px));
+    z-index: 5;
+    height: auto;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "brand foot"
+      "tabs tabs";
+    align-items: center;
+    gap: 6px 8px;
+    padding: 8px 12px 0;
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+    border-right: 0;
+    border-bottom: 0;
+    overflow: visible;
+  }
+  .railtop,
+  .railfoot {
+    height: var(--brand);
+  }
+  .railtop {
+    grid-area: brand;
+    min-width: 0;
   }
   .rail .brand {
     padding: 0;
   }
-  .navlist {
-    flex-direction: row;
-    gap: 4px;
-  }
-  .nav {
-    padding: 7px 9px;
-  }
-  /* The flat rail is as wide as the page, so the counts come back -- they
-     were only hidden because a 66px column could not hold them. */
-  .nav .navn {
-    display: inline;
-  }
   .railfill {
-    min-height: 0;
+    display: none;
   }
   .railfoot {
+    grid-area: foot;
     flex-direction: row;
     padding: 0;
+    gap: 8px;
   }
-  /* The flat rail is a horizontal strip again, so the switch lies back down. */
+  .railfoot .conn .rlbl {
+    display: none;
+  }
   .themeseg {
     flex-direction: row;
   }
@@ -2650,29 +2689,85 @@ footer {
     border-left: 1px solid var(--line);
     border-top: 0;
   }
+  #railToggle {
+    display: none;
+  }
+  .navlist {
+    grid-area: tabs;
+    z-index: 5;
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 0;
+    height: var(--strip);
+    margin: 0 -12px;
+    padding: 0 max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left));
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  .nav {
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    padding: 4px 0;
+    border-radius: 0;
+    width: auto;
+  }
+  .nav .rlbl {
+    display: none;
+  }
+  .nav .navn {
+    display: inline;
+    font-size: 10.5px;
+  }
+  .nav[aria-selected="true"] {
+    box-shadow: inset 0 -2px 0 var(--ink);
+  }
+  /* One scroll surface. */
+  .scroll {
+    max-height: none;
+    overflow: visible;
+  }
+  .pagehead h1 {
+    margin-bottom: 10px;
+  }
+  .pagehead .statsgrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 12px;
+  }
+  .pagehead .stat:not(.skel) .v {
+    padding: 10px 12px;
+    margin-bottom: 0;
+  }
+  footer {
+    gap: 8px 14px;
+  }
 }
-@media (max-width: 700px) {
+/* ==== PHONE (<=639px) ====================================================
+   Compaction and the grid-row tables; the shell lives in the block above.
+   Anything here must not exist above 639px. */
+@media (max-width: 639px) {
   .monmini {
     gap: 10px;
   }
   .monmini canvas {
-    width: 64px;
+    width: 48px;
   }
   main {
-    padding: 16px 12px 48px;
+    padding: 16px max(12px, env(safe-area-inset-right)) calc(48px + env(safe-area-inset-bottom))
+      max(12px, env(safe-area-inset-left));
   }
   .hero {
     gap: 16px;
   }
+  .hero-body {
+    flex-basis: 100%;
+  }
   .ring {
-    width: 132px;
-    height: 132px;
+    width: 112px;
+    height: 112px;
   }
   .ring-mid .pctbig {
-    font-size: 24px;
-  }
-  .pagehead .statsgrid {
-    gap: 8px 18px;
+    font-size: 22px;
   }
   #monZoom {
     width: 100%;
@@ -2692,10 +2787,273 @@ footer {
     height: 132px;
   }
   .kv {
-    grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  /* 60vh, floored so portrait phones keep a useful table, capped so the
-     floor cannot exceed a short landscape viewport. */
+  th,
+  td {
+    padding: 7px 9px;
+  }
+  /* ---- tables as grid rows ------------------------------------------------
+     One DOM node per cell, same as the desktop: the row is a grid, primary
+     cells fill the first line, secondary cells (.c-s) stay hidden until the
+     row is .open and then take a full-width line each with their header
+     printed from data-l. Nothing scrolls sideways, so the seam script exits
+     early at this width. Per-table templates below name the PRIMARY cells
+     in DOM order; ::before is the first grid item (a spacer, and the
+     chevron on a row that can open). Every row is its own grid, so tracks
+     are fixed lengths only -- an auto track resolves per row and the header
+     would never line up with the cells under it. */
+  table,
+  thead,
+  tbody {
+    display: block;
+  }
+  tr {
+    display: grid;
+    grid-template-columns: 18px var(--cols, minmax(0, 1fr));
+    align-items: baseline;
+    column-gap: 8px;
+    border-bottom: 1px solid var(--td-line);
+  }
+  tbody tr:last-child {
+    border-bottom: 0;
+  }
+  /* Narrow side padding so a ch track's content box holds its digits; the
+     column-gap does the separating. */
+  th,
+  td {
+    padding: 7px 5px;
+    border-bottom: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  /* A number never splits digit over digit. */
+  th.n,
+  td.n {
+    overflow-wrap: normal;
+  }
+  td.title-cell,
+  th.title-cell {
+    min-width: 0;
+  }
+  /* A title cell's row actions (visible on touch) would otherwise squeeze the
+     name to one glyph per line; they wrap under the name instead. */
+  /* baseline, not the desktop's center: the tcell's baseline is the row's,
+     and a centred first item (the errored title's emoji) put it halfway down
+     a wrapped title, dropping every other cell in the row to the middle. */
+  td.title-cell .tcell {
+    flex-wrap: wrap;
+    row-gap: 4px;
+    align-items: baseline;
+  }
+  td.title-cell .tname {
+    flex: 1 1 0;
+    min-width: 6ch;
+  }
+  /* The row actions wrap under the name here, so the negative margin that
+     tucks a button into a desktop row (-10px on a coarse pointer) only
+     lifted the 44px button over the title's last line. Specific enough to
+     beat the coarse block, which comes later in the sheet. */
+  td.title-cell .tcell .act {
+    margin: 0;
+  }
+  /* A Blacklist hit is a title-cell too, but its name shares a line with the
+     rate and size, not with row actions; flex-basis 0 squeezed it to a
+     word per line beside them. The name leads on a line of its own and its
+     numbers (and NAS pill) follow under it: left in DOM order, each hit's
+     numbers sat ABOVE its name and read as the previous hit's. A rule
+     between hits keeps one hit from running into the next. */
+  td.title-cell .blhit .tname {
+    order: -1;
+    flex: 1 1 100%;
+  }
+  .blhit + .blhit {
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px solid var(--td-line);
+  }
+  /* The header sticks under the tab strip (--strip from Task 2). It is the
+     thead that sticks: a sticky thead tr could never travel, its containing
+     block being the one-row block thead. The th cells give up their own
+     stickiness inside a grid row. */
+  /* clip, not hidden: hidden makes .wrap a scroll container, and a sticky
+     thead then sticks to a box that never scrolls. clip keeps the rounded
+     corners without that. */
+  .wrap {
+    overflow: clip;
+  }
+  thead {
+    position: sticky;
+    top: var(--strip);
+    z-index: 2;
+    background: var(--panel-2);
+  }
+  thead tr::before,
+  tbody tr:not(.xrow)::before {
+    content: "";
+  }
+  th {
+    position: static;
+    top: auto;
+  }
+  /* The chevron, only on a row that can open -- data-key is exactly that
+     (table() writes it only when the tab passes keyOf). A 6px square
+     rotated; turns down when the row is open. */
+  tbody tr[data-key]::before {
+    width: 6px;
+    height: 6px;
+    margin: 6px 0 0 5px;
+    border-right: 1.5px solid var(--ink-3);
+    border-bottom: 1.5px solid var(--ink-3);
+    transform: rotate(-45deg);
+    transition: transform 0.15s;
+  }
+  tbody tr[data-key].open::before {
+    transform: rotate(45deg);
+  }
+  tbody tr[data-key] {
+    cursor: pointer;
+  }
+  .c-s {
+    display: none;
+  }
+  /* In an open row the primary cells are locked to the first line, so the
+     grid places them before any revealed .c-s cell -- a secondary column
+     that comes first in DOM order (Blacklist's Kind, Queue's Src size
+     before Title) would otherwise take the first line and push the primary
+     cells after it down. The revealed lines follow in DOM order. */
+  tbody tr.open::before,
+  tr.open > td:not(.c-s) {
+    grid-row: 1;
+  }
+  /* The label is pushed left by its auto margin and the value's pieces pack
+     together at the right, wrapping under themselves when they run out of
+     room. space-between here spread a two-pill "Moved to" to opposite ends
+     and pushed a nowrap encode window past the card edge. */
+  tr.open td.c-s {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    align-items: baseline;
+    gap: 4px 8px;
+    grid-column: 2 / -1;
+    padding-top: 3px;
+    padding-bottom: 3px;
+    text-align: left;
+  }
+  tr.open td.c-s::before {
+    content: attr(data-l);
+    flex: none;
+    margin-right: auto;
+    padding-right: 4px;
+    /* The label is the header's words, so it takes the header's face: the
+       cell's own mono/bold (Src Mb/s, Moved to) must not leak into it. */
+    font-family:
+      ui-sans-serif,
+      -apple-system,
+      system-ui,
+      sans-serif;
+    font-weight: 400;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-3);
+  }
+  /* th.unit's exemption, for the revealed label: "SRC Mb/s" uppercased is
+     "SRC MB/S", an 8x unit lie. table() puts .unit on the td. */
+  tr.open td.c-s.unit::before {
+    text-transform: none;
+  }
+  /* The first revealed line gets breathing room from the primary line. */
+  tr.open td.c-s:nth-child(1 of .c-s) {
+    padding-top: 8px;
+  }
+  tr.open {
+    padding-bottom: 4px;
+  }
+  /* Transfer rows span the whole width, chevron column included. */
+  tr.xrow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  tr.xrow td {
+    grid-column: 1 / -1;
+  }
+  /* Drag handles are meaningless on a phone whatever the pointer. */
+  th.gripcol,
+  td.gripcol {
+    display: none;
+  }
+  /* Per-table primary templates, DOM order of the primary cells. */
+  .t-queue tr {
+    --cols: 4ch 6ch minmax(0, 1fr) 9ch;
+  }
+  .t-ledger tr {
+    --cols: 4ch minmax(0, 1fr) 10ch 9ch;
+  }
+  .t-errors tr {
+    --cols: 9ch minmax(0, 1.5fr) minmax(0, 1fr);
+  }
+  /* Process, PID, Purpose, CPU %. The PID is primary: two `dashboard`
+     or two `caffeinate` rows are otherwise twins at a glance. 7ch holds
+     the "CPU %" header on one line. The process chip breaks between
+     words only ("caffeinat|e" read as a typo); 1.35fr holds the longest
+     one-word label, "replenisher", at 390px. */
+  .t-procs tr {
+    --cols: minmax(0, 1.35fr) 7ch minmax(0, 1fr) 7ch;
+  }
+  .t-procs:has(.c-s) td:first-child {
+    overflow-wrap: normal;
+  }
+  /* The launchd agents table shares the procs tab but has no secondary
+     columns, and its third column is a state phrase, not a CPU number.
+     An agent label is one dotted word, so its track is the widest: 1.8fr
+     holds a 16-character label whole at 390px (com.smeltr.b|rief broke
+     at 1.2fr). A longer one (com.smeltr.replenish) still wraps at the
+     card edge -- kept, because a label run into the Purpose column is
+     worse than one split. */
+  .t-procs:not(:has(.c-s)) tr {
+    --cols: minmax(0, 1.8fr) minmax(0, 1.2fr) minmax(0, 1fr);
+  }
+  .t-blacklist tr {
+    --cols: minmax(0, 1fr) 7ch;
+  }
+  /* 12ch: the whole-second clock ("12:36:21 pm", 11 mono glyphs) holds
+     its line with room for a wider phone mono face. */
+  .t-events tr {
+    --cols: 12ch minmax(0, 1fr);
+  }
+  /* The stamp wraps date over clock rather than running under the event;
+     each half stays whole, so the meridiem never takes a line alone. */
+  .t-events td.evtime {
+    white-space: normal;
+  }
+  .t-events td.evtime span {
+    white-space: nowrap;
+  }
+  /* The same for History's Finished: .nowrap (0,1,0) outranks the phone's
+     `th, td` wrap, so the clock ran out of its 10ch track and was clipped.
+     Date over clock, neither split. The space between them sits INSIDE
+     the nowrap clock span, so it is no break point; inline-block puts one
+     before the clock (else the date broke at its hyphens, "08-28-|26"),
+     and flush under the date, without the desktop's 6px gap. */
+  .t-ledger td.nowrap {
+    white-space: normal;
+  }
+  .t-ledger td.nowrap span {
+    white-space: nowrap;
+  }
+  .t-ledger td.nowrap .fin-t {
+    display: inline-block;
+    margin-left: 0;
+  }
+}
+
+/* ==== TABLET (640-1080px) ================================================
+   The full table with the title column pinned left while the rest scrolls,
+   and seam blanking for a column sliced at an edge. A 1024px iPad landscape
+   still shows all twelve History columns, so the pin earns its place here;
+   on the phone (Task 3) rows are grids and nothing scrolls sideways. */
+@media (min-width: 640px) and (max-width: 1080px) {
   .scroll {
     max-height: min(max(60vh, 340px), 72dvh);
   }
@@ -2717,10 +3075,6 @@ footer {
   .rowenc {
     background: var(--row-enc);
   }
-  /* Both tables mark the title th and td with .title-cell, so no per-table
-     column arithmetic is needed and left:0 is the only constant. Until the
-     scroll reaches it the title sits in its natural column; from then on it
-     docks at the left edge and the rest slides beneath it. */
   /* Both halves are named so this outranks `td.title-cell{position:relative}`
      above; a bare `.title-cell` here loses to it on the td and the pinned
      column stops pinning. */
@@ -2733,33 +3087,108 @@ footer {
     background: inherit;
     border-right: 1px solid var(--line);
   }
-  /* Headers float above the pinned title cells; the pinned corner above both. */
   th {
     z-index: 2;
   }
   th.title-cell {
     z-index: 3;
   }
+  /* Only the first title column pins. Blacklist's "Titles it blocks" shares
+     the class for its look; pinned too, it slid over the pinned Entry column
+     on a scroll and painted on top of it. Its header keeps the vertical stick. */
+  /* It also wraps, so the table can fit an 820px tablet without the
+     hit list pushing it wider. */
+  td.title-cell ~ td.title-cell {
+    position: relative;
+    left: auto;
+    z-index: auto;
+    border-right: 0;
+    white-space: normal;
+    max-width: 36ch;
+    min-width: 0;
+  }
+  /* Wrapped, a hit's numbers fell ABOVE its name, where they read as the
+     previous hit's -- the phone's fix: name first, numbers under it, a rule
+     between hits. */
+  td.title-cell .blhit .tname {
+    order: -1;
+    flex: 1 1 100%;
+  }
+  .blhit + .blhit {
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px solid var(--td-line);
+  }
+  /* Processes' "Working on" wears title-cell for its look, but its header
+     does not: pinned, the body cells slid over Process, PID and Purpose on
+     a scroll while the header stayed put. It scrolls with its row. */
+  td.title-cell.what {
+    position: relative;
+    left: auto;
+    z-index: auto;
+    border-right: 0;
+    min-width: 0;
+  }
+  th.title-cell ~ th.title-cell {
+    left: auto;
+    z-index: 2;
+    border-right: 0;
+  }
   /* A column sliced at a boundary renders EMPTY, not clipped. Clipped on its
      left, a right-aligned "70.64 GiB" still parses -- as "0.64 GiB"; clipped
-     on its right it loses its unit and "78.24" bare could be Mb/s or GiB.
-     The .cut class is applied by the seam script at the bottom of the page. */
-  td.cut,
-  th.cut {
+     on its right it loses its unit. The .cut class is applied by the seam
+     script at the bottom of app.js. Only the body blanks: a header is words,
+     never a number, and a sliced word misleads no one -- while a blank
+     header made the blanked column read as empty padding. */
+  td.cut {
     color: transparent;
   }
-  td.cut *,
-  th.cut * {
+  td.cut * {
     visibility: hidden;
+  }
+  /* Overflow cue. The scrollbar is hidden on purpose (see .scroll), so a
+     table wider than the pane needs another way to say "there is more":
+     a fade over whichever edge still has room to scroll. The seam script
+     already measures the pane on scroll and resize and sets these classes. */
+  #tablewrap > .wrap {
+    position: relative;
+  }
+  #tablewrap.can-right > .wrap::after,
+  #tablewrap.can-left > .wrap::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 44px;
+    pointer-events: none;
+    z-index: 4;
+  }
+  /* A solid quarter, then the fade: the edge reads as a margin fading in,
+     visible in the light theme where a plain two-stop fade was not. */
+  #tablewrap.can-right > .wrap::after {
+    right: 0;
+    background: linear-gradient(to left, var(--fade-from) 0, var(--fade-from) 25%, var(--fade-to));
+  }
+  #tablewrap.can-left > .wrap::before {
+    left: 190px; /* clear of the pinned title column */
+    background: linear-gradient(to right, var(--fade-from) 0, var(--fade-from) 25%, var(--fade-to));
+  }
+  /* Long text columns wrap on a tablet rather than pushing the table wider. */
+  td.src-dir,
+  td.what {
+    white-space: normal;
+    max-width: 32ch;
+  }
+  /* The folder wraps between its pills, never inside one: a squeezed column
+     split "4K Movies" over two lines with the pill border broken across both. */
+  td.src-dir .mark {
+    white-space: nowrap;
   }
 }
 @media (pointer: coarse) {
   .themebtn {
     width: 44px;
     height: 44px;
-  }
-  .nav {
-    padding: 11px 12px;
   }
   /* HTML5 drag-and-drop does not exist on touch; hide the handles rather
      than advertise a gesture that cannot work. Skip buttons stay. */
@@ -2783,6 +3212,26 @@ footer {
   td.q-crf .crfcell {
     background: var(--panel-2);
     border-color: var(--line);
+  }
+  .act,
+  .panebtn,
+  .crfsel {
+    min-height: 44px;
+  }
+  /* The row is the target (a tap opens it), and its first td is a hidden
+     grip or revealed-line cell on Queue and Blacklist, so the row carries
+     the height. */
+  tbody tr[data-key] {
+    min-height: 44px;
+  }
+}
+/* A finger-sized rail tab, but not on the phone: there the tabs share a
+   48px strip, and this padding (equal specificity, later in the sheet)
+   outran the phone's own and hung the selected underline over the sticky
+   table header. */
+@media (pointer: coarse) and (min-width: 640px) {
+  .nav {
+    padding: 11px 12px;
   }
 }
 

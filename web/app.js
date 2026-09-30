@@ -1389,26 +1389,71 @@
     box.appendChild(tip);
   }
 
-  function table(cols, rows, build) {
-    var t = el("table"),
+  /* Row-open state for the phone tier: which rows the operator has tapped
+   open, keyed by the row's data-key. A plain object as a set, in memory
+   only, and deliberately OUTSIDE every repaint key -- open is a view fact,
+   not a shape. table() re-applies it on every rebuild so the 2 s repaint
+   cannot fold a row the operator just opened. No prototype, so a title
+   named `constructor` or `toString` never reads as open. */
+  var openRows = Object.create(null);
+  /* The phone tier, as the CSS defines it. One MediaQueryList shared by the
+   queue's drag rows, the row disclosure and the seam script so the three can
+   never disagree. Declared up here, ahead of every renderer that reads it. */
+  var PHONE = window.matchMedia ? window.matchMedia("(max-width: 639px)") : { matches: false };
+  function applyOpen(tr) {
+    var k = tr.dataset.key;
+    if (k != null && openRows[k]) tr.classList.add("open");
+  }
+
+  /* cols[i] = { label, n?, cls?, tier? }. tier "s" marks a SECONDARY column:
+   hidden on the phone until the row is opened. Every cell gets data-l (its
+   header text) so the phone can print a label beside a revealed value, and
+   secondary cells get .c-s. Rows are tagged here, positionally, so no
+   renderer has to know about tiers. A row whose cell count differs from
+   the column count (a full-width .xrow with one colspan cell) is left
+   alone. keyOf(row) names the row for open-state persistence. */
+  function table(cols, rows, build, keyOf) {
+    var t = el("table", "t-" + tab),
       thead = el("thead"),
       tr = el("tr");
     cols.forEach(function (c) {
-      var th = el("th", [c.n ? "n" : "", c.cls || ""].join(" ").trim() || null, c.label);
-      tr.appendChild(th);
+      var cls = [c.n ? "n" : "", c.cls || "", c.tier === "s" ? "c-s" : ""].join(" ").trim();
+      tr.appendChild(el("th", cls || null, c.label));
     });
     thead.appendChild(tr);
     t.appendChild(thead);
     var tb = el("tbody");
+    function tag(row, r) {
+      if (row.classList.contains("xrow") || row.cells.length !== cols.length) return;
+      for (var i = 0; i < cols.length; i++) {
+        var td = row.cells[i];
+        td.dataset.l = cols[i].label;
+        if (cols[i].tier === "s") td.classList.add("c-s");
+        /* The unit column's header keeps its case (th.unit); its revealed
+           label is printed from data-l and needs the same exemption, or
+           "SRC Mb/s" reads as "SRC MB/S" -- an 8x unit lie. */
+        if (/\bunit\b/.test(cols[i].cls || "")) td.classList.add("unit");
+      }
+      /* Keyed per tab: a title open on Queue must not arrive open on
+         Errors, nor a recycled PID on Processes inherit an old row's state. */
+      if (keyOf) {
+        row.dataset.key = tab + "\u0000" + keyOf(r);
+        applyOpen(row);
+      }
+    }
     /* build() may return one <tr> or an ARRAY of them -- the History tab gives a
      title whose file is still travelling a second, full-width row. */
     rows.forEach(function (r, i) {
       var out = build(r, i);
       if (Array.isArray(out))
         out.forEach(function (n) {
+          tag(n, r);
           tb.appendChild(n);
         });
-      else tb.appendChild(out);
+      else {
+        tag(out, r);
+        tb.appendChild(out);
+      }
     });
     t.appendChild(tb);
     return t;
@@ -1898,11 +1943,11 @@
           { label: "", cls: "gripcol" },
           { label: "Rank", n: true },
           { label: "SRC Mb/s", n: true, cls: "unit" },
-          { label: "Src size", n: true },
-          { label: "Quality", n: true },
+          { label: "Src size", n: true, tier: "s" },
+          { label: "Quality", n: true, tier: "s" },
           { label: "Title", cls: "title-cell" },
-          { label: "NAS" },
-          { label: "Src folder" },
+          { label: "NAS", tier: "s" },
+          { label: "Src folder", tier: "s" },
           { label: "Status" },
         ],
         q,
@@ -1923,7 +1968,9 @@
             var g = el("span", "grip", "⋮⋮");
             g.title = "Drag to reorder";
             grip.appendChild(g);
-            tr.draggable = true;
+            /* The grip is hidden on the phone; a draggable row with no
+               handle would still reorder the queue under a narrow mouse. */
+            if (!PHONE.matches) tr.draggable = true;
           }
           tr.appendChild(grip);
           tr.appendChild(el("td", "n q-rank", ranks[i] == null ? "—" : String(ranks[i])));
@@ -2050,6 +2097,9 @@
           }
           return tr;
         },
+        function (r) {
+          return r.title;
+        },
       ),
     );
     /* A recorded title has LEFT the queue — its push renders on the History
@@ -2174,15 +2224,15 @@
         [
           { label: "#", n: true },
           { label: "Title", cls: "title-cell" },
-          { label: "Original", n: true },
-          { label: "Output", n: true },
+          { label: "Original", n: true, tier: "s" },
+          { label: "Output", n: true, tier: "s" },
           { label: "Saved", n: true },
-          { label: "Shrink", n: true },
-          { label: "Quality", n: true },
-          { label: "Tracks" },
-          { label: "NAS" },
-          { label: "Moved to" },
-          { label: "Encode time" },
+          { label: "Shrink", n: true, tier: "s" },
+          { label: "Quality", n: true, tier: "s" },
+          { label: "Tracks", tier: "s" },
+          { label: "NAS", tier: "s" },
+          { label: "Moved to", tier: "s" },
+          { label: "Encode time", tier: "s" },
           { label: "Finished" },
         ],
         ordered,
@@ -2374,6 +2424,9 @@
           xtr.appendChild(xtd);
           return [tr, xtr];
         },
+        function (r) {
+          return r.title + "\u0000" + (r.finished_at || "");
+        },
       ),
     );
     var noted = [];
@@ -2472,11 +2525,11 @@
     pane.appendChild(
       table(
         [
-          { label: "Kind" },
+          { label: "Kind", tier: "s" },
           { label: "Entry", cls: "title-cell" },
           { label: "Blocks", n: true },
-          { label: "Titles it blocks", cls: "title-cell" },
-          { label: "Changed by" },
+          { label: "Titles it blocks", cls: "title-cell", tier: "s" },
+          { label: "Changed by", tier: "s" },
         ],
         rows,
         function (e) {
@@ -2535,6 +2588,9 @@
           tr.appendChild(el("td", "mono muted", e.where));
           return tr;
         },
+        function (e) {
+          return e.pattern;
+        },
       ),
     );
   }
@@ -2550,11 +2606,11 @@
       table(
         [
           { label: "State" },
-          { label: "SRC Mb/s", n: true, cls: "unit" },
-          { label: "Src size", n: true },
+          { label: "SRC Mb/s", n: true, cls: "unit", tier: "s" },
+          { label: "Src size", n: true, tier: "s" },
           { label: "Title", cls: "title-cell" },
-          { label: "NAS" },
-          { label: "Src folder" },
+          { label: "NAS", tier: "s" },
+          { label: "Src folder", tier: "s" },
           { label: "What happened" },
         ],
         rows,
@@ -2598,7 +2654,7 @@
            vocabulary for a thing that is not a failure. */
           var why = el(
             "td",
-            "err-note",
+            "err-note what",
             r.error
               ? trimNote(r.error_note, r.title)
               : r.done
@@ -2618,6 +2674,9 @@
               " marker on the staging drive.";
           tr.appendChild(why);
           return tr;
+        },
+        function (r) {
+          return r.title;
         },
       ),
     );
@@ -2695,8 +2754,8 @@
             { label: "Process" },
             { label: "PID", n: true },
             { label: "Purpose" },
-            { label: "Working on" },
-            { label: "Running for", n: true },
+            { label: "Working on", tier: "s" },
+            { label: "Running for", n: true, tier: "s" },
             { label: "CPU %", n: true, cls: "unit" },
           ],
           procs,
@@ -2714,10 +2773,13 @@
             tr.appendChild(td);
             tr.appendChild(el("td", "n mono", String(p.pid)));
             tr.appendChild(el("td", "muted", p.purpose));
-            tr.appendChild(el("td", "title-cell", p.detail || "—"));
+            tr.appendChild(el("td", "title-cell what", p.detail || "—"));
             tr.appendChild(el("td", "n mono", p.elapsed));
             tr.appendChild(el("td", "n mono", p.cpu));
             return tr;
+          },
+          function (p) {
+            return String(p.pid);
           },
         ),
       );
@@ -2825,6 +2887,14 @@
     done: "good",
     pushed: "good",
   };
+  /* Date and clock as two spans with a real space between: the cell may
+     wrap BETWEEN them (date over clock on the phone), never inside the
+     clock, which once left "pm" alone on a line. */
+  function evStamp(td, date, clock) {
+    td.appendChild(el("span", null, date));
+    td.appendChild(document.createTextNode(" "));
+    td.appendChild(el("span", null, clock));
+  }
   function renderEvents(x9on) {
     progRefs = {};
     var pane = document.getElementById("pane");
@@ -2860,12 +2930,12 @@
         } else if (e.approx) {
           /* Inferred from the watch log's mtime, so it wears the page's
            estimate marker and claims minutes, never seconds. */
-          td.textContent = "~" + d + " " + clock12(e.ts.slice(11, 16));
+          evStamp(td, "~" + d, clock12(e.ts.slice(11, 16)));
           td.title =
             "time inferred from the watch log's file mtime — " +
             "the watcher wrote this line and exited";
         } else {
-          td.textContent = d + " " + clock12(e.ts.slice(11, 19));
+          evStamp(td, d, clock12(e.ts.slice(11, 19)));
         }
         tr.appendChild(td);
         var ev = el("td");
@@ -3271,15 +3341,48 @@
     if (t0 && t0 !== tab) setTab(t0);
   })();
 
-  /* Seam blanking. Below 700px the title column pins while the rest scrolls,
-   and a cell HALF hidden is worse than one fully hidden: sliced at the pane's
-   left edge or the pinned title's edge, a right-aligned size keeps its
-   trailing digits and still parses as a plausible size; sliced at the right
-   edge it keeps its digits but loses its unit. Whichever column straddles a
+  /* Crossing the phone width changes whether a queue row drags, which no
+   repaint key carries. Flip the drawn rows in place rather than repaint:
+   a gripped row is exactly one renderQueue made draggable. */
+  function phoneFlip() {
+    var tb = document.querySelector("#pane .t-queue tbody");
+    if (!tb) return;
+    tb.querySelectorAll("tr").forEach(function (tr) {
+      if (tr.querySelector(".grip")) tr.draggable = !PHONE.matches;
+    });
+  }
+  if ("addEventListener" in PHONE) PHONE.addEventListener("change", phoneFlip);
+
+  /* Row disclosure (phone tier only). A tap anywhere on a row that is not a
+   control toggles its secondary cells. Controls keep their own meaning: a
+   tap on the CRF picker or a skip button must never also fold the row
+   underneath it. The transfer .xrow has nothing to reveal. Open rows are
+   remembered by key so the repaint keeps them. */
+  function rowToggle(ev) {
+    if (!PHONE.matches) return;
+    var t = ev.target;
+    if (t.closest("button, select, a, input, label, .crfcell")) return;
+    var tr = t.closest("tr");
+    if (!tr || tr.classList.contains("xrow") || tr.dataset.key == null) return;
+    var on = !tr.classList.contains("open");
+    tr.classList.toggle("open", on);
+    if (on) openRows[tr.dataset.key] = true;
+    else delete openRows[tr.dataset.key];
+  }
+  document.getElementById("pane").addEventListener("click", rowToggle);
+
+  /* Seam blanking. Between 640px and 1080px (the tablet tier) the title
+   column pins while the rest scrolls, and a cell HALF hidden is worse than
+   one fully hidden: sliced at the pane's left edge or the pinned title's
+   edge, a right-aligned size keeps its trailing digits and still parses as
+   a plausible size; sliced at the right edge it keeps its digits but loses
+   its unit. Whichever column straddles a
    boundary gets .cut (blank but layout-stable) until it is fully clear. The
    straddle test uses the text box (cell inset by its padding), so a value
-   whose glyphs are fully visible is never blanked. Title cells are never
-   cut: a clipped title misleads no one, a missing one identifies nothing.
+   whose glyphs are fully visible is never blanked. The PINNED title is never
+   cut: it never scrolls, so it never straddles. A second, scrolling
+   title-style column (Blacklist's hit list, which carries rates and sizes)
+   is cut like any other -- sliced at the pinned edge its sizes misread.
    Geometry only -- reads no data, writes no text. */
   (function () {
     var pane = document.getElementById("pane"),
@@ -3296,6 +3399,24 @@
       }
     }
     function recut() {
+      /* Phone rows are grids; nothing scrolls sideways and nothing straddles. */
+      if (PHONE.matches) {
+        if (cuts.length) {
+          var tb0 = pane.querySelector("table");
+          if (tb0)
+            cuts.forEach(function (c) {
+              applyCut(tb0, c, false);
+            });
+        }
+        cuts = [];
+        return;
+      }
+      var tw = document.getElementById("tablewrap");
+      if (tw) {
+        var over = pane.scrollWidth - pane.clientWidth;
+        tw.classList.toggle("can-left", over > 1 && pane.scrollLeft > 1);
+        tw.classList.toggle("can-right", over > 1 && pane.scrollLeft < over - 1);
+      }
       var tbl = pane.querySelector("table");
       if (!tbl || !tbl.rows.length) {
         cuts = [];
@@ -3317,11 +3438,11 @@
       }
       var next = [];
       if (pinnedRight != null) {
-        /* the pinned title exists only below 700px */
+        /* the pinned title exists only in the tablet tier (640-1080px) */
         var pr = pane.getBoundingClientRect();
         var bounds = [pr.left, pinnedRight, pr.left + pane.clientWidth];
         for (i = 0; i < head.cells.length; i++) {
-          if (sticky[i] || head.cells[i].classList.contains("title-cell")) continue;
+          if (sticky[i]) continue;
           rc = head.cells[i].getBoundingClientRect();
           var L = rc.left + parseFloat(styles[i].paddingLeft),
             R = rc.right - parseFloat(styles[i].paddingRight);
@@ -3351,6 +3472,9 @@
     }
     pane.addEventListener("scroll", schedule, { passive: true });
     window.addEventListener("resize", schedule);
+    /* The pane changes width without the window doing so (the table card
+       expanded, the rail toggled); the fades and cuts follow it. */
+    if (window.ResizeObserver) new ResizeObserver(schedule).observe(pane);
     new MutationObserver(function () {
       cuts = [];
       schedule();
@@ -4077,6 +4201,7 @@
     var probe = tickLab(Math.ceil(t0 / step) * step, t1 - t0);
     var need = probe.length * 6 + 14;
     while (step < t1 - t0 && (step / (t1 - t0)) * (x1 - x0) < need) step *= 2;
+    var labRight = -Infinity; /* right edge of the last label drawn */
     for (var tt = Math.ceil(t0 / step) * step; tt < t1; tt += step) {
       var gx = Math.round(X(tt)) + 0.5;
       ctx.strokeStyle = css.grid;
@@ -4085,10 +4210,28 @@
       ctx.lineTo(gx, y1);
       ctx.stroke();
       if (ch.axis) {
+        /* A centred label on the last tick can run past the canvas edge
+           and be cut ("Sun 8:00 pr" on a phone); only a label that would
+           actually be cut is right-aligned to the edge, so every label the
+           canvas holds keeps its place under its gridline. Pulled left, it
+           may meet the label before it; then it is dropped rather than
+           printed over its neighbour. The test recorder has no measureText,
+           so it falls back to the 0.6em-per-glyph estimate the thinning
+           above uses. */
+        var lab = tickLab(tt, t1 - t0),
+          lw = ctx.measureText ? ctx.measureText(lab).width : lab.length * 6;
         ctx.fillStyle = css.ink;
-        ctx.textAlign = "center";
         ctx.textBaseline = "top";
-        ctx.fillText(tickLab(tt, t1 - t0), gx, y1 + 4);
+        if (gx + lw / 2 > w) {
+          if (w - lw < labRight + 6) continue;
+          ctx.textAlign = "right";
+          ctx.fillText(lab, w, y1 + 4);
+          labRight = w;
+        } else {
+          ctx.textAlign = "center";
+          ctx.fillText(lab, gx, y1 + 4);
+          labRight = gx + lw / 2;
+        }
       }
     }
     ch.series.forEach(function (se, si) {
@@ -4303,6 +4446,23 @@
     return null;
   }
   var MON_NAMES = ["CPU", "GPU", "RAM", "net in", "net out", "disk read", "disk write"];
+  /* Where the tooltip box goes, relative to the monitor card. w/h are the
+   box's actual rendered size (measured from the live element -- content can
+   make it taller than the nominal 180x150, which are fallbacks only for a
+   caller that has not measured). It sits right-and-below the cursor, flips
+   left when that would run off the card, and on a phone -- where the card
+   is narrower than two boxes -- it is clamped inside on both axes rather
+   than flipped. */
+  function monTipPos(cx, cy, cr, w, h) {
+    var W = w > 0 ? w : 180,
+      H = h > 0 ? h : 150;
+    var lx = cx - cr.left + 14,
+      ly = cy - cr.top + 10;
+    if (lx + W > cr.width) lx = cx - cr.left - W - 14;
+    if (lx < 4) lx = Math.max(4, Math.min(cx - cr.left - W / 2, cr.width - W - 4));
+    if (ly + H > cr.height) ly = Math.max(4, cr.height - H - 4);
+    return { lx: lx, ly: ly };
+  }
   function monTipDraw(t0, t1) {
     if (!monHover) {
       monTipEl.hidden = true;
@@ -4336,12 +4496,10 @@
       monTipEl.appendChild(row);
     }
     var cr = monCard.getBoundingClientRect();
-    var lx = monHover.cx - cr.left + 14,
-      ly = monHover.cy - cr.top + 10;
-    if (lx + 180 > cr.width) lx = Math.max(4, monHover.cx - cr.left - 194);
-    monTipEl.style.left = lx + "px";
-    monTipEl.style.top = ly + "px";
     monTipEl.hidden = false;
+    var pos = monTipPos(monHover.cx, monHover.cy, cr, monTipEl.offsetWidth, monTipEl.offsetHeight);
+    monTipEl.style.left = pos.lx + "px";
+    monTipEl.style.top = pos.ly + "px";
   }
   function monHoverEnd() {
     if (!monHover) return;

@@ -16,3 +16,6 @@ PLACEHOLDERS = ("__NONCE__", "__SCOPE__", "__APP_CSS__", "__THEME_JS__", "__APP_
 missing = [m for m in PLACEHOLDERS if m in server.PAGE]
 if missing:
     sys.exit("unsubstituted placeholder(s): " + ", ".join(missing))
+
+if "viewport-fit=cover" not in server.PAGE:
+    sys.exit("index.html viewport meta lacks viewport-fit=cover (notched phones)")

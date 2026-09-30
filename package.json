@@ -59,6 +59,7 @@
     "test:js:repaint": "bun tests/test_repaint_key.ts",
     "test:js:sysmon-render": "bun tests/test_sysmon_render.ts",
     "test:js:sysmon-ui": "bun tests/test_sysmon_ui.ts",
+    "test:js:tiers": "bun tests/test_table_tiers.ts",
     "test:py": "python3 tests/run_unittests.py",
     "test:sh:autopilot": "bash tests/test_autopilot_helpers.sh",
     "test:sh:drift": "bash tests/test_staging_in_sync.sh",

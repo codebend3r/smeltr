@@ -225,6 +225,30 @@ sect("folded head");
   ok(/monLast\.v\[m\.se\.k\]/.test(src), "each reading is that series' latest sample");
 }
 
+sect("monTipPos");
+/* Tooltip clamp: on a 360px card the box must not hang past either edge. */
+{
+  const posSrc = fn("monTipPos");
+  const monTipPos = new Function(posSrc + "\nreturn monTipPos;")();
+  const cr = { left: 0, top: 0, width: 360, height: 300 };
+  let p = monTipPos(340, 40, cr);
+  ok(p.lx + 180 <= 360 && p.lx >= 4, "tip clamps at the right edge " + JSON.stringify(p));
+  p = monTipPos(10, 40, cr);
+  ok(p.lx >= 4, "tip clamps at the left edge " + JSON.stringify(p));
+  p = monTipPos(200, 290, cr);
+  ok(p.ly + 150 <= 300, "tip clamps at the bottom edge " + JSON.stringify(p));
+  /* A real box can render taller/wider than the 180x150 fallback; the
+     caller's measured size must drive the clamp, not the nominal one. */
+  p = monTipPos(200, 290, cr, undefined, 160);
+  ok(p.ly + 160 <= 300, "tip clamps a measured 160px box at the bottom edge " + JSON.stringify(p));
+  const wideCr = { left: 0, top: 0, width: 360, height: 300 };
+  p = monTipPos(340, 40, wideCr, 220, undefined);
+  ok(
+    p.lx + 220 <= 360 && p.lx >= 4,
+    "tip clamps a measured 220px-wide box at the right edge " + JSON.stringify(p),
+  );
+}
+
 if (failures) {
   console.log("\n" + failures + " FAILURE(S)");
   process.exit(1);

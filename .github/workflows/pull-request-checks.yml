@@ -242,6 +242,9 @@ jobs:
       - name: 📊 test:js:sysmon-ui — sysmon chart logic
         run: bun run test:js:sysmon-ui
 
+      - name: 📱 test:js:tiers — table() tags every cell with its phone tier
+        run: bun run test:js:tiers
+
   # ----------------------------------------------------------------- shell
   # macOS on purpose: these test BSD-targeted scripts. See the header. One
   # step per `test:sh:*` script.
