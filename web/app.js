@@ -253,40 +253,12 @@
     return b;
   }
 
-  function renderAlert(s, note, pushes) {
+  function renderAlert(s, note) {
     var host = document.getElementById("alert");
     host.replaceChildren();
-    /* A finished encode the pusher could not send back (no or two library
-     folders, a copy that did not verify). Both copies are kept and the
-     title waits in complete/; nothing else on the page says so. */
-    var failedPushes = Object.keys(pushes || {}).filter(function (k) {
-      return pushes[k].state === "failed";
-    });
-    if (failedPushes.length) {
-      var pc = el("div", "card alert");
-      pc.appendChild(
-        el(
-          "div",
-          "live-title",
-          failedPushes.length +
-            (failedPushes.length === 1 ? " finished encode" : " finished encodes") +
-            " could not be pushed back to the NAS",
-        ),
-      );
-      failedPushes.forEach(function (k) {
-        pc.appendChild(el("div", "verdict", pushes[k].title + " — " + pushes[k].note));
-      });
-      pc.appendChild(
-        el(
-          "div",
-          "muted",
-          "Both copies are kept; nothing on the NAS was touched. Delete " +
-            ".push-failed-<title> on the X9 to retry.",
-        ),
-      );
-      makeCollapsible(pc, "alert-push", true);
-      host.appendChild(pc);
-    }
+    /* A failed push is never a banner here: the pusher logs it as a red
+     PUSH FAILED line on the Events tab, and the History row says
+     "push failed". Failures live in the Errors and Events tabs only. */
     /* Outcome of the last start/abort. The slow halves (track parity, the kill
      grace) finish long after their POST returned, so this banner is how they
      report. kind=bad stays until the next action; ok/warn are informational. */
@@ -3054,7 +3026,7 @@
   }
 
   function paint(s) {
-    renderAlert(s.summary, s.encode_note, s.pushes);
+    renderAlert(s.summary, s.encode_note);
     renderStats(s.summary);
     var nextUp = (s.queue || []).filter(function (r) {
       return r.next_up;
