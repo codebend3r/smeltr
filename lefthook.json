@@ -1,0 +1,88 @@
+{
+  "$schema": "./node_modules/lefthook/schema.json",
+  "min_version": "2.1.16",
+  "assert_lefthook_installed": true,
+  "glob_matcher": "doublestar",
+  "output": ["meta", "summary", "success", "failure"],
+  "pre-commit": {
+    "piped": true,
+    "fail_on_changes": "always",
+    "skip": [{ "run": "test \"${SMELTR_SKIP_HOOKS:-}\" = 1" }],
+    "jobs": [
+      { "name": "refuse artifacts and whitespace", "run": "sh -e .githooks/pre-commit.sh" },
+      {
+        "name": "lint staged files",
+        "group": {
+          "parallel": true,
+          "jobs": [
+            {
+              "name": "lint:js",
+              "glob": "**/*.{js,mjs,ts,mts}",
+              "run": "bun run --silent lint:js {staged_files}"
+            },
+            {
+              "name": "lint:js:syntax",
+              "glob": "**/*.{js,mjs,ts,mts}",
+              "run": "for f in {staged_files}; do bun build --no-bundle \"$f\" --outfile /dev/null >/dev/null || exit 1; done"
+            },
+            {
+              "name": "lint:ts",
+              "glob": ["web/*.js", "tests/*.ts", "tests/visual/*.mts", "tsconfig.json"],
+              "run": "bun run --silent lint:ts"
+            },
+            {
+              "name": "lint:py",
+              "glob": "**/*.py",
+              "run": "uvx ruff@0.16.5 check {staged_files}"
+            },
+            {
+              "name": "lint:py:syntax",
+              "glob": "**/*.py",
+              "run": "python3 -m py_compile {staged_files}"
+            },
+            {
+              "name": "lint:sh",
+              "glob": ["smeltr", "**/*.sh"],
+              "exclude": ["staging/**"],
+              "run": "shellcheck -x -S warning {staged_files}"
+            },
+            {
+              "name": "lint:sh:staging",
+              "glob": "staging/**/*.sh",
+              "run": "shellcheck -x -S error {staged_files} && (shellcheck -f gcc -x -S warning {staged_files} || echo 'advisory above error level: staging/ mirrors the live X9 scripts -- fix on the drive, then copy back')"
+            },
+            {
+              "name": "lint:ci",
+              "glob": ".github/workflows/*.yml",
+              "run": "bun run --silent lint:ci {staged_files}"
+            },
+            {
+              "name": "format:js:check",
+              "glob": "**/*.{js,mjs,cjs,jsx,ts,mts,cts,tsx,css,scss,json,jsonc,yml,yaml,toml,html}",
+              "run": "bun run --silent format:js:check --no-error-on-unmatched-pattern {staged_files}"
+            },
+            {
+              "name": "lint:page",
+              "glob": ["web/*", "dashboard/**/*.py", "pipeline/**/*.py", "tests/check_page.py"],
+              "run": "bun run --silent lint:page"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "commit-msg": {
+    "skip": [{ "run": "test \"${SMELTR_SKIP_HOOKS:-}\" = 1" }],
+    "jobs": [{ "name": "SMLTR subject", "run": "sh -e .githooks/commit-msg.sh \"{1}\"" }]
+  },
+  "pre-push": {
+    "skip": [{ "run": "test \"${SMELTR_SKIP_HOOKS:-}\" = 1" }],
+    "jobs": [
+      {
+        "name": "subjects, then bun run verify",
+        "use_stdin": true,
+        "run": "sh -e .githooks/pre-push.sh"
+      }
+    ]
+  }
+}

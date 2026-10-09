@@ -7,15 +7,16 @@
 # ~20 s) -- the same gate `bun run release` runs as `preversion`. A push that
 # only deletes refs (all-zero local sha on stdin) has no tree to test and is
 # let through.
-# Bypass: --no-verify, HUSKY=0, or SMELTR_SKIP_HOOKS=1.
-[ "${SMELTR_SKIP_HOOKS:-}" = "1" ] && exit 0
+# The ref list arrives on stdin only because lefthook.json sets `use_stdin`;
+# without it every push would look like a deletion and skip both gates.
+# Bypass: --no-verify, LEFTHOOK=0, or SMELTR_SKIP_HOOKS=1 (lefthook.json `skip`).
 cd "$(git rev-parse --show-toplevel)" || exit 1
 set --
 while read -r _lref sha _rref _rsha; do
   case "$sha" in *[!0]*) set -- "$@" "$sha" ;; esac
 done
 [ "$#" -gt 0 ] || exit 0
-. ./.husky/commit-rules.sh
+. ./.githooks/commit-rules.sh
 tmp=$(mktemp) || exit 1
 trap 'rm -f "$tmp"' EXIT
 rc=0

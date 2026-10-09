@@ -80,8 +80,8 @@ jobs:
   # ---------------------------------------------------------------- static
   # `bun run lint` is `bun run --sequential` over the ten `lint:*` /
   # `format:js:check` scripts. Each one is its own step here, in the same
-  # order, so a red step names the tool. The hook runs the same scripts over
-  # the staged files (`bun run lint:staged`).
+  # order, so a red step names the tool. The pre-commit hook runs one
+  # lefthook.json job per script over the staged files.
   lint:
     name: 🧹 lint
     runs-on: ubuntu-24.04
@@ -91,7 +91,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # bun is the ONLY JS runtime and task runner here; there is no node and
-      # no npm on this runner. --ignore-scripts skips husky's `prepare` (and
+      # no npm on this runner. --ignore-scripts skips lefthook's `prepare` (and
       # the preinstall guard, which only exists to turn npm/yarn/pnpm away):
       # git hooks have no business on a runner.
       - name: 🥟 Set up bun (version from package.json `packageManager`)
@@ -99,7 +99,7 @@ jobs:
         with:
           bun-version-file: package.json
 
-      - name: 📦 bun install (frozen lockfile, no lifecycle scripts, no husky)
+      - name: 📦 bun install (frozen lockfile, no lifecycle scripts, no lefthook)
         run: bun install --frozen-lockfile --ignore-scripts
 
       - name: 🐍 Set up Python 3.12
