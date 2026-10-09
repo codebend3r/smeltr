@@ -1,6 +1,6 @@
 # shellcheck shell=sh
-# The `SMLTR:` commit-subject rules -- ONE copy, sourced by commit-msg (every
-# commit as it is written) and by pre-push (every commit about to leave this
+# The `SMLTR:` commit-subject rules -- ONE copy, sourced by commit-msg.sh (every
+# commit as it is written) and by pre-push.sh (every commit about to leave this
 # machine). They mirror the `commits` job in
 # .github/workflows/pull-request-format-checker.yml, which only ever sees a
 # pull request: `bun run release` and a plain `git push` land

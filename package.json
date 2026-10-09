@@ -30,15 +30,14 @@
     "lint:page": "python3 tests/check_page.py",
     "lint:py": "uvx ruff@0.16.5 check .",
     "lint:py:syntax": "python3 -m compileall -q pipeline dashboard tools",
-    "lint:sh": "shellcheck -x -S warning smeltr .husky/[a-z]* $(git ls-files -co --exclude-standard '*.sh' ':!staging/*' ':!.husky/*')",
+    "lint:sh": "shellcheck -x -S warning smeltr $(git ls-files -co --exclude-standard '*.sh' ':!staging/*')",
     "lint:sh:staging": "shellcheck -x -S error staging/*.sh && (shellcheck -f gcc -x -S warning staging/*.sh || echo 'advisory above error level: staging/ mirrors the live X9 scripts -- fix on the drive, then copy back')",
-    "lint:staged": "lint-staged --no-stash --no-hide-partially-staged --relative",
     "lint:ts": "tsc --noEmit -p tsconfig.json",
     "notify:test": "./smeltr notify-test",
     "open": "./smeltr open",
     "postversion": "git push --follow-tags origin HEAD",
     "preinstall": "case \"$npm_config_user_agent\" in bun/*) ;; *) echo 'smeltr: this repo runs on bun -- use `bun install`, not npm/yarn/pnpm' >&2; exit 1 ;; esac",
-    "prepare": "husky",
+    "prepare": "lefthook install --reset-hooks-path",
     "preversion": "bun run verify",
     "release": "bun pm version -m \"SMLTR: Release v%s\"",
     "report": "./smeltr report",
@@ -82,26 +81,10 @@
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",
-    "husky": "9.1.7",
-    "lint-staged": "17.5.0",
+    "lefthook": "2.1.16",
     "oxfmt": "0.66.0",
     "oxlint": "1.81.0",
     "typescript": "^7.0.2"
-  },
-  "lint-staged": {
-    "*.{js,mjs,ts,mts}": [
-      "oxlint --deny-warnings",
-      "sh -c 'for f; do bun build --no-bundle \"$f\" --outfile /dev/null >/dev/null || exit 1; done' --"
-    ],
-    "*.{js,mjs,ts,mts,css,json,yml,yaml}": "oxfmt --check",
-    "*.py": [
-      "uvx ruff@0.16.5 check",
-      "python3 -m py_compile"
-    ],
-    "{smeltr,.husky/[a-z]*,**/*.sh}": "sh -c 'w=; e=; for f; do case $f in staging/*) e=\"$e $f\";; *) w=\"$w $f\";; esac; done; [ -z \"$w\" ] || shellcheck -x -S warning $w || exit 1; [ -z \"$e\" ] || { shellcheck -x -S error $e && (shellcheck -f gcc -x -S warning $e || echo \"advisory above error level: staging/ mirrors the live X9 scripts -- fix on the drive, then copy back\"); }' --",
-    ".github/workflows/*.yml": "actionlint",
-    "{web/*,dashboard/server.py}": "sh -c 'python3 tests/check_page.py' --",
-    "{web/*.js,tests/*.ts,tests/visual/*.mts,tsconfig.json}": "sh -c 'tsc --noEmit -p tsconfig.json' --"
   },
   "packageManager": "bun@1.4.2"
 }

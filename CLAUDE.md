@@ -73,7 +73,7 @@ Operating rules for this repo.
 
 - `bun run test` runs every suite in parallel and each fails fast. Shell suites run in sandboxes with fake HandBrake and fake ssh. Nothing touches the live X9 or NAS.
 - `bun run lint` is the whole gate: oxlint, bun syntax check, tsc, ruff, compileall, shellcheck, actionlint, oxfmt check, page assembly. A missing tool fails rather than skips.
-- Husky hooks are tracked: pre-commit refuses runtime artifacts and runs lint-staged with `--no-stash`, commit-msg enforces the `SMLTR:` subject format, pre-push re-checks subjects and runs the full verify.
+- Lefthook runs the tracked hooks from `lefthook.json` and `.githooks/`. Pre-commit refuses runtime artifacts, then runs one check-only job per `lint:*` script over the staged files, while lefthook hides unstaged edits and restores them. Commit-msg enforces the `SMLTR:` subject format. Pre-push re-checks subjects and runs the full verify.
 - CI runs five jobs and every step is a `bun run` script. Shell suites run on macOS because of BSD `stat`. The Python floor is 3.9.
 
 ## Non-negotiables

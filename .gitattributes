@@ -1,4 +1,4 @@
-# `git diff --cached --check` in .husky/pre-commit refuses trailing whitespace
+# `git diff --cached --check` in .githooks/pre-commit.sh refuses trailing whitespace
 # and conflict markers in a staged hunk. The mirrors of the live X9 scripts and
 # the frozen calibration fixture are byte-for-byte copies of something else,
 # so a whitespace finding there is a fact about the source, never a defect to

@@ -319,10 +319,11 @@ class ShellScriptsParse(unittest.TestCase):
 
 
 HOOKS = (
-    ".husky/pre-commit",
-    ".husky/commit-msg",
-    ".husky/pre-push",
-    ".husky/commit-rules.sh",
+    "lefthook.json",
+    ".githooks/pre-commit.sh",
+    ".githooks/commit-msg.sh",
+    ".githooks/pre-push.sh",
+    ".githooks/commit-rules.sh",
 )
 
 
@@ -464,13 +465,13 @@ class HooksCoverTheGaps(unittest.TestCase):
     def scripts(self):
         return json.loads(read("package.json"))["scripts"]
 
-    def test_all_four_hook_files_are_committable(self):
+    def test_every_hook_file_is_committable(self):
         files = set(committable())
         for rel in HOOKS:
             self.assertIn(rel, files)
 
     def test_pre_commit_names_every_runtime_artifact(self):
-        hook = read(".husky/pre-commit")
+        hook = read(".githooks/pre-commit.sh")
         m = re.search(r"grep -Ex '([^']+)'", hook)
         self.assertIsNotNone(m, "the artifact grep is gone from pre-commit")
         names = set(m.group(1).split("|"))
@@ -479,35 +480,45 @@ class HooksCoverTheGaps(unittest.TestCase):
         self.assertIn(r"\.claude/worktrees/.*", names)
 
     def test_pre_commit_catches_a_rename_onto_an_artifact(self):
-        hook = read(".husky/pre-commit")
+        hook = read(".githooks/pre-commit.sh")
         self.assertIn("--diff-filter=d", hook)
         self.assertNotIn("--diff-filter=AM", hook)
 
     def test_pre_commit_runs_diff_check_and_the_mirrors_opt_out(self):
-        self.assertIn("git diff --cached --check", read(".husky/pre-commit"))
+        self.assertIn("git diff --cached --check", read(".githooks/pre-commit.sh"))
         attrs = read(".gitattributes")
         self.assertRegex(attrs, r"(?m)^staging/\*\*\s+-whitespace$")
         self.assertRegex(attrs, r"(?m)^tests/fixtures/\*\*\s+-whitespace$")
 
     def test_commit_msg_and_pre_push_share_one_rules_file(self):
-        for rel in (".husky/commit-msg", ".husky/pre-push"):
+        for rel in (".githooks/commit-msg.sh", ".githooks/pre-push.sh"):
             with self.subTest(hook=rel):
-                self.assertIn(". ./.husky/commit-rules.sh", read(rel))
+                self.assertIn(". ./.githooks/commit-rules.sh", read(rel))
                 self.assertIn("check_message", read(rel))
         # pre-push judges only what no remote has, and refuses a fixup!.
-        push = read(".husky/pre-push")
+        push = read(".githooks/pre-push.sh")
         self.assertIn("--not --remotes", push)
         self.assertIn("--no-merges", push)
         self.assertNotIn("allow_fixup", push)
-        self.assertIn("allow_fixup", read(".husky/commit-msg"))
+        self.assertIn("allow_fixup", read(".githooks/commit-msg.sh"))
 
     def test_lint_runs_actionlint_and_the_hooks_are_shellchecked(self):
         s = self.scripts()
         self.assertEqual(s["lint:ci"], "actionlint")
         self.assertIn("lint:ci", s["lint"].split())
-        self.assertIn(".husky/[a-z]*", s["lint:sh"])
+        # Every hook script is a .sh, so the ls-files glob already reaches
+        # it; a hook named without the suffix would fall out of lint:sh. Read
+        # from the tree and from what lefthook.json runs, not from HOOKS.
+        on_disk = {p for p in committable() if p.startswith(".githooks/")}
+        wired = set(re.findall(r"\.githooks/[^\s\"']+", read("lefthook.json")))
+        self.assertTrue(wired)
+        for rel in on_disk | wired:
+            with self.subTest(hook=rel):
+                self.assertTrue(rel.endswith(".sh"), rel)
+                self.assertIn(rel, HOOKS)
         self.assertIn("git ls-files -co --exclude-standard '*.sh'", s["lint:sh"])
         self.assertIn(":!staging/*", s["lint:sh"])
+        self.assertNotIn(":!.githooks", s["lint:sh"])
         self.assertTrue(
             s["lint:sh:staging"].startswith("shellcheck -x -S error staging/*.sh &&"),
             s["lint:sh:staging"],
@@ -629,87 +640,213 @@ class CiRunsThroughBun(unittest.TestCase):
         )
 
 
-class LintStagedMirrorsLint(unittest.TestCase):
-    """pre-commit runs lint-staged, whose per-glob commands are a SECOND
-    rendition of the `lint:*` scripts. Two renditions of one gate drift the
-    moment one is edited alone -- a ruff bump in `lint:py` that the hook keeps
-    running at the old pin is a commit that passes locally and fails in CI.
-    `--no-stash --no-hide-partially-staged` are pinned because lint-staged's
-    default stashes unstaged work to lint the exact index content, and that
-    round-trip loses edits.
+class LefthookMirrorsLint(unittest.TestCase):
+    """pre-commit's per-glob jobs in lefthook.json are a SECOND rendition of
+    the `lint:*` scripts. Two renditions of one gate drift the moment one is
+    edited alone -- a ruff bump in `lint:py` that the hook keeps running at the
+    old pin is a commit that passes locally and fails in CI. So each job is
+    named after the script it mirrors, and calls that script by name wherever
+    the script takes file arguments.
+
+    lefthook hides the unstaged half of a partially staged file while
+    pre-commit runs and applies it back afterwards; unlike lint-staged's
+    `--no-stash --no-hide-partially-staged` (2026-09-05: one failing run wiped
+    the unstaged edits on seven files) there is no opt-out. The put-back is a
+    `git apply` of a saved patch, which is clean exactly as long as no job
+    rewrites a file -- hence check-only jobs, no `stage_fixed`, and the 2.1.16
+    floor that preserves unrelated unstaged changes when it does conflict.
     """
+
+    SKIP = [{"run": 'test "${SMELTR_SKIP_HOOKS:-}" = 1'}]
+
+    def cfg(self):
+        # JSON, not YAML, on purpose: the python CI job has no `bun install`
+        # and Python's stdlib has no YAML parser, so this is the one format
+        # this suite can read on a bare runner.
+        return json.loads(read("lefthook.json"))
 
     def pkg(self):
         return json.loads(read("package.json"))
 
-    def staged(self):
-        cfg = self.pkg()["lint-staged"]
+    def jobs(self, hook):
         flat = []
-        for glob, cmds in cfg.items():
-            for c in cmds if isinstance(cmds, list) else [cmds]:
-                flat.append((glob, c))
+
+        def walk(jobs):
+            for j in jobs:
+                flat.append(j)
+                walk(j.get("group", {}).get("jobs", []))
+
+        walk(self.cfg()[hook]["jobs"])
         return flat
 
-    def test_pre_commit_runs_lint_staged_and_not_the_whole_tree(self):
-        hook = read(".husky/pre-commit")
-        self.assertIn("bun run --silent lint:staged", hook)
-        self.assertNotRegex(hook, r"(?m)^bun run --silent lint$")
-        s = self.pkg()["scripts"]["lint:staged"]
-        self.assertTrue(s.startswith("lint-staged "), s)
-        self.assertIn("--no-stash", s)
-        # --no-stash ALONE still checks out the index copy of a partially
-        # staged file and, when a task fails, does not put the unstaged half
-        # back (2026-09-05: one failing run wiped the unstaged edits on seven
-        # files; .git/lint-staged_unstaged.patch was the only copy).
-        self.assertIn("--no-hide-partially-staged", s)
-        self.assertIn("--relative", s)
-        self.assertIn("lint-staged", self.pkg()["devDependencies"])
+    def lint_jobs(self):
+        return {j["name"]: j for j in self.jobs("pre-commit") if "glob" in j}
+
+    def globs(self, job):
+        g = job["glob"]
+        return g if isinstance(g, list) else [g]
+
+    def test_lefthook_replaced_husky_and_lint_staged(self):
+        pkg = self.pkg()
+        dev = pkg["devDependencies"]
+        self.assertRegex(dev["lefthook"], r"^\d+\.\d+\.\d+$", "pin lefthook exactly")
+        for gone in ("husky", "lint-staged"):
+            self.assertNotIn(gone, dev)
+        self.assertNotIn("lint-staged", pkg)
+        self.assertNotIn("lint:staged", pkg["scripts"])
+        # --reset-hooks-path: a clone that ran husky still has core.hooksPath
+        # pointing at .husky/_, and lefthook refuses to install over it.
+        self.assertEqual(
+            pkg["scripts"]["prepare"], "lefthook install --reset-hooks-path"
+        )
+        self.assertEqual([p for p in committable() if p.startswith(".husky/")], [])
+
+    def test_the_binary_is_new_enough_and_must_exist(self):
+        cfg = self.cfg()
+
+        def ver(v):
+            return tuple(int(n) for n in v.split("."))
+
+        self.assertGreaterEqual(ver(cfg["min_version"]), (2, 1, 16))
+        self.assertGreaterEqual(
+            ver(self.pkg()["devDependencies"]["lefthook"]), ver(cfg["min_version"])
+        )
+        # Without it, an installed hook whose binary has gone (node_modules
+        # wiped) prints a warning and lets the commit through.
+        self.assertIs(cfg["assert_lefthook_installed"], True)
+
+    def test_globs_have_standard_meaning(self):
+        # lefthook's default matcher lets `*` cross `/` and makes `**/*.py`
+        # miss a file at the root; doublestar is the semantics lint-staged had.
+        self.assertEqual(self.cfg()["glob_matcher"], "doublestar")
+
+    def test_pre_commit_guards_first_then_lints_only_staged_files(self):
+        pc = self.cfg()["pre-commit"]
+        self.assertIs(pc["piped"], True)
+        self.assertEqual(pc["jobs"][0]["run"], "sh -e .githooks/pre-commit.sh")
+        # A job that rewrites a file fails the commit instead of landing a
+        # silently different copy (see test_every_staged_command_is_check_only).
+        self.assertEqual(pc["fail_on_changes"], "always")
+        for j in self.jobs("pre-commit"):
+            if "run" in j:
+                self.assertNotRegex(
+                    j["run"], r"bun run (--silent )?(lint|verify)(\s|$)"
+                )
+
+    def test_every_hook_honours_the_skip_switch(self):
+        for hook in ("pre-commit", "commit-msg", "pre-push"):
+            with self.subTest(hook=hook):
+                self.assertEqual(self.cfg()[hook]["skip"], self.SKIP)
+
+    def test_commit_msg_and_pre_push_get_their_input(self):
+        self.assertEqual(
+            [j["run"] for j in self.jobs("commit-msg")],
+            ['sh -e .githooks/commit-msg.sh "{1}"'],
+        )
+        # lefthook pastes {1} in raw: unquoted, a worktree path with a space
+        # split into a missing file, which read as an empty subject and passed.
+        self.assertIn('[ -r "$1" ]', read(".githooks/commit-msg.sh"))
+        push = self.jobs("pre-push")
+        self.assertEqual([j["run"] for j in push], ["sh -e .githooks/pre-push.sh"])
+        # The ref list is stdin. Without use_stdin the loop reads nothing,
+        # every push looks like a deletion, and both gates pass unrun.
+        self.assertIs(push[0]["use_stdin"], True)
 
     def test_every_staged_command_is_check_only(self):
         # The hook never writes: a formatter that FIXES silently re-adds the
-        # rewritten file to a commit the author did not review.
-        for glob, c in self.staged():
-            with self.subTest(glob=glob):
+        # rewritten file to a commit the author did not review, and a rewrite
+        # is what makes the unstaged put-back conflict.
+        scripts = self.pkg()["scripts"]
+        self.assertEqual(scripts["format:js:check"], "oxfmt --check")
+        # ruff takes `fix = true` from its config as readily as from a flag.
+        self.assertNotRegex(read("ruff.toml"), r"(?m)^\s*(unsafe-)?fix\s*=")
+        for j in self.jobs("pre-commit"):
+            with self.subTest(job=j.get("name")):
+                self.assertNotIn("stage_fixed", j)
+                c = j.get("run", "")
+                # `bun run X` is only as read-only as script X.
+                for name in re.findall(r"bun run --silent (\S+)", c):
+                    c += "\n" + scripts[name]
                 self.assertNotRegex(c, r"\boxfmt(?! --check)")
-                self.assertNotIn("ruff@", c) if "format" in c else None
+                self.assertNotIn("format:js ", c + " ")
+                self.assertNotIn("format:py", c)
                 self.assertNotIn("--fix", c)
                 self.assertNotIn("--write", c)
+
+    def test_one_job_per_member_of_lint(self):
+        members = self.pkg()["scripts"]["lint"].split()[3:]
+        self.assertEqual(sorted(self.lint_jobs()), sorted(members))
 
     def test_ruff_pin_matches_lint_py(self):
         s = self.pkg()["scripts"]
         pin = re.search(r"uvx ruff@(\S+) check", s["lint:py"]).group(1)
-        py = [c for g, c in self.staged() if "ruff" in c]
-        self.assertEqual(len(py), 1, py)
-        self.assertIn("uvx ruff@%s check" % pin, py[0])
+        self.assertEqual(
+            self.lint_jobs()["lint:py"]["run"], "uvx ruff@%s check {staged_files}" % pin
+        )
 
     def test_flags_match_the_lint_scripts(self):
-        s = self.pkg()["scripts"]
-        cmds = dict(self.staged())
-        flat = "\n".join(c for _, c in self.staged())
-        self.assertIn(s["lint:js"], flat)  # oxlint --deny-warnings
-        self.assertIn(s["lint:ci"], flat)  # actionlint
-        self.assertIn("shellcheck -x -S warning", flat)
-        self.assertIn("shellcheck -x -S error", flat)
-        self.assertIn("bun build --no-bundle", flat)
-        self.assertIn(s["lint:ts"], flat)  # tsc --noEmit -p tsconfig.json
-        self.assertIn("tests/check_page.py", flat)
-        self.assertIn("py_compile", flat)
+        jobs = self.lint_jobs()
+        # The scripts that take file arguments are called BY NAME, so their
+        # flags exist once; the two whole-project checks run as-is.
+        for name in ("lint:js", "lint:ci"):
+            self.assertEqual(
+                jobs[name]["run"], "bun run --silent %s {staged_files}" % name
+            )
+        # oxfmt exits 2 when every file it is handed is in its ignorePatterns
+        # (web/index.html, .claude/, staging/), which would refuse the commit.
+        self.assertEqual(
+            jobs["format:js:check"]["run"],
+            "bun run --silent format:js:check --no-error-on-unmatched-pattern"
+            " {staged_files}",
+        )
+        for name in ("lint:ts", "lint:page"):
+            self.assertEqual(jobs[name]["run"], "bun run --silent %s" % name)
+        self.assertIn("bun build --no-bundle", jobs["lint:js:syntax"]["run"])
+        self.assertIn(
+            "python3 -m py_compile {staged_files}", jobs["lint:py:syntax"]["run"]
+        )
+        self.assertEqual(
+            jobs["lint:sh"]["run"], "shellcheck -x -S warning {staged_files}"
+        )
         # staging/ blocks at error and is advisory above it, as lint:sh:staging.
-        sh = [c for g, c in self.staged() if "shellcheck" in c]
-        self.assertEqual(len(sh), 1)
-        self.assertIn("staging/*)", sh[0])
-        self.assertIn("advisory above error level", sh[0])
-        # Every shell entry point lint:sh covers is reachable by the glob.
-        globs = list(cmds)
-        shglob = next(g for g in globs if "*.sh" in g)
-        for part in ("smeltr", ".husky/[a-z]*", "**/*.sh"):
-            self.assertIn(part, shglob)
-        # The page-assembly check fires on the files that assemble the page.
-        pg = next(g for g in globs if "check_page" in cmds[g])
-        self.assertIn("web/*", pg)
-        self.assertIn("dashboard/server.py", pg)
-        wf = next(g for g in globs if cmds[g] == "actionlint")
-        self.assertEqual(wf, ".github/workflows/*.yml")
+        st = jobs["lint:sh:staging"]["run"]
+        self.assertTrue(st.startswith("shellcheck -x -S error {staged_files} &&"), st)
+        self.assertIn("advisory above error level", st)
+
+    def test_every_glob_reaches_what_its_script_covers(self):
+        jobs = self.lint_jobs()
+        # Every shell entry point lint:sh covers is reachable, and staging/ is
+        # routed to exactly one of the two shellcheck jobs.
+        for part in ("smeltr", "**/*.sh"):
+            self.assertIn(part, self.globs(jobs["lint:sh"]))
+        self.assertEqual(jobs["lint:sh"]["exclude"], ["staging/**"])
+        self.assertEqual(self.globs(jobs["lint:sh:staging"]), ["staging/**/*.sh"])
+        # The page-assembly check imports server.py, which imports the rest
+        # of dashboard/ and pipeline/core.py.
+        for part in (
+            "web/*",
+            "dashboard/**/*.py",
+            "pipeline/**/*.py",
+            "tests/check_page.py",
+        ):
+            self.assertIn(part, self.globs(jobs["lint:page"]))
+        for part in ("web/*.js", "tests/*.ts", "tests/visual/*.mts", "tsconfig.json"):
+            self.assertIn(part, self.globs(jobs["lint:ts"]))
+        self.assertEqual(self.globs(jobs["lint:ci"]), [".github/workflows/*.yml"])
+        for name in ("lint:js", "lint:js:syntax"):
+            self.assertEqual(self.globs(jobs[name]), ["**/*.{js,mjs,ts,mts}"])
+        for name in ("lint:py", "lint:py:syntax"):
+            self.assertEqual(self.globs(jobs[name]), ["**/*.py"])
+        # Every file type in the tree that oxfmt formats is one the hook hands
+        # it -- ruff.toml once slipped past the commit and failed at push.
+        (fmt,) = self.globs(jobs["format:js:check"])
+        exts = set(re.fullmatch(r"\*\*/\*\.\{([^}]+)\}", fmt).group(1).split(","))
+        oxfmt_types = {"js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx", "css"}
+        oxfmt_types |= {"scss", "less", "json", "jsonc", "yml", "yaml", "toml", "html"}
+        for path in committable():
+            ext = path.rsplit(".", 1)[-1] if "." in os.path.basename(path) else ""
+            if ext in oxfmt_types:
+                self.assertIn(ext, exts, path)
 
 
 # --------------------------------------------------------------- typescript
@@ -793,7 +930,7 @@ class TypeCheckingIsNotABuildStep(unittest.TestCase):
 
 
 class CommitRules(unittest.TestCase):
-    """Runs the REAL `check_message` out of .husky/commit-rules.sh.
+    """Runs the REAL `check_message` out of .githooks/commit-rules.sh.
 
     The rules are the PR format checker's `commits` job transcribed into POSIX
     sh; the
@@ -813,7 +950,7 @@ class CommitRules(unittest.TestCase):
                 [
                     "sh",
                     "-c",
-                    '. ./.husky/commit-rules.sh; check_message "$1" $2; rc=$?; '
+                    '. ./.githooks/commit-rules.sh; check_message "$1" $2; rc=$?; '
                     "printf '%s' \"$problems\"; exit $rc",
                     "_",
                     f.name,
