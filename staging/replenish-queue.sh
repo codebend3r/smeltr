@@ -6,10 +6,9 @@
 # The library keeps its original until that movie's encode finishes and syncs back.
 #
 # Eligible = in Vhagar or Vermithor "Media/4K Movies", NOT already staged on the X9,
-# NOT already re-encoded (filename contains "2160p HEVC"), and NOT on the SKIP list below.
+# NOT already re-encoded (any file in its library folder named HEVC), and NOT on the SKIP list below.
 #
 # SKIP LIST (never stage, never encode):
-#   - Lord of the Rings (all entries) — user directive 2026-08-15
 #   - Skyscraper (2018), Timecop (1994), Mechanic Resurrection (2016) — user directive 2026-09-06
 #
 # Usage: ./.replenish-queue.sh [--dry-run] [--target N]
@@ -223,9 +222,9 @@ for parent in (os.path.join(x9, 'queue'), os.path.join(x9, 'complete'), x9):
         pass
 
 # Never stage or encode these, regardless of bitrate. Substring match on the full path, lowercased.
-SKIP = ('lord of the rings',
-        # operator blacklist 2026-09-06 -- mirrors pipeline/core.py SKIP.
-        # Bloodsport (1988) un-blacklisted 2026-09-15; dropped from both copies.
+SKIP = (# operator blacklist 2026-09-06 -- mirrors pipeline/core.py SKIP.
+        # Bloodsport (1988) un-blacklisted 2026-09-15 and Lord of the Rings
+        # 2026-10-17; each dropped from both copies.
         'skyscraper (2018)', 'timecop (1994)', 'mechanic resurrection (2016)')
 
 # Dashboard overrides: skipped titles are never staged; hand-prioritised
@@ -254,7 +253,7 @@ except Exception:
 rank = {s.lower(): i for i, s in enumerate(ov.get('priority', []))
         if isinstance(s, str)}
 
-MIN_BPS = 60 * 1000 * 1000
+MIN_BPS = 50 * 1000 * 1000
 picks = []
 for f in d['files']:
     p = f['path']
@@ -313,24 +312,33 @@ def remote_for(path):
     if path.startswith('/Volumes/Vermithor/'):
         return 'crivas@192.168.50.3', '/volume1/Vermithor/' + path[len('/Volumes/Vermithor/'):]
     return None, None
-def ssh_size(path):
+# The same round trip lists the title's folder. Any file in it named HEVC
+# means the title was already re-encoded (operator's rule, 2026-10-17): the
+# scan index lags the library, so the folder on the NAS is what decides.
+def ssh_probe(path):
     host, rpath = remote_for(path)
     if not host:
-        return None
+        return None, False
     try:
         r = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host,
-                            'stat -c%s ' + shlex.quote(rpath)],
+                            'stat -c%s ' + shlex.quote(rpath) + ' && ls -1 '
+                            + shlex.quote(os.path.dirname(rpath))],
                            capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
-        return None
-    out = r.stdout.strip()
-    return int(out) if r.returncode == 0 and out.isdigit() else None
+        return None, False
+    lines = r.stdout.splitlines()
+    if r.returncode != 0 or not lines or not lines[0].strip().isdigit():
+        return None, False
+    return int(lines[0]), any('hevc' in n.lower() for n in lines[1:])
 chosen = 0
 for p, folder, br in picks:
     if chosen >= need:
         break
-    sz = ssh_size(p)
+    sz, hevc = ssh_probe(p)
     if sz is None:                        # library moved on since the scan, or the NAS did not answer
+        continue
+    if hevc:
+        print(f"  skip {folder}: an HEVC file is already in its library folder", file=sys.stderr)
         continue
     print(f"{br}\t{sz}\t{folder}\t{p}")
     chosen += 1

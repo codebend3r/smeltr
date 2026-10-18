@@ -95,7 +95,6 @@ SOURCE_EXTS = (".mkv", ".mp4", ".m2ts")
 # import core) -- a title added here and not there is re-staged from the
 # library by the next replenish and encoded again. Keep the two identical.
 SKIP = (
-    "lord of the rings",
     # Blacklisted by the operator 2026-09-06 -- staging folders rm -rf'd by
     # hand, never to be attempted again.
     "skyscraper (2018)",
@@ -106,15 +105,18 @@ SKIP = (
     # joint-fattest title in the library at 82.1 Mb/s and had never been
     # encoded. It is already pinned in queue_overrides.json, so it stages
     # first. Removed from BOTH copies (here and replenish-queue.sh).
+    # "lord of the rings" (all three, directive 2026-08-15) was lifted the
+    # same way on 2026-10-17 so the extended editions stage next.
 )
 
 # The stop condition: encoding pauses once nothing above this remains.
-# Operator's call: 70.0 -> 60.0 on 2026-09-15, which opens the queue up.
+# Operator's call: 70.0 -> 60.0 on 2026-09-15, then 60.0 -> 50.0 on
+# 2026-10-17 once nothing above 60 was left to stage.
 # THREE hand-synced copies of this number: here, STOP_MBPS in
 # staging/autopilot.sh (passed to `smeltr next`), and MIN_BPS in
 # staging/replenish-queue.sh. Move all three or the replenisher stages
 # what the driver will not encode. No test holds them together yet.
-STOP_MBPS = 60.0
+STOP_MBPS = 50.0
 
 # The TARGET BAND, % of source (operator's call, 2026-09-06: 10-70, was 30-80).
 # Three consumers must agree on it: .watch-encode.sh kills a projection that
