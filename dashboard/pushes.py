@@ -25,6 +25,7 @@ import os
 from typing import Optional
 
 from pipeline import core
+from dashboard.flags import Flag
 
 
 def _alive(pid: int) -> bool:
@@ -41,12 +42,21 @@ def _alive(pid: int) -> bool:
     return True
 
 
-def _marker(path: str) -> Optional[str]:
-    try:
-        with open(path, encoding="utf-8") as fh:
-            return fh.readline().strip()
-    except OSError:
-        return None
+def _x9_flag(name: str) -> Flag:
+    return Flag(lambda: os.path.join(core.X9, name))
+
+
+PUSH_OFF = _x9_flag(".push-off")
+PUSH_HOLD = _x9_flag(".push-hold")
+# The dashboard's "pause all transfers" marker on the staging drive.
+#
+# ONE file, read by every transfer starter: the replenisher tick, the
+# replenish script itself (the driver calls that directly), the pusher tick
+# and the dashboard's own stage pump. It stops NEW transfers only; a pull or
+# push already on the wire finishes, verifies and lands as normal. On the
+# drive, not beside the ledger, because the shell starters know $X9 and
+# nothing else -- and an unmounted drive has nothing to transfer anyway.
+TRANSFERS_PAUSED = _x9_flag(".transfers-paused")
 
 
 def _dest_of(marker: str) -> str:
@@ -131,7 +141,7 @@ def on_wire() -> set:
 
 def push_hold() -> Optional[str]:
     """Why the pusher is waiting (its `.push-hold`), or None."""
-    return _marker(os.path.join(core.X9, ".push-hold")) or None
+    return PUSH_HOLD.note() or None
 
 
 def pushes() -> dict:
@@ -154,7 +164,7 @@ def pushes() -> dict:
     pos = 0
     for size, n in rows:
         low = n.lower()
-        note = _marker(os.path.join(x9, ".push-failed-" + n))
+        note = Flag(os.path.join(x9, ".push-failed-" + n)).note()
         if note is not None:
             out[low] = {"title": n, "state": "failed", "bytes": size, "note": note or "push failed"}
         elif low in wire:
@@ -169,38 +179,9 @@ def pushes() -> dict:
         low = title.lower()
         if low in out:
             continue
-        m = _marker(os.path.join(x9, n)) or ""
+        m = Flag(os.path.join(x9, n)).note() or ""
         dest = _dest_of(m)
         rec = {"title": title, "state": "pushed", "dest": dest, "note": m}
         rec.update(_place(dest))
         out[low] = rec
     return out
-
-
-def push_off() -> bool:
-    return os.path.exists(os.path.join(core.X9, ".push-off"))
-
-
-def transfers_paused() -> bool:
-    """The dashboard's "pause all transfers" marker on the staging drive.
-
-    ONE file, read by every transfer starter: the replenisher tick, the
-    replenish script itself (the driver calls that directly), the pusher tick
-    and the dashboard's own stage pump. It stops NEW transfers only; a pull or
-    push already on the wire finishes, verifies and lands as normal. On the
-    drive, not beside the ledger, because the shell starters know $X9 and
-    nothing else -- and an unmounted drive has nothing to transfer anyway.
-    """
-    return os.path.exists(os.path.join(core.X9, ".transfers-paused"))
-
-
-def set_transfers_paused(on: bool) -> None:
-    flag = os.path.join(core.X9, ".transfers-paused")
-    if on:
-        with open(flag, "a", encoding="utf-8"):
-            pass
-    else:
-        try:
-            os.unlink(flag)
-        except FileNotFoundError:
-            pass
