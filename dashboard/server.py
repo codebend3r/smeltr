@@ -297,7 +297,11 @@ LAN_WRITES = os.environ.get("SMELTR_LAN_WRITES") == "1"
 # there is not a control the operator asked for. Two tuples, public strictly
 # narrower than LAN, and _writes_ok() tests the public one first.
 PUBLIC_WRITE_ROUTES = ("/api/pause", "/api/driver/start")
-LAN_WRITE_ROUTES = PUBLIC_WRITE_ROUTES + ("/api/stage/start", "/api/stage/cancel")
+LAN_WRITE_ROUTES = PUBLIC_WRITE_ROUTES + (
+    "/api/stage/start",
+    "/api/stage/cancel",
+    "/api/transfers/pause",
+)
 # Username + password, ON only when auth.json sits beside the ledger (write it
 # with `./smeltr set-password`). It does not REPLACE the token on the LAN or
 # the tailnet -- either credential opens those doors, so every existing
@@ -779,6 +783,7 @@ def build_state() -> dict:
             # on the NAS. Read off the pusher's markers, never re-derived.
             "pushes": pushes.pushes(),
             "push_off": pushes.push_off(),
+            "transfers_paused": pushes.transfers_paused(),
             "push_hold": pushes.push_hold(),
             "encode_note": note,
             "crf_choices": list(CRF_CHOICES),
@@ -1252,6 +1257,8 @@ def _wire_busy_locked():
     """
     if _stage_active["title"]:
         return "waiting — %s is on the wire" % _stage_active["title"]
+    if pushes.transfers_paused():
+        return "waiting — transfers are paused"
     # NAME THE TRANSFER (2026-09-07). "another pull owns the wire" named
     # nothing a person could go and check, and on 2026-09-07 the only pull on
     # the machine was a replenish pull of a hand-skipped title -- whose row,
@@ -2131,6 +2138,8 @@ class Handler(BaseHTTPRequestHandler):
                 err = self._apply_pause(body)
             elif parsed.path == "/api/driver/start":
                 err = self._apply_driver_start(body)
+            elif parsed.path == "/api/transfers/pause":
+                err = self._apply_transfers_pause(body)
             else:
                 return self._deny(404, "not found")
         if err:
@@ -2478,6 +2487,22 @@ class Handler(BaseHTTPRequestHandler):
         # No note banner: the big toggle and the idle card already say
         # paused/resumed where the encode is, and a second copy at the top
         # of the page was judged noise (operator 2026-09-11).
+        return None
+
+    def _apply_transfers_pause(self, body: dict):
+        # Pause every download and upload: writes/removes the X9's
+        # .transfers-paused marker. A pull or push already on the wire is
+        # untouched -- it finishes, verifies and lands -- but the replenisher,
+        # the pusher and the stage pump start nothing new while it exists.
+        on = body.get("paused")
+        if not isinstance(on, bool):
+            return "expected {paused: bool}"
+        if not os.path.isdir(core.X9):
+            return "the staging drive is not mounted — nothing to pause"
+        try:
+            pushes.set_transfers_paused(on)
+        except OSError as e:
+            return "could not write the transfers-paused marker: %s" % e
         return None
 
     def _queue_rows(self) -> list[dict]:

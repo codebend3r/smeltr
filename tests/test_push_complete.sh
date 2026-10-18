@@ -172,6 +172,10 @@ title "Off (2008)" 1 O; touch "$X9/.push-off"
 bash "$P" --tick
 ck "the off switch stops the tick"                    "$([ -f "$X9/complete/Off (2008)/Off (2008) Remux-2160p.mkv" ] && echo kept || echo gone)" kept
 rm -f "$X9/.push-off"
+title "Paused (2009)" 1 P; touch "$X9/.transfers-paused"
+bash "$P" --tick
+ck "the transfers-paused marker stops the tick"       "$([ -f "$X9/complete/Paused (2009)/Paused (2009) Remux-2160p.mkv" ] && echo kept || echo gone)" kept
+rm -f "$X9/.transfers-paused"
 ck "unknown args are refused"                         "$(bash "$P" --bogus 2>/dev/null; echo $?)" 2
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

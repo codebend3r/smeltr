@@ -34,6 +34,8 @@
 #   cp ops/com.smeltr.replenish.plist ~/Library/LaunchAgents/
 #   launchctl load ~/Library/LaunchAgents/com.smeltr.replenish.plist
 # Disable a tick without unloading anything: touch "$X9/.replenish-off".
+# The dashboard's pause-all-transfers button writes "$X9/.transfers-paused",
+# which stands this loop down the same way (and the pusher, and the script).
 set -uo pipefail
 
 X9="${SMELTR_X9:-/Volumes/Crucial X9/4K Movies}"
@@ -49,6 +51,7 @@ dlog() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$DRIVER_LOG" 
 
 tick() {
   [ -f "$X9/.replenish-off" ] && return 0
+  [ -f "$X9/.transfers-paused" ] && return 0   # the dashboard's pause-all-transfers button
   if [ ! -d "$X9" ]; then
     rlog "staging drive not visible at $X9 - standing down"
     return 0

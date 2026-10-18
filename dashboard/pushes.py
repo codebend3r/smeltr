@@ -179,3 +179,28 @@ def pushes() -> dict:
 
 def push_off() -> bool:
     return os.path.exists(os.path.join(core.X9, ".push-off"))
+
+
+def transfers_paused() -> bool:
+    """The dashboard's "pause all transfers" marker on the staging drive.
+
+    ONE file, read by every transfer starter: the replenisher tick, the
+    replenish script itself (the driver calls that directly), the pusher tick
+    and the dashboard's own stage pump. It stops NEW transfers only; a pull or
+    push already on the wire finishes, verifies and lands as normal. On the
+    drive, not beside the ledger, because the shell starters know $X9 and
+    nothing else -- and an unmounted drive has nothing to transfer anyway.
+    """
+    return os.path.exists(os.path.join(core.X9, ".transfers-paused"))
+
+
+def set_transfers_paused(on: bool) -> None:
+    flag = os.path.join(core.X9, ".transfers-paused")
+    if on:
+        with open(flag, "a", encoding="utf-8"):
+            pass
+    else:
+        try:
+            os.unlink(flag)
+        except FileNotFoundError:
+            pass

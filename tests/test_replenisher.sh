@@ -35,6 +35,14 @@ touch "$X9/.replenish-off"
 bash "$R" --tick
 ck "the off switch stops the tick"    "$(grep -c 'PICK 83.0' "$TMP/replenish.log")" "1"
 
+# pause-all-transfers marker (the dashboard button)
+rm -f "$X9/.replenish-off"; touch "$X9/.transfers-paused"
+bash "$R" --tick
+ck "the transfers-paused marker stops the tick" "$(grep -c 'PICK 83.0' "$TMP/replenish.log")" "1"
+rm -f "$X9/.transfers-paused"
+bash "$R" --tick
+ck "and removing it resumes the tick"           "$(grep -c 'PICK 83.0' "$TMP/replenish.log")" "2"
+
 # unknown argument
 ck "unknown args are refused" "$(bash "$R" --bogus 2>/dev/null; echo $?)" "2"
 

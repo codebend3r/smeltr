@@ -366,6 +366,7 @@ push_all() {
 
 tick() {
   [ -f "$X9/.push-off" ] && return 0
+  [ -f "$X9/.transfers-paused" ] && return 0   # the dashboard's pause-all-transfers button
   if [ ! -d "$X9" ]; then plog "staging drive not visible at $X9 - standing down"; return 0; fi
   entries=$(ls -1 "$X9" 2>/dev/null | wc -l | tr -d ' ')
   if [ "${entries:-0}" -lt 1 ]; then

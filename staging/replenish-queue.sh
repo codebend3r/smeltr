@@ -15,6 +15,12 @@
 set -euo pipefail
 
 X9="/Volumes/Crucial X9/4K Movies"
+# The dashboard's pause-all-transfers button: pull nothing new. The driver calls this
+# script directly (not only the replenisher tick), so the marker is honoured HERE too.
+if [ -f "$X9/.transfers-paused" ]; then
+  echo "transfers paused from the dashboard (.transfers-paused) — not pulling"; exit 0
+fi
+
 # Dashboard queue overrides (skip list + hand priority), written by Smeltr
 # through an atomic replace -- safe to read at any moment.
 OV="${SMELTR_DIR:-$HOME/Developer/git/smeltr}/queue_overrides.json"

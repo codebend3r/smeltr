@@ -3229,6 +3229,13 @@
       return r.pinned && !r.skipped;
     });
     document.getElementById("resetOrder").hidden = !(tab === "queue" && anyPin);
+    /* Pause-all-transfers: the label states the ACTION the next click takes,
+     and the pressed look says the pause is in force. Read off the server
+     value on every frame, so a pause made from another device shows here. */
+    var xp = document.getElementById("xferPause");
+    xp.textContent = s.transfers_paused ? "Resume transfers" : "Pause transfers";
+    xp.setAttribute("aria-pressed", s.transfers_paused ? "true" : "false");
+    xp.classList.toggle("on", s.transfers_paused === true);
     document.getElementById("gen").textContent = "updated " + clock12(s.summary.generated_at);
     document.getElementById("stopnote").textContent =
       "pausing below " + s.summary.stop_mbps + " Mb/s";
@@ -3303,6 +3310,9 @@
   });
   document.getElementById("tabBlacklist").addEventListener("click", function () {
     setTab("blacklist");
+  });
+  document.getElementById("xferPause").addEventListener("click", function () {
+    api("/api/transfers/pause", { paused: !(last.state && last.state.transfers_paused) });
   });
   document.getElementById("resetOrder").addEventListener("click", function () {
     api("/api/queue/order", { order: [] });

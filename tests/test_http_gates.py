@@ -215,7 +215,13 @@ class WriteGate(unittest.TestCase):
         )
         with open(src_path, encoding="utf-8") as fh:
             src = fh.read()
-        for route in ("/api/pause", "/api/driver/start", "/api/stage/start", "/api/stage/cancel"):
+        for route in (
+            "/api/pause",
+            "/api/driver/start",
+            "/api/stage/start",
+            "/api/stage/cancel",
+            "/api/transfers/pause",
+        ):
             self.assertIn(route, server.LAN_WRITE_ROUTES)
             self.assertIn('parsed.path == "%s"' % route, src)
         self.assertIn("self._writes_ok(parsed.path)", src)

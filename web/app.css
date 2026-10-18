@@ -1613,6 +1613,10 @@ body:not(.booted) #liveWrap .card {
   color: var(--ink);
   border-color: var(--tab-bd);
 }
+.panebtn.on {
+  color: var(--warn);
+  border-color: var(--warn-bd);
+}
 .panebtn:focus-visible {
   outline: 2px solid var(--cool);
   outline-offset: 2px;
