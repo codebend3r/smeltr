@@ -12,7 +12,7 @@ Sources, all root-free and dependency-free:
   cpu   ctypes -> host_statistics(HOST_CPU_LOAD_INFO)   (no subprocess)
   gpu   `ioreg -r -d 1 -c IOAccelerator`   "Device Utilization %"
   ram   `vm_stat`                          Activity-Monitor-style "used"
-  net   `netstat -ib`                      per-interface cumulative bytes
+  net   `netstat -ibn`                     per-interface cumulative bytes
   disk  `ioreg -r -c IOBlockStorageDriver` cumulative read/write bytes
 
 Rates are deltas between consecutive ticks. A counter that goes BACKWARDS
@@ -356,7 +356,10 @@ class Sampler:
         ticks = self._mach.cpu_ticks()
         gpu = parse_ioreg_gpu(_run(["ioreg", "-r", "-d", "1", "-c", "IOAccelerator"]))
         ram = parse_vm_stat(_run(["vm_stat"]), self._mem_total)
-        net_raw = parse_netstat(_run(["netstat", "-ib"]))
+        # `-n` or every address row is reverse-resolved: 5.07 s on
+        # 2026-10-17, past `_run`'s 5 s timeout, so the network series went
+        # blank and the stall cut the 1 Hz loop to one sample per ~6 s.
+        net_raw = parse_netstat(_run(["netstat", "-ibn"]))
         net = None if net_raw is None else (time.time(), net_raw)
         disk_raw = parse_ioreg_disk(
             _run(["ioreg", "-r", "-w0", "-c", "IOBlockStorageDriver"])
