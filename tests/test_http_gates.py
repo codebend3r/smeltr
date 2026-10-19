@@ -205,16 +205,14 @@ class WriteGate(unittest.TestCase):
                 )
             )
 
-    def test_the_lan_routes_are_spelled_the_way_do_POST_dispatches_them(self):
-        """LAN_WRITE_ROUTES is matched against parsed.path, so a typo here
-        would silently re-lock the iPad rather than fail loudly."""
-        src_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "dashboard",
-            "server.py",
-        )
-        with open(src_path, encoding="utf-8") as fh:
-            src = fh.read()
+    def test_every_route_names_a_real_handler_and_a_known_door(self):
+        """WRITE_ROUTES is the one table do_POST dispatches off, so a typo in a
+        method name or a door would otherwise surface as a 500 on a click."""
+        for route, (method, door) in server.WRITE_ROUTES.items():
+            self.assertTrue(callable(getattr(server.Handler, method, None)), route)
+            self.assertIn(door, ("local", "lan", "public"), route)
+
+    def test_the_door_tuples_are_derived_from_the_table(self):
         for route in (
             "/api/pause",
             "/api/driver/start",
@@ -223,8 +221,9 @@ class WriteGate(unittest.TestCase):
             "/api/transfers/pause",
         ):
             self.assertIn(route, server.LAN_WRITE_ROUTES)
-            self.assertIn('parsed.path == "%s"' % route, src)
-        self.assertIn("self._writes_ok(parsed.path)", src)
+        for route in ("/api/queue/skip", "/api/encode/start", "/api/queue/crf"):
+            self.assertNotIn(route, server.LAN_WRITE_ROUTES)
+        self.assertEqual(set(server.PUBLIC_WRITE_ROUTES), {"/api/pause", "/api/driver/start"})
 
     def test_this_mac_over_its_own_lan_url_writes(self):
         """Source address == the listener's own address is this Mac talking to

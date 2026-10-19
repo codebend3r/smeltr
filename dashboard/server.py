@@ -294,14 +294,28 @@ LAN_WRITES = os.environ.get("SMELTR_LAN_WRITES") == "1"
 # dispatch. Cancel removes only a PENDING title. Skip/reorder/CRF/encode stay
 # off the LAN for the reasons above. The PUBLIC door does NOT get stage: it is
 # the open internet behind a password, and filling the staging drive from
-# there is not a control the operator asked for. Two tuples, public strictly
-# narrower than LAN, and _writes_ok() tests the public one first.
-PUBLIC_WRITE_ROUTES = ("/api/pause", "/api/driver/start")
-LAN_WRITE_ROUTES = PUBLIC_WRITE_ROUTES + (
-    "/api/stage/start",
-    "/api/stage/cancel",
-    "/api/transfers/pause",
-)
+# there is not a control the operator asked for. Public is strictly narrower
+# than LAN, and _writes_ok() tests the public set first.
+#
+# ONE table owns every write: route -> (Handler method, the widest door that
+# may call it). do_POST dispatches off it and the two tuples below are derived
+# from it, so a route cannot be dispatched without a scope or scoped without
+# a handler. "local" is this Mac only (loopback or its own LAN address).
+WRITE_ROUTES = {
+    "/api/queue/skip": ("_apply_skip", "local"),
+    "/api/queue/order": ("_apply_order", "local"),
+    "/api/queue/crf": ("_apply_crf", "local"),
+    "/api/queue/encoder": ("_apply_encoder", "local"),
+    "/api/encode/start": ("_apply_encode_start", "local"),
+    "/api/encode/abort": ("_apply_encode_abort", "local"),
+    "/api/stage/start": ("_apply_stage_start", "lan"),
+    "/api/stage/cancel": ("_apply_stage_cancel", "lan"),
+    "/api/transfers/pause": ("_apply_transfers_pause", "lan"),
+    "/api/pause": ("_apply_pause", "public"),
+    "/api/driver/start": ("_apply_driver_start", "public"),
+}
+PUBLIC_WRITE_ROUTES = tuple(r for r, (_, door) in WRITE_ROUTES.items() if door == "public")
+LAN_WRITE_ROUTES = tuple(r for r, (_, door) in WRITE_ROUTES.items() if door in ("public", "lan"))
 # Username + password, ON only when auth.json sits beside the ledger (write it
 # with `./smeltr set-password`). It does not REPLACE the token on the LAN or
 # the tailnet -- either credential opens those doors, so every existing
@@ -2117,31 +2131,11 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(body, dict):
             return self._deny(400, "invalid JSON")
 
+        route = WRITE_ROUTES.get(parsed.path)
+        if route is None:
+            return self._deny(404, "not found")
         with _ov_lock:
-            if parsed.path == "/api/queue/skip":
-                err = self._apply_skip(body)
-            elif parsed.path == "/api/queue/order":
-                err = self._apply_order(body)
-            elif parsed.path == "/api/queue/crf":
-                err = self._apply_crf(body)
-            elif parsed.path == "/api/queue/encoder":
-                err = self._apply_encoder(body)
-            elif parsed.path == "/api/encode/start":
-                err = self._apply_encode_start(body)
-            elif parsed.path == "/api/encode/abort":
-                err = self._apply_encode_abort(body)
-            elif parsed.path == "/api/stage/start":
-                err = self._apply_stage_start(body)
-            elif parsed.path == "/api/stage/cancel":
-                err = self._apply_stage_cancel(body)
-            elif parsed.path == "/api/pause":
-                err = self._apply_pause(body)
-            elif parsed.path == "/api/driver/start":
-                err = self._apply_driver_start(body)
-            elif parsed.path == "/api/transfers/pause":
-                err = self._apply_transfers_pause(body)
-            else:
-                return self._deny(404, "not found")
+            err = getattr(self, route[0])(body)
         if err:
             return self._deny(409, err)
         with _state_lock:
