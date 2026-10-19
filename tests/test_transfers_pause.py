@@ -29,24 +29,20 @@ class TransfersPause(unittest.TestCase):
         self.addCleanup(patch.stop)
         self.addCleanup(self.tmp.cleanup)
 
-    def test_marker_round_trips_and_is_idempotent(self):
-        self.assertFalse(pushes.transfers_paused())
-        pushes.set_transfers_paused(True)
-        pushes.set_transfers_paused(True)
-        self.assertTrue(pushes.transfers_paused())
+    def test_marker_is_the_file_the_shell_starters_look_for(self):
+        pushes.TRANSFERS_PAUSED.set(True)
         self.assertTrue(os.path.exists(os.path.join(self.x9, ".transfers-paused")))
-        pushes.set_transfers_paused(False)
-        pushes.set_transfers_paused(False)
-        self.assertFalse(pushes.transfers_paused())
+        pushes.TRANSFERS_PAUSED.set(False)
+        self.assertFalse(pushes.TRANSFERS_PAUSED.is_set())
 
     def test_stage_pump_holds_while_paused_and_releases_after(self):
         with mock.patch.object(server, "_stage_active", {"title": None}), mock.patch.object(
             server, "_wire_title", return_value=(False, None)
         ):
             self.assertIsNone(server._wire_busy_locked())
-            pushes.set_transfers_paused(True)
+            pushes.TRANSFERS_PAUSED.set(True)
             self.assertEqual(server._wire_busy_locked(), "waiting — transfers are paused")
-            pushes.set_transfers_paused(False)
+            pushes.TRANSFERS_PAUSED.set(False)
             self.assertIsNone(server._wire_busy_locked())
 
     def test_endpoint_writes_the_marker_and_validates_the_body(self):
@@ -54,9 +50,9 @@ class TransfersPause(unittest.TestCase):
         self.assertEqual(h._apply_transfers_pause({}), "expected {paused: bool}")
         self.assertEqual(h._apply_transfers_pause({"paused": "yes"}), "expected {paused: bool}")
         self.assertIsNone(h._apply_transfers_pause({"paused": True}))
-        self.assertTrue(pushes.transfers_paused())
+        self.assertTrue(pushes.TRANSFERS_PAUSED.is_set())
         self.assertIsNone(h._apply_transfers_pause({"paused": False}))
-        self.assertFalse(pushes.transfers_paused())
+        self.assertFalse(pushes.TRANSFERS_PAUSED.is_set())
 
     def test_endpoint_refuses_an_unmounted_drive(self):
         with mock.patch.object(core, "X9", os.path.join(self.tmp.name, "gone")):

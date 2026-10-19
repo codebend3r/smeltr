@@ -117,9 +117,9 @@ class PushQueue(unittest.TestCase):
         self.assertEqual(pushes.pushes()["look at: me (2001)"]["dest"], dest)
 
     def test_push_off_flag_and_hold_reason(self):
-        self.assertFalse(pushes.push_off())
+        self.assertFalse(pushes.PUSH_OFF.is_set())
         open(os.path.join(self.x9, ".push-off"), "w").close()
-        self.assertTrue(pushes.push_off())
+        self.assertTrue(pushes.PUSH_OFF.is_set())
         self.assertIsNone(pushes.push_hold())
         with open(os.path.join(self.x9, ".push-hold"), "w") as f:
             f.write("NAS unreachable: crivas@192.168.50.6")

@@ -796,8 +796,8 @@ def build_state() -> dict:
             # it, which one is on it, which failed and which already landed
             # on the NAS. Read off the pusher's markers, never re-derived.
             "pushes": pushes.pushes(),
-            "push_off": pushes.push_off(),
-            "transfers_paused": pushes.transfers_paused(),
+            "push_off": pushes.PUSH_OFF.is_set(),
+            "transfers_paused": pushes.TRANSFERS_PAUSED.is_set(),
             "push_hold": pushes.push_hold(),
             "encode_note": note,
             "crf_choices": list(CRF_CHOICES),
@@ -1271,7 +1271,7 @@ def _wire_busy_locked():
     """
     if _stage_active["title"]:
         return "waiting — %s is on the wire" % _stage_active["title"]
-    if pushes.transfers_paused():
+    if pushes.TRANSFERS_PAUSED.is_set():
         return "waiting — transfers are paused"
     # NAME THE TRANSFER (2026-09-07). "another pull owns the wire" named
     # nothing a person could go and check, and on 2026-09-07 the only pull on
@@ -2494,7 +2494,7 @@ class Handler(BaseHTTPRequestHandler):
         if not os.path.isdir(core.X9):
             return "the staging drive is not mounted — nothing to pause"
         try:
-            pushes.set_transfers_paused(on)
+            pushes.TRANSFERS_PAUSED.set(on)
         except OSError as e:
             return "could not write the transfers-paused marker: %s" % e
         return None
