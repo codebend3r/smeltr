@@ -31,7 +31,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pipeline import core
-from dashboard import server
+from dashboard import probe, server, stage
 
 
 GIB = 1024**3
@@ -57,30 +57,44 @@ class Fixture(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self._x9 = core.X9
         core.X9 = self._tmp.name
-        server._stage_queue[:] = []
-        server._stage_active["title"] = None
-        server._stage_wait["why"] = None
+        stage.QUEUE[:] = []
+        stage.ACTIVE["title"] = None
+        stage.WAIT["why"] = None
         # The banner is module state and a "bad" note deliberately resists
         # being overwritten by an "ok" one for 15 minutes; a leftover from a
         # neighbouring test would mask the kind under assertion here.
         server._encode_note.update({"msg": None, "kind": None, "at": 0.0})
         self.started = []
+        # The pump and the enqueue read the queue rows through the server's
+        # hook; here the test owns them.
+        self.rows = []
+        self._host = dict(stage._host)
+        stage.bind(
+            rows=lambda: self.rows,
+            note=server._set_note,
+            drop_cache=server._drop_state_cache,
+        )
         # Never spawn a real .ssh-xfer.sh. The pump's contract is "decide,
         # then call this"; what it calls is covered by the stage-control
         # code it shares with the replenisher.
         self.begin = mock.patch.object(
-            server,
+            stage,
             "_begin_pull_locked",
             side_effect=lambda r, s, z: self.started.append(r["title"]) or None,
         )
         self.begin.start()
-        self.pgrep = mock.patch.object(server, "_pgrep", return_value=False)
+        # No real dispatcher thread either: it would run its first pass at
+        # once, concurrently with the test, and pop the queue under assertion.
+        # The tests drive the pump by hand through `pump()`.
+        self.ensure_pump = mock.patch.object(stage, "_ensure_pump_locked")
+        self.ensure_pump.start()
+        self.pgrep = mock.patch.object(probe, "pgrep", return_value=False)
         self.pgrep.start()
         # ...and no command lines either. `_pgrep_cmds` shells out to `ps`,
         # so without this the suite reads the DEVELOPER'S machine: a real
         # pull running beside the tests made five of them fail with the live
         # title in the assertion message.
-        self.pgrep_cmds = mock.patch.object(server, "_pgrep_cmds", return_value=[])
+        self.pgrep_cmds = mock.patch.object(probe, "pgrep_cmds", return_value=[])
         self.pgrep_cmds.start()
         self.index = mock.patch.object(core, "load_index", return_value=[])
         self.index.start()
@@ -99,10 +113,11 @@ class Fixture(unittest.TestCase):
 
     def tearDown(self):
         mock.patch.stopall()
+        stage._host.update(self._host)
         core.X9 = self._x9
-        server._stage_queue[:] = []
-        server._stage_active["title"] = None
-        server._stage_wait["why"] = None
+        stage.QUEUE[:] = []
+        stage.ACTIVE["title"] = None
+        stage.WAIT["why"] = None
         self._tmp.cleanup()
 
     def index_of(self, *titles):
@@ -121,50 +136,50 @@ class Fixture(unittest.TestCase):
         return recs
 
     def pump(self, rows):
-        with server._stage_lock:
-            if server._stage_queue and server._stage_active["title"] is None:
-                server._pump_once_locked(rows)
+        with stage.LOCK:
+            if stage.QUEUE and stage.ACTIVE["title"] is None:
+                stage._pump_once_locked(rows)
 
 
 class Enqueue(Fixture):
     def test_busy_wire_queues_rather_than_refusing(self):
         """The bug this feature exists to fix."""
-        server._stage_active["title"] = "Croods, The (2013)"
+        stage.ACTIVE["title"] = "Croods, The (2013)"
         rows = [row("Cinderella (1950)")]
         with mock.patch.object(
-            server,
+            stage,
             "_stage_candidate",
             return_value=(rows[0], "/lib/x.mkv", 50 * GIB, None, False),
         ):
-            fake = mock.Mock(_queue_rows=mock.Mock(return_value=rows))
-            err = server.Handler._apply_stage_start(fake, {"title": rows[0]["title"]})
+            self.rows = rows
+            err = stage.enqueue({"title": rows[0]["title"]})
         self.assertIsNone(err, "a busy wire must queue, not 409")
-        self.assertEqual(server._stage_queue, ["Cinderella (1950)"])
+        self.assertEqual(stage.QUEUE, ["Cinderella (1950)"])
 
     def test_second_click_on_a_queued_title_reports_its_position(self):
-        server._stage_queue[:] = ["A (1990)", "B (1991)"]
-        fake = mock.Mock(_queue_rows=mock.Mock(return_value=[]))
-        err = server.Handler._apply_stage_start(fake, {"title": "b (1991)"})
+        stage.QUEUE[:] = ["A (1990)", "B (1991)"]
+        self.rows = []
+        err = stage.enqueue({"title": "b (1991)"})
         self.assertIn("position 2", err)
 
     def test_the_title_being_pulled_now_is_refused(self):
-        server._stage_active["title"] = "A (1990)"
-        fake = mock.Mock(_queue_rows=mock.Mock(return_value=[]))
-        err = server.Handler._apply_stage_start(fake, {"title": "a (1990)"})
+        stage.ACTIVE["title"] = "A (1990)"
+        self.rows = []
+        err = stage.enqueue({"title": "a (1990)"})
         self.assertIn("right now", err)
 
     def test_non_string_title_is_rejected(self):
-        fake = mock.Mock(_queue_rows=mock.Mock(return_value=[]))
-        self.assertIn("expected", server.Handler._apply_stage_start(fake, {"title": 3}))
+        self.rows = []
+        self.assertIn("expected", stage.enqueue({"title": 3}))
 
 
 class Dispatch(Fixture):
     def test_fifo(self):
         titles = ["A (1990)", "B (1991)", "C (1992)"]
-        server._stage_queue[:] = list(titles)
+        stage.QUEUE[:] = list(titles)
         rows = [row(t) for t in titles]
         cand = mock.patch.object(
-            server,
+            stage,
             "_stage_candidate",
             side_effect=lambda t, rs: (row(t), "/lib/x.mkv", GIB, None, False),
         )
@@ -173,15 +188,15 @@ class Dispatch(Fixture):
             self.pump(rows)
             self.assertEqual(self.started[-1], expected)
             # _begin_pull_locked is stubbed, so clear the wire by hand.
-            server._stage_active["title"] = None
+            stage.ACTIVE["title"] = None
         self.assertEqual(self.started, titles)
 
     def test_a_pull_in_flight_holds_the_queue(self):
-        server._stage_queue[:] = ["A (1990)"]
-        server._stage_active["title"] = "Z (1999)"
+        stage.QUEUE[:] = ["A (1990)"]
+        stage.ACTIVE["title"] = "Z (1999)"
         self.pump([row("A (1990)")])
         self.assertEqual(self.started, [])
-        self.assertEqual(server._stage_queue, ["A (1990)"])
+        self.assertEqual(stage.QUEUE, ["A (1990)"])
 
     def test_a_foreign_puller_holds_the_queue(self):
         """A pull orphaned by a restart owns the wire; pgrep is what sees it.
@@ -189,12 +204,12 @@ class Dispatch(Fixture):
         Command lines, not pids, since 2026-09-07: the hold reason names the
         title the transfer is moving.
         """
-        server._stage_queue[:] = ["A (1990)"]
-        with mock.patch.object(server, "_pgrep_cmds", return_value=["ssh-xfer.sh pull x"]):
+        stage.QUEUE[:] = ["A (1990)"]
+        with mock.patch.object(probe, "pgrep_cmds", return_value=["ssh-xfer.sh pull x"]):
             self.pump([row("A (1990)")])
         self.assertEqual(self.started, [])
-        self.assertEqual(server._stage_queue, ["A (1990)"])
-        self.assertIn("wire", server._stage_wait["why"])
+        self.assertEqual(stage.QUEUE, ["A (1990)"])
+        self.assertIn("wire", stage.WAIT["why"])
 
     def test_a_foreign_pull_is_named_by_the_title_it_is_moving(self):
         """"Another pull owns the wire" names nothing a person can check.
@@ -220,20 +235,20 @@ class Dispatch(Fixture):
             "Goosebumps (2015) WEBDL-2160p.mkv "
             "/Volumes/Crucial X9/4K Movies/queue/Goosebumps (2015)"
         )
-        server._stage_queue[:] = ["A (1990)"]
-        with mock.patch.object(server, "_pgrep_cmds", return_value=[cmd]):
+        stage.QUEUE[:] = ["A (1990)"]
+        with mock.patch.object(probe, "pgrep_cmds", return_value=[cmd]):
             self.pump([row("A (1990)")])
         self.assertEqual(self.started, [])
-        self.assertIn("Goosebumps (2015)", server._stage_wait["why"])
+        self.assertIn("Goosebumps (2015)", stage.WAIT["why"])
 
     def test_an_unreadable_command_line_still_holds(self):
         """If the title cannot be read the wire is still busy -- fall back to
         the anonymous wording rather than dropping the hold."""
-        server._stage_queue[:] = ["A (1990)"]
-        with mock.patch.object(server, "_pgrep_cmds", return_value=["ssh-xfer.sh pull"]):
+        stage.QUEUE[:] = ["A (1990)"]
+        with mock.patch.object(probe, "pgrep_cmds", return_value=["ssh-xfer.sh pull"]):
             self.pump([row("A (1990)")])
         self.assertEqual(self.started, [])
-        self.assertIn("wire", server._stage_wait["why"])
+        self.assertIn("wire", stage.WAIT["why"])
 
     def test_the_replenisher_hold_names_its_title_too(self):
         """Same gap: "the replenisher is staging" named nothing either."""
@@ -243,10 +258,10 @@ class Dispatch(Fixture):
             "/Volumes/Crucial X9/4K Movies/queue/Hocus Pocus (1993)"
         )
         os.mkdir(os.path.join(core.X9, ".replenish.lock"))
-        server._stage_queue[:] = ["A (1990)"]
-        with mock.patch.object(server, "_pgrep_cmds", return_value=[cmd]):
+        stage.QUEUE[:] = ["A (1990)"]
+        with mock.patch.object(probe, "pgrep_cmds", return_value=[cmd]):
             self.pump([row("A (1990)")])
-        self.assertIn("Hocus Pocus (1993)", server._stage_wait["why"])
+        self.assertIn("Hocus Pocus (1993)", stage.WAIT["why"])
 
     def test_an_unreadable_process_list_is_busy_not_idle(self):
         """A hold we cannot PHRASE is still a hold.
@@ -256,49 +271,49 @@ class Dispatch(Fixture):
         This is not hypothetical -- BSD `pgrep -a` is not GNU's, so the first
         cut of this code returned [] on a machine with a live pull.
         """
-        server._stage_queue[:] = ["A (1990)"]
-        with mock.patch.object(server, "_pgrep_cmds", return_value=[]):
-            with mock.patch.object(server, "_pgrep", return_value=[123]):
+        stage.QUEUE[:] = ["A (1990)"]
+        with mock.patch.object(probe, "pgrep_cmds", return_value=[]):
+            with mock.patch.object(probe, "pgrep", return_value=[123]):
                 self.pump([row("A (1990)")])
         self.assertEqual(self.started, [])
-        self.assertIn("wire", server._stage_wait["why"])
+        self.assertIn("wire", stage.WAIT["why"])
 
     def test_the_command_lines_come_from_ps_not_pgrep_dash_a(self):
         """`pgrep -a` means "print the command line" on GNU and something
         else on BSD, silently. `ps -axo pid=,command=` means one thing
         everywhere, and is what dashboard/procs.py already runs."""
-        src = pathlib.Path(server.__file__).read_text()
-        body = src.split("def _pgrep_cmds", 1)[1].split("\ndef ", 1)[0]
+        src = pathlib.Path(probe.__file__).read_text()
+        body = src.split("def pgrep_cmds", 1)[1].split("\ndef ", 1)[0]
         self.assertIn('"ps", "-axo", "pid=,command="', body)
         self.assertNotIn('"-af"', body)
 
     def test_a_stale_replenish_lock_is_named_as_stale(self):
         os.mkdir(os.path.join(core.X9, ".replenish.lock"))
-        server._stage_queue[:] = ["A (1990)"]
+        stage.QUEUE[:] = ["A (1990)"]
         self.pump([row("A (1990)")])  # _pgrep is False: no replenisher alive
         self.assertEqual(self.started, [])
-        self.assertIn("STALE", server._stage_wait["why"])
+        self.assertIn("STALE", stage.WAIT["why"])
 
 
 class HoldsRatherThanDrops(Fixture):
     """The queue must never quietly throw away work it was asked to do."""
 
     def test_a_full_drive_holds_the_head(self):
-        server._stage_queue[:] = ["A (1990)", "B (1991)"]
+        stage.QUEUE[:] = ["A (1990)", "B (1991)"]
         rows = [row("A (1990)"), row("B (1991)")]
         with mock.patch.object(
-            server,
+            stage,
             "_stage_candidate",
             return_value=(rows[0], "/lib/a.mkv", 900 * GIB, None, False),
         ):
             self.pump(rows)
         self.assertEqual(self.started, [], "must not start what will not fit")
         self.assertEqual(
-            server._stage_queue,
+            stage.QUEUE,
             ["A (1990)", "B (1991)"],
             "a full drive must not drop queued work",
         )
-        self.assertIn("room", server._stage_wait["why"])
+        self.assertIn("room", stage.WAIT["why"])
 
     def test_the_wait_reason_carries_no_volatile_number(self):
         """Free space moves every second as the encode writes.
@@ -310,7 +325,7 @@ class HoldsRatherThanDrops(Fixture):
         """
         with mock.patch.object(server.os, "statvfs") as sv:
             sv.return_value = mock.Mock(f_bavail=1, f_frsize=GIB)
-            why, avail = server._space_hold(50 * GIB, [])
+            why, avail = stage._space_hold(50 * GIB, [])
         self.assertIn("needs 60 GiB free", why)
         self.assertNotIn("available", why)
         self.assertEqual(avail, GIB)
@@ -319,7 +334,7 @@ class HoldsRatherThanDrops(Fixture):
         """A remount must find the queue intact, not emptied by a blip."""
         recs = [{"path": "/nowhere/A (1990)/A (1990).mkv"}]
         with mock.patch.object(core, "load_index", return_value=recs):
-            r, src, size, err, held = server._stage_candidate(
+            r, src, size, err, held = stage._stage_candidate(
                 "A (1990)", [row("A (1990)")]
             )
         self.assertTrue(held, "an unmounted NAS is 'not yet', not 'never'")
@@ -329,17 +344,17 @@ class HoldsRatherThanDrops(Fixture):
 class DropsExactlyOne(Fixture):
     def test_a_title_staged_meanwhile_is_dropped_and_the_queue_continues(self):
         """The replenisher got there first. That is success, not failure."""
-        server._stage_queue[:] = ["A (1990)", "B (1991)"]
+        stage.QUEUE[:] = ["A (1990)", "B (1991)"]
         rows = [row("A (1990)", staged=True), row("B (1991)")]
         self.pump(rows)
-        self.assertEqual(server._stage_queue, ["B (1991)"])
+        self.assertEqual(stage.QUEUE, ["B (1991)"])
         self.assertEqual(self.started, [], "nothing to pull; it is already there")
         self.assertEqual(
             server._encode_note["kind"], "ok", "already-staged is not an error"
         )
         # ...and the next one is not wedged behind it.
         with mock.patch.object(
-            server,
+            stage,
             "_stage_candidate",
             return_value=(rows[1], "/lib/b.mkv", 10 * GIB, None, False),
         ):
@@ -347,55 +362,51 @@ class DropsExactlyOne(Fixture):
         self.assertEqual(self.started, ["B (1991)"])
 
     def test_a_title_skipped_while_pending_is_dropped(self):
-        server._stage_queue[:] = ["A (1990)"]
+        stage.QUEUE[:] = ["A (1990)"]
         self.pump([row("A (1990)", skipped=True)])
-        self.assertEqual(server._stage_queue, [])
+        self.assertEqual(stage.QUEUE, [])
         self.assertEqual(self.started, [])
 
     def test_a_title_that_left_the_queue_is_dropped(self):
-        server._stage_queue[:] = ["A (1990)"]
+        stage.QUEUE[:] = ["A (1990)"]
         self.pump([row("B (1991)")])
-        self.assertEqual(server._stage_queue, [])
+        self.assertEqual(stage.QUEUE, [])
 
     def test_duplicate_folder_names_refuse_to_act_on_either(self):
-        r, src, size, err, held = server._stage_candidate(
+        r, src, size, err, held = stage._stage_candidate(
             "A (1990)", [row("A (1990)"), row("A (1990)")]
         )
         self.assertIn("two queue rows", err)
         self.assertFalse(held)
 
     def test_a_title_missing_from_the_bitrate_index_is_dropped(self):
-        r, src, size, err, held = server._stage_candidate("A (1990)", [row("A (1990)")])
+        r, src, size, err, held = stage._stage_candidate("A (1990)", [row("A (1990)")])
         self.assertIn("bitrate index", err)
         self.assertFalse(held)
 
 
 class Cancel(Fixture):
-    def setUp(self):
-        super().setUp()
-        self.fake = mock.Mock()
-
     def test_removes_a_pending_title(self):
-        server._stage_queue[:] = ["A (1990)", "B (1991)"]
-        err = server.Handler._apply_stage_cancel(self.fake, {"title": "a (1990)"})
+        stage.QUEUE[:] = ["A (1990)", "B (1991)"]
+        err = stage.cancel({"title": "a (1990)"})
         self.assertIsNone(err)
-        self.assertEqual(server._stage_queue, ["B (1991)"])
+        self.assertEqual(stage.QUEUE, ["B (1991)"])
 
     def test_refuses_the_pull_that_is_already_running(self):
-        server._stage_active["title"] = "A (1990)"
-        err = server.Handler._apply_stage_cancel(self.fake, {"title": "A (1990)"})
+        stage.ACTIVE["title"] = "A (1990)"
+        err = stage.cancel({"title": "A (1990)"})
         self.assertIn("already running", err)
 
     def test_refuses_a_title_that_is_not_queued(self):
-        err = server.Handler._apply_stage_cancel(self.fake, {"title": "Z (1999)"})
+        err = stage.cancel({"title": "Z (1999)"})
         self.assertIn("not in the pull queue", err)
 
     def test_emptying_the_queue_clears_the_wait_reason(self):
         """A stale 'waiting for room' under an empty queue reads as a fault."""
-        server._stage_queue[:] = ["A (1990)"]
-        server._stage_wait["why"] = "waiting for room — needs 60 GiB free"
-        server.Handler._apply_stage_cancel(self.fake, {"title": "A (1990)"})
-        self.assertIsNone(server._stage_wait["why"])
+        stage.QUEUE[:] = ["A (1990)"]
+        stage.WAIT["why"] = "waiting for room — needs 60 GiB free"
+        stage.cancel({"title": "A (1990)"})
+        self.assertIsNone(stage.WAIT["why"])
 
 
 class OrphanPulls(Fixture):
@@ -425,7 +436,7 @@ class OrphanPulls(Fixture):
 
     def test_a_completed_orphan_is_renamed_into_place(self):
         hidden = self.orphan("A (1990)", "A (1990) Bluray-2160p.mkv")
-        done = server._sweep_orphans_once()
+        done = stage._sweep_orphans_once()
         self.assertTrue(done)
         self.assertFalse(os.path.exists(hidden))
         # A legacy root orphan lands in queue/, where every pull lands since
@@ -436,7 +447,7 @@ class OrphanPulls(Fixture):
 
     def test_a_half_finished_orphan_is_deleted(self):
         hidden = self.orphan("B (1991)", "B (1991) Bluray-2160p.mkv.partial")
-        done = server._sweep_orphans_once()
+        done = stage._sweep_orphans_once()
         self.assertTrue(done)
         self.assertFalse(os.path.exists(hidden))
         self.assertFalse(os.path.exists(os.path.join(core.X9, "B (1991)")))
@@ -444,29 +455,29 @@ class OrphanPulls(Fixture):
 
     def test_an_empty_orphan_folder_is_deleted(self):
         hidden = self.orphan("C (1992)")
-        self.assertTrue(server._sweep_orphans_once())
+        self.assertTrue(stage._sweep_orphans_once())
         self.assertFalse(os.path.exists(hidden))
 
     def test_appledouble_junk_is_not_mistaken_for_the_film(self):
         """._foo.mkv is 4 KiB of Finder metadata, not a completed pull."""
         hidden = self.orphan("D (1993)", "._D (1993) Bluray-2160p.mkv")
-        self.assertTrue(server._sweep_orphans_once())
+        self.assertTrue(stage._sweep_orphans_once())
         self.assertFalse(os.path.exists(hidden))
         self.assertFalse(os.path.exists(os.path.join(core.X9, "D (1993)")))
 
     def test_a_live_transfer_is_left_alone(self):
         """pgrep says a puller is alive: not an orphan yet, come back later."""
         hidden = self.orphan("E (1994)", "E (1994).mkv.partial")
-        with mock.patch.object(server, "_pgrep", return_value=True):
-            done = server._sweep_orphans_once()
+        with mock.patch.object(probe, "pgrep", return_value=True):
+            done = stage._sweep_orphans_once()
         self.assertFalse(done)
         self.assertTrue(os.path.isdir(hidden))
 
     def test_an_active_worker_defers_the_sweep(self):
         """_stage_active covers the pre-spawn window pgrep cannot see."""
         hidden = self.orphan("F (1995)", "F (1995).mkv.partial")
-        server._stage_active["title"] = "F (1995)"
-        done = server._sweep_orphans_once()
+        stage.ACTIVE["title"] = "F (1995)"
+        done = stage._sweep_orphans_once()
         self.assertFalse(done)
         self.assertTrue(os.path.isdir(hidden))
 
@@ -474,7 +485,7 @@ class OrphanPulls(Fixture):
         """Never delete a completed pull over a rename problem."""
         hidden = self.orphan("G (1996)", "G (1996) Bluray-2160p.mkv")
         os.makedirs(os.path.join(core.X9, "G (1996)"))
-        done = server._sweep_orphans_once()
+        done = stage._sweep_orphans_once()
         self.assertTrue(done)
         self.assertTrue(
             os.path.isfile(os.path.join(hidden, "G (1996) Bluray-2160p.mkv"))
@@ -483,24 +494,24 @@ class OrphanPulls(Fixture):
         self.assertIn("by hand", server._encode_note["msg"])
 
     def test_nothing_to_do_is_done(self):
-        self.assertTrue(server._sweep_orphans_once())
+        self.assertTrue(stage._sweep_orphans_once())
 
     def test_an_unreadable_staging_drive_is_done_not_a_spin(self):
         core.X9 = os.path.join(self._tmp.name, "gone")
-        self.assertTrue(server._sweep_orphans_once())
+        self.assertTrue(stage._sweep_orphans_once())
 
     def test_adopt_spawns_a_watcher_only_when_an_orphan_exists(self):
         with mock.patch.object(server.threading, "Thread") as t:
-            server._adopt_orphan_pulls()
+            stage.adopt_orphan_pulls()
             t.assert_not_called()
             self.orphan("H (1997)", "H (1997).mkv.partial")
-            server._adopt_orphan_pulls()
+            stage.adopt_orphan_pulls()
             t.assert_called_once()
 
     def test_main_wires_the_adoption_in(self):
         import inspect
 
-        self.assertIn("_adopt_orphan_pulls()", inspect.getsource(server.main))
+        self.assertIn("stage_mod.adopt_orphan_pulls()", inspect.getsource(server.main))
 
 
 if __name__ == "__main__":

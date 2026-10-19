@@ -15,7 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from dashboard import pushes, server
+from dashboard import probe, pushes, server, stage
 from pipeline import core
 
 
@@ -36,14 +36,14 @@ class TransfersPause(unittest.TestCase):
         self.assertFalse(pushes.TRANSFERS_PAUSED.is_set())
 
     def test_stage_pump_holds_while_paused_and_releases_after(self):
-        with mock.patch.object(server, "_stage_active", {"title": None}), mock.patch.object(
-            server, "_wire_title", return_value=(False, None)
+        with mock.patch.object(stage, "ACTIVE", {"title": None}), mock.patch.object(
+            probe, "wire_title", return_value=(False, None)
         ):
-            self.assertIsNone(server._wire_busy_locked())
+            self.assertIsNone(stage._wire_busy_locked())
             pushes.TRANSFERS_PAUSED.set(True)
-            self.assertEqual(server._wire_busy_locked(), "waiting — transfers are paused")
+            self.assertEqual(stage._wire_busy_locked(), "waiting — transfers are paused")
             pushes.TRANSFERS_PAUSED.set(False)
-            self.assertIsNone(server._wire_busy_locked())
+            self.assertIsNone(stage._wire_busy_locked())
 
     def test_endpoint_writes_the_marker_and_validates_the_body(self):
         h = server.Handler.__new__(server.Handler)
