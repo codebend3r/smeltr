@@ -70,7 +70,9 @@ trap 'rmdir "$LOCK" 2>/dev/null' EXIT INT TERM
 
 # Per-run temp file. NEVER a fixed path — that was the actual race.
 PICKS=$(mktemp -t replenish-picks) || exit 1
-trap 'rm -f "$PICKS"; rmdir "$LOCK" 2>/dev/null' EXIT INT TERM
+CANDS=$(mktemp -t replenish-cands) || exit 1
+SSHERR=$(mktemp -t replenish-ssherr) || exit 1
+trap 'rm -f "$PICKS" "$CANDS" "$SSHERR"; rmdir "$LOCK" 2>/dev/null' EXIT INT TERM
 
 # LAYOUT (2026-09-07): movie folders live in $X9/queue; a pull lands there.
 # A folder still at the root is the old layout and counts until the driver
@@ -213,10 +215,10 @@ fi
 echo "need $NEED more (fill to $FILL, ceiling $MAX)"
 
 # Rebuild candidate list fresh each run so newly-synced movies are excluded correctly.
-python3 - "$JSON" "$X9" "$NEED" "$OV" <<'PYEOF' > "$PICKS"
+python3 - "$JSON" "$X9" "$OV" <<'PYEOF' > "$CANDS"
 import json, os, sys
-jsonp, x9, need = sys.argv[1], sys.argv[2], int(sys.argv[3])
-ovp = sys.argv[4] if len(sys.argv) > 4 else ''
+jsonp, x9 = sys.argv[1], sys.argv[2]
+ovp = sys.argv[3] if len(sys.argv) > 3 else ''
 d = json.load(open(jsonp))
 # Already on the drive: queue/ (waiting), complete/ (finished, kept), or a
 # legacy folder at the root. Any of the three means never pull it again.
@@ -301,58 +303,97 @@ for f in d['files']:
         continue
     picks.append((p, folder, f.get('overall_bitrate') or 0))
 picks.sort(key=lambda t: (rank.get(t[1].lower(), len(rank)), -t[2]))
-# Stat LAZILY, best candidate first, and stop at `need`. Every candidate
+for p, folder, br in picks:
+    print(f"{br}\t{folder}\t{p}")
+PYEOF
+
+# Stat LAZILY, best candidate first, and stop at $NEED. Every candidate
 # used to be stat'd over SMB before the sort -- 1400 round trips, and at
 # the ~1 s each the NAS answers under load that is a twenty-minute pick
-# during which nothing downloads (2026-09-07 08:24). Now it is `need` stats
+# during which nothing downloads (2026-09-07 08:24). Now it is $NEED stats
 # plus however many have moved since the scan.
 # OVER SSH, NEVER THE SMB MOUNT (operator's rule, repeated 2026-09-07). The
 # size feeds the free-space gate and the exists check drops a title the
 # library has moved since the scan; both come from the NAS by ssh, using
 # the same host/path map .ssh-xfer.sh pulls with. A stat over the mounted
 # share hung this pick for minutes under load.
-import shlex, subprocess
-def remote_for(path):
-    if path.startswith('/Volumes/Vhagar/'):
-        return 'crivas@192.168.50.6', '/volume1/Vhagar/' + path[len('/Volumes/Vhagar/'):]
-    if path.startswith('/Volumes/Vermithor/'):
-        return 'crivas@192.168.50.3', '/volume1/Vermithor/' + path[len('/Volumes/Vermithor/'):]
-    return None, None
+# FROM BASH, NEVER FROM PYTHON (2026-10-20). macOS Local Network privacy
+# denies a Homebrew python3 child under launchd ("No route to host") while
+# the same ssh from bash goes through, so every probe failed, the launchd
+# replenisher said "nothing left" for five days, and the driver stopped.
 # The same round trip lists the title's folder. Any file in it named HEVC
 # means the title was already re-encoded (operator's rule, 2026-10-17): the
 # scan index lags the library, so the folder on the NAS is what decides.
-def ssh_probe(path):
-    host, rpath = remote_for(path)
-    if not host:
-        return None, False
-    try:
-        r = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host,
-                            'stat -c%s ' + shlex.quote(rpath) + ' && ls -1 '
-                            + shlex.quote(os.path.dirname(rpath))],
-                           capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return None, False
-    lines = r.stdout.splitlines()
-    if r.returncode != 0 or not lines or not lines[0].strip().isdigit():
-        return None, False
-    return int(lines[0]), any('hevc' in n.lower() for n in lines[1:])
-chosen = 0
-for p, folder, br in picks:
-    if chosen >= need:
-        break
-    sz, hevc = ssh_probe(p)
-    if sz is None:                        # library moved on since the scan, or the NAS did not answer
-        continue
-    if hevc:
-        print(f"  skip {folder}: an HEVC file is already in its library folder", file=sys.stderr)
-        continue
-    print(f"{br}\t{sz}\t{folder}\t{p}")
-    chosen += 1
-PYEOF
+# Single-quoted for the NAS shell, in bash: a quoting helper that shells out
+# would turn its own failure into an empty path and every title into "moved".
+SQ="'"
+q() { printf "'%s'" "${1//$SQ/$SQ\\$SQ$SQ}"; }
+remote_for() {
+  local share rest
+  case "$1" in
+    /Volumes/Vhagar/*)    RHOST=crivas@192.168.50.6; share=Vhagar ;;
+    /Volumes/Vermithor/*) RHOST=crivas@192.168.50.3; share=Vermithor ;;
+    *) return 1 ;;
+  esac
+  rest=${1#/Volumes/"$share"/}
+  RPATH="/volume1/$share/$rest"
+  # The library root, e.g. /volume1/Vhagar/Media/4K Movies. Checked on every
+  # probe so a NAS that answers with its volume gone is not a finished library.
+  RROOT="/volume1/$share/${rest%%/*}"; rest=${rest#*/}; RROOT="$RROOT/${rest%%/*}"
+}
+# An unreachable NAS is NOT a finished library. A host is written off for the
+# rest of the run (one line, not 160 timeouts) when ssh never got a shell
+# (255), the library root is missing (254), or the probe outlived
+# PROBE_TIMEOUT (killed by the alarm, 142) -- ConnectTimeout bounds only the
+# connect, and a stat stalled under load once held this pick for minutes. Any
+# written-off host means the run cannot end in .replenish-empty.
+PROBE_TIMEOUT="${SMELTR_PROBE_TIMEOUT:-30}"
+CHOSEN=0
+UNREACHABLE=""
+while IFS=$'\t' read -r br folder path; do
+  [ "$CHOSEN" -ge "$NEED" ] && break
+  remote_for "$path" || continue
+  case " $UNREACHABLE " in *" $RHOST "*) continue ;; esac
+  # `-n` and `< /dev/null`: this loop reads $CANDS on stdin (the 2026-09-07 bug).
+  # `perl -e alarm ... exec` is the time limit macOS lacks `timeout` for; the
+  # exec keeps ssh a direct child of bash.
+  out=$(perl -e 'alarm shift; exec @ARGV' "$PROBE_TIMEOUT" \
+          ssh -n -o BatchMode=yes -o ConnectTimeout=10 \
+              -o ServerAliveInterval=5 -o ServerAliveCountMax=3 "$RHOST" \
+              "test -d $(q "$RROOT") || exit 254; stat -c%s $(q "$RPATH") && ls -1 $(q "${RPATH%/*}")" \
+          < /dev/null 2> "$SSHERR") && rc=0 || rc=$?   # set -e: a failed probe is data
+  why=""
+  case "$rc" in
+    255) why="did not answer ($(tail -1 "$SSHERR"))" ;;
+    254) why="answered but $RROOT is missing" ;;
+    142) why="did not finish a size check within ${PROBE_TIMEOUT}s" ;;
+  esac
+  if [ -n "$why" ]; then
+    echo "  NAS CHECK FAILED: $RHOST $why - skipping its titles this run"
+    UNREACHABLE="$UNREACHABLE $RHOST"
+    continue
+  fi
+  [ "$rc" -eq 0 ] || continue                   # library moved on since the scan
+  # No pipes on $out: under pipefail a long listing SIGPIPEs `sed | grep -q`.
+  sz=${out%%$'\n'*}
+  case "$sz" in ''|*[!0-9]*) continue ;; esac
+  case "${out#*$'\n'}" in
+    *[Hh][Ee][Vv][Cc]*)
+      echo "  skip $folder: an HEVC file is already in its library folder"
+      continue ;;
+  esac
+  printf '%s\t%s\t%s\t%s\n' "$br" "$sz" "$folder" "$path" >> "$PICKS"
+  CHOSEN=$((CHOSEN + 1))
+done < "$CANDS"
 
 # Nothing left to stage -> say so in a file the driver can read. Removed the
 # moment a pull lands, so a stale one can never outlive a refilled drive.
 EMPTY="$X9/.replenish-empty"
+if ! grep -q . "$PICKS" && [ -n "$UNREACHABLE" ]; then
+  echo "NAS UNREACHABLE (${UNREACHABLE# }) - nothing picked, but the library is NOT marked empty"
+  rm -f "$EMPTY"
+  exit 0
+fi
 if ! grep -q . "$PICKS"; then
   echo "nothing left to stage above the threshold"
   date '+%Y-%m-%d %H:%M:%S' > "$EMPTY"
