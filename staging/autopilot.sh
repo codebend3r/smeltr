@@ -38,7 +38,10 @@ STAGE="$X9/queue"
 COMPLETE="$X9/complete"
 SMELTR="$HOME/Developer/git/smeltr/smeltr"
 LOG="$X9/.autopilot.log"
-STOP_MBPS=50
+# The stop threshold is SMELTR_STOP_MBPS in the repo's .env (Mb/s), read by
+# core on every `smeltr next` -- so an edit there lands on the next pass,
+# no driver restart. stop_mbps() is only for the log line.
+stop_mbps() { "$SMELTR" stop-mbps 2>/dev/null || echo '?'; }
 DRY=false
 [ "${1:-}" = "--dry-run" ] && DRY=true
 
@@ -441,7 +444,7 @@ sync_async() {
 NEXT_REASON="${TMPDIR:-/tmp}/smeltr-next-reason"
 next_title() {
   : >"$NEXT_REASON" 2>/dev/null || NEXT_REASON=/dev/null
-  "$SMELTR" next "$STOP_MBPS" 2>"$NEXT_REASON"
+  "$SMELTR" next 2>"$NEXT_REASON"
 }
 next_reason() { tr '\n' ' ' 2>/dev/null <"$NEXT_REASON"; }
 
@@ -850,7 +853,7 @@ while true; do
         sleep 60; continue
       fi
       if [ -f "$X9/.replenish-empty" ] && [ $(( $(date +%s) - $(stat -f%m "$X9/.replenish-empty" 2>/dev/null || echo 0) )) -lt 600 ]; then
-        log "STOP CONDITION: nothing staged above ${STOP_MBPS} Mb/s and the replenisher found nothing left to stage. Encoding paused; staging continues."
+        log "STOP CONDITION: nothing staged above $(stop_mbps) Mb/s and the replenisher found nothing left to stage. Encoding paused; staging continues."
         exit 0
       fi
       log "nothing startable - asking the replenisher for more before stopping"

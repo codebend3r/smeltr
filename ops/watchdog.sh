@@ -240,7 +240,7 @@ fi
 
 # Not halted, just absent. Is there anything to do? `smeltr next` is the same
 # decision the driver itself makes, so the watchdog cannot disagree with it.
-"$SMELTR" next 70 >/dev/null 2>&1; nrc=$?
+"$SMELTR" next >/dev/null 2>&1; nrc=$?
 case $nrc in
   0) : ;;                                            # work waiting -- restart
   2) wlog "library not fully mounted; not restarting"; exit 0 ;;

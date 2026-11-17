@@ -36,3 +36,6 @@ manual_adds.json
 no-delete
 encode_budget
 encode_done
+
+# Operator settings (see .env.example)
+.env
