@@ -215,10 +215,18 @@ fi
 echo "need $NEED more (fill to $FILL, ceiling $MAX)"
 
 # Rebuild candidate list fresh each run so newly-synced movies are excluded correctly.
-python3 - "$JSON" "$X9" "$OV" <<'PYEOF' > "$CANDS"
+# The stop threshold: SMELTR_STOP_MBPS (Mb/s) from the environment, else the
+# repo's .env, else 47 -- the same order and fallback as core.stop_mbps().
+STOP_MBPS="${SMELTR_STOP_MBPS:-}"
+if [ -z "$STOP_MBPS" ] && [ -f "$SMELTR_HOME/.env" ]; then
+  STOP_MBPS=$(sed -n "s/^[[:space:]]*SMELTR_STOP_MBPS[[:space:]]*=[[:space:]]*['\"]\{0,1\}\([0-9.]*\).*/\1/p" "$SMELTR_HOME/.env" | tail -1 || true)
+fi
+STOP_MBPS="${STOP_MBPS:-47}"
+python3 - "$JSON" "$X9" "$OV" "$STOP_MBPS" <<'PYEOF' > "$CANDS"
 import json, os, sys
 jsonp, x9 = sys.argv[1], sys.argv[2]
 ovp = sys.argv[3] if len(sys.argv) > 3 else ''
+stop_mbps = float(sys.argv[4])
 d = json.load(open(jsonp))
 # Already on the drive: queue/ (waiting), complete/ (finished, kept), or a
 # legacy folder at the root. Any of the three means never pull it again.
@@ -261,7 +269,7 @@ except Exception:
 rank = {s.lower(): i for i, s in enumerate(ov.get('priority', []))
         if isinstance(s, str)}
 
-MIN_BPS = 50 * 1000 * 1000
+MIN_BPS = stop_mbps * 1000 * 1000
 picks = []
 for f in d['files']:
     p = f['path']
@@ -377,11 +385,19 @@ while IFS=$'\t' read -r br folder path; do
   # No pipes on $out: under pipefail a long listing SIGPIPEs `sed | grep -q`.
   sz=${out%%$'\n'*}
   case "$sz" in ''|*[!0-9]*) continue ;; esac
-  case "${out#*$'\n'}" in
-    *[Hh][Ee][Vv][Cc]*)
-      echo "  skip $folder: an HEVC file is already in its library folder"
-      continue ;;
-  esac
+  # The SOURCE itself is excluded: a release named "Remux-2160p Proper
+  # HEVC.mkv" is an original, not a re-encode (Silence of the Lambs,
+  # 2026-11-13, skipped every tick for days).
+  src_base=${path##*/}
+  hevc_other=false
+  while IFS= read -r fl; do
+    [ "$fl" = "$src_base" ] && continue
+    case "$fl" in *[Hh][Ee][Vv][Cc]*) hevc_other=true; break ;; esac
+  done <<< "${out#*$'\n'}"
+  if [ "$hevc_other" = true ]; then
+    echo "  skip $folder: an HEVC file is already in its library folder"
+    continue
+  fi
   printf '%s\t%s\t%s\t%s\n' "$br" "$sz" "$folder" "$path" >> "$PICKS"
   CHOSEN=$((CHOSEN + 1))
 done < "$CANDS"

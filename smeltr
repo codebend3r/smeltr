@@ -124,6 +124,8 @@ case "${1:-report}" in
   record) shift; exec "$PY" "$DIR/pipeline/record.py" "$@" ;;
   verdict) shift; exec "$PY" "$DIR/pipeline/verdict.py" "$@" ;;
   next) shift; exec "$PY" "$DIR/pipeline/next_title.py" "$@" ;;
+  # The stop threshold in Mb/s (SMELTR_STOP_MBPS from .env). Read-only.
+  stop-mbps) exec "$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); from pipeline import core; print(f"{core.STOP_MBPS:g}")' "$DIR" ;;
   # The CRF a hand-picked queue row should start at. Always prints an integer
   # and exits 0 -- .autopilot.sh substitutes it into -q, and there is no
   # failure here worth idling the CPU over.

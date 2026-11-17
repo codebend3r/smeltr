@@ -111,12 +111,45 @@ SKIP = (
 
 # The stop condition: encoding pauses once nothing above this remains.
 # Operator's call: 70.0 -> 60.0 on 2026-09-15, then 60.0 -> 50.0 on
-# 2026-10-17 once nothing above 60 was left to stage.
-# THREE hand-synced copies of this number: here, STOP_MBPS in
-# staging/autopilot.sh (passed to `smeltr next`), and MIN_BPS in
-# staging/replenish-queue.sh. Move all three or the replenisher stages
-# what the driver will not encode. No test holds them together yet.
-STOP_MBPS = 50.0
+# 2026-10-17 once nothing above 60 was left to stage, then 50.0 -> 47.0 on
+# 2026-11-13 once nothing above 50 was left.
+# The number itself lives in `$SMELTR_DIR/.env` as SMELTR_STOP_MBPS (Mb/s),
+# operator's request 2026-11-13; the environment variable of the same name
+# wins over the file. .autopilot.sh asks `smeltr next` with no argument, so
+# this is its value too, and staging/replenish-queue.sh reads the same .env
+# line. DEFAULT_STOP_MBPS applies only when neither says anything (a fresh
+# clone, the test sandboxes) and must match the replenisher's fallback.
+DEFAULT_STOP_MBPS = 47.0
+
+
+def _env_file_value(name: str) -> "str | None":
+    """Last `NAME=value` line of $SMELTR_DIR/.env, or None."""
+    try:
+        with open(os.path.join(SMELTR_DIR, ".env"), encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return None
+    val = None
+    for line in lines:
+        key, sep, rest = line.strip().partition("=")
+        if sep and key.strip() == name:
+            val = rest.strip().strip("'\"")
+    return val
+
+
+def stop_mbps() -> float:
+    """The stop threshold in Mb/s: environment, then .env, then the default.
+    An unparseable value raises rather than being guessed around."""
+    raw = os.environ.get("SMELTR_STOP_MBPS") or _env_file_value("SMELTR_STOP_MBPS")
+    if raw is None or raw == "":
+        return DEFAULT_STOP_MBPS
+    val = float(raw)
+    if not val > 0:
+        raise ValueError(f"SMELTR_STOP_MBPS must be a positive number of Mb/s, got {raw!r}")
+    return val
+
+
+STOP_MBPS = stop_mbps()
 
 # The TARGET BAND, % of source (operator's call, 2026-09-06: 10-70, was 30-80).
 # Three consumers must agree on it: .watch-encode.sh kills a projection that
